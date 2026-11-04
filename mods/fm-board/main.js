@@ -59,7 +59,7 @@ const MODES = [
   { id: "local-only", label: "Local only" },
 ];
 const modeLabel = (id) => MODES.find((m) => m.id === id)?.label ?? id;
-const home = () => typeof props()?.home === "string" ? props().home.trim() : "";
+const home = () => typeof props()?.home === "string" ? props().home.trim().replace(/(.)\/+$/, "$1") : "";
 // Fixed to Korea time, which has no daylight saving.
 function koreaTime(iso) {
   const ms = Date.parse(iso);

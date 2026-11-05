@@ -542,13 +542,42 @@ export default class FmBoard extends View {
 
   // Command buttons, card answers, and Scout/Task requests type into the firstmate session's own
   // terminal, so they show up in that chat like typed input (hc queues it while
-  // the session is busy). Only when no firstmate session is open do they fall
+  // the session is busy). When the session's terminal cannot be proven, they fall
   // back to a Board request that firstmate sees at its next drain.
   async firstmateTerminal() {
-    const r = await exec("hc", ["ls", "--json"]);
-    if (r.code !== 0) return null;
-    const live = (JSON.parse(r.stdout).terminals ?? []).filter((x) => x.state === "live" && x.cwd === home());
-    return (live.find((x) => x.agent === "claude-code") ?? live[0])?.address ?? null;
+    try {
+      const root = home();
+      if (!root) return null;
+      // Read on every send: a restarted session has a new lock holder.
+      const lock = (await readTextFile(`${root}/state/.lock`)).trim();
+      const holder = Number(lock);
+      if (!/^[1-9]\d*$/.test(lock) || !Number.isSafeInteger(holder) || holder <= 1) return null;
+      const r = await exec("hc", ["ls", "--json"]);
+      if (r.code !== 0) return null;
+      const live = [];
+      for (const { address, state } of JSON.parse(r.stdout).terminals ?? []) {
+        if (state !== "live") continue;
+        const detail = await exec("hc", ["get", address, "--json"]);
+        if (detail.code !== 0) continue;
+        const terminal = JSON.parse(detail.stdout);
+        if (terminal.state !== "live") continue;
+        if (terminal.foreground?.pid === holder) return address;
+        live.push({ address, pid: terminal.pid });
+      }
+      // Other primaries may put a wrapper in the foreground. Prove ancestry
+      // only when no foreground PID matched; launch cwd and agent names can drift.
+      const seen = new Set();
+      let pid = holder;
+      while (pid > 1 && !seen.has(pid)) {
+        seen.add(pid);
+        const parent = await exec("ps", ["-o", "ppid=", "-p", String(pid)]);
+        if (parent.code !== 0 || !/^\d+$/.test(parent.stdout.trim())) return null;
+        pid = Number(parent.stdout.trim());
+        const terminal = live.find((x) => x.pid === pid);
+        if (terminal) return terminal.address;
+      }
+    } catch {}
+    return null;
   }
 
   // One line only: a newline would submit the message early.

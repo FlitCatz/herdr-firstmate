@@ -41,7 +41,9 @@ Held cards can collect an answer, decision options can be selected before sendin
 Project rows can be expanded to show details, a project filter, color choices, a folder button, and a removal request.
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
 Folded sections and cards, collapsed columns, and project color choices are remembered locally.
-Command buttons type Bearings, Ahoy, Stow, Quiet, Quiet off, or AFK commands into the matching Firstmate terminal; the Scout and Task fields also type requests there, falling back to the Firstmate inbox when no session is open.
+Command buttons type Bearings, Ahoy, Stow, Quiet, Quiet off, or AFK commands into the verified Firstmate terminal; card answers and the Scout and Task fields also type requests there.
+On each send, the board reads the session lock PID from `home/state/.lock` and matches it to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.
+If the lock cannot be read or no terminal can be proven, the request falls back to the Firstmate inbox.
 
 The tab bar marks working tabs with a spinner, blocked and done tabs with status dots, and zoomed tabs with a `Z` suffix.
 Idle tabs have no activity marker.

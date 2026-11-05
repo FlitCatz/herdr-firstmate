@@ -190,8 +190,8 @@ function waitingLabel(c) {
   return `Waiting on ${n > 1 ? `${n} · ` : ""}${strip(c.waitingOn[0])}`;
 }
 
-// What the Kanban search matches, lowercased: the task id and the text the card shows
-// (title, note or detail, and its decision's question and options).
+// What the Kanban search matches, lowercased: the task id and the card's text (title,
+// full note or detail even where the card truncates or hides it, and its decision's question and options).
 function searchText(c) {
   const decision = c.decision ? [c.decision.question, ...c.decision.options.map((o) => o.text)] : [];
   return [c.id, c.title, c.detail, ...decision].filter(Boolean).join("\n").toLowerCase();

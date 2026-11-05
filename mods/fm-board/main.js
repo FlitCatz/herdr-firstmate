@@ -248,13 +248,11 @@ export default class FmBoard extends View {
     this.name = InputState.new({ placeholder: "Name (optional)" });
     this.picked = null;
     this.ask = InputState.new({ placeholder: "What to investigate or do" }); this.askProject = null;
-    // The Kanban search applies on Enter or the find icon, so the first press lands on match 1;
-    // emptying the field clears it like Esc.
+    // The Kanban search applies on Enter or the find icon, so the first press lands on match 1.
     this.search = InputState.new({ placeholder: "Search tasks", value: ui.search ?? "" });
     /** @type {string} */
     this.query = (ui.search ?? "").trim(); this.matchAt = 0;
     this.search.on("submit", (_e, cx) => this.findNext(cx));
-    this.search.on("change", (_e, cx) => { if (!this.search.value().trim() && this.query) this.clearSearch(cx); });
     this.viewer = new FolderViewer(); this.viewProject = null;
     if (!home()) return;
     // props.ui.view (testing): open the viewer on that project's local copy.
@@ -303,6 +301,7 @@ export default class FmBoard extends View {
   }
 
   toggleFold(id, cx) {
+    if (this.query) return;
     if (!this.folded.delete(id)) this.folded.add(id);
     try { localStorage.setItem(FOLDED_KEY, JSON.stringify([...this.folded])); } catch {}
     cx.notify();
@@ -883,19 +882,17 @@ export default class FmBoard extends View {
         .hover((s) => s.bg(t.hover)).tooltip("Find next (Enter) · Esc clears")
         .on_click((_e, cx) => this.findNext(cx))
         .child(svg("mods/workspace-chrome/search.svg").size(fs(14)).text_color(t.muted)))
-      .when(count !== null, (el) => el
-        .child(div().flex_none().text_size(fs(11)).text_color(matches.length ? t.muted : t.blocked).child(count))
-        .child(this.button("search-clear", "Clear", t, (cx) => this.clearSearch(cx))));
+      .when(count !== null, (el) =>
+        el.child(div().flex_none().text_size(fs(11)).text_color(matches.length ? t.muted : t.blocked).child(count)));
   }
 
   cardsIn(id) {
-    const q = this.query.toLowerCase();
-    const all = (this.cards ?? []).filter((c) => c.column === id && (!this.filter || c.project === this.filter)
-      && (!q || searchText(c).includes(q)));
-    if (id === "done") return all.slice(-DONE_LIMIT).reverse();
+    const all = (this.cards ?? []).filter((c) => c.column === id && (!this.filter || c.project === this.filter));
     // Highest priority first; equal or unset priorities keep backlog order (sort is stable).
     const rank = (c) => c.priority ?? Infinity;
-    return all.sort((a, b) => rank(a) - rank(b));
+    const shown = id === "done" ? all.slice(-DONE_LIMIT).reverse() : all.sort((a, b) => rank(a) - rank(b));
+    const q = this.query.toLowerCase();
+    return q ? shown.filter((c) => searchText(c).includes(q)) : shown;
   }
 
   column(col, t, stacked) {
@@ -904,7 +901,7 @@ export default class FmBoard extends View {
     const collapsed = this.collapsed.has(col.id) && !(this.query && cards.length);
     const header = h_flex().id(`head-${col.id}`).gap(6).items_center().cursor_pointer()
       .hover((s) => s.opacity(0.75))
-      .on_click((_e, cx) => this.toggle(col.id, cx))
+      .on_click((_e, cx) => { if (!this.query) this.toggle(col.id, cx); })
       .child(div().text_size(fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
       .child(div().w(8).h(8).rounded(4).bg(t[col.color]));
     if (collapsed && !stacked) {

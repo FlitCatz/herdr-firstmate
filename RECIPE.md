@@ -30,7 +30,8 @@ Their header dots use the theme's idle, working, blocked, done, unknown, and red
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.
 The Kanban search matches task ids and the title, note, and decision text on cards, ignoring case.
 Enter or the find icon applies it: each column then shows only matching cards, columns and cards holding a match open even when folded, and the current match gets an accent border.
-Pressing Enter or the icon again steps through the matches with an `n/m` count; Esc, the Clear button, or an empty field restores the full board and the remembered folds.
+Pressing Enter or the icon again steps through the matches with an `n/m` count; fold and collapse clicks on Kanban cards and columns do nothing while a search is set.
+Esc, or Enter or the icon with an empty field, restores the full board and the remembered folds.
 
 Cards show their project, priority when present, state, and available detail.
 Clicking a card header folds it; queued cards waiting on other tasks are dimmed, and clicking their waiting row expands the dependency chain.

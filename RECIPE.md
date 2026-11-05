@@ -60,7 +60,7 @@ The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-
 
 `fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, and `run` from `herdr`.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals.
-It uses `agent.focus` to show a matching worker, `ps` to check supervision processes, and `open` for folders or review URLs.
+It uses `agent.focus` to show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, and `open` for folders or review URLs.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.
 Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews.

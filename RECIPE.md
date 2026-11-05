@@ -42,7 +42,8 @@ Project rows can be expanded to show details, a project filter, color choices, a
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
 Folded sections and cards, collapsed columns, and project color choices are remembered locally.
 Command buttons type Bearings, Ahoy, Stow, Quiet, Quiet off, or AFK commands into the verified Firstmate terminal; card answers and the Scout and Task fields also type requests there.
-On each send, the board reads the session lock PID from `home/state/.lock` and matches it to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.
+On each send, the board asks `home/bin/fm-inbox.sh ready` to inspect the session lock and uses its PID only when the lock is held by a live harness.
+It matches that PID to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.
 If the lock cannot be read or no terminal can be proven, the request falls back to the Firstmate inbox.
 
 The tab bar marks working tabs with a spinner, blocked and done tabs with status dots, and zoomed tabs with a `Z` suffix.

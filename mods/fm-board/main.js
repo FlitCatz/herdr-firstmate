@@ -546,12 +546,14 @@ export default class FmBoard extends View {
   // back to a Board request that firstmate sees at its next drain.
   async firstmateTerminal() {
     try {
-      const root = home();
-      if (!root) return null;
-      // Read on every send: a restarted session has a new lock holder.
-      const lock = (await readTextFile(`${root}/state/.lock`)).trim();
-      const holder = Number(lock);
-      if (!/^[1-9]\d*$/.test(lock) || !Number.isSafeInteger(holder) || holder <= 1) return null;
+      if (!home()) return null;
+      // Inspect on every send: a stale PID can be reused by an unrelated process.
+      const ready = await this.fm("fm-inbox.sh", ["ready"]);
+      if (ready.code !== 0) return null;
+      const { lock } = JSON.parse(ready.stdout);
+      if (lock?.state !== "held" || lock.live_harness !== true) return null;
+      const holder = lock.pid;
+      if (!Number.isSafeInteger(holder) || holder <= 1) return null;
       const r = await exec("hc", ["ls", "--json"]);
       if (r.code !== 0) return null;
       const live = [];

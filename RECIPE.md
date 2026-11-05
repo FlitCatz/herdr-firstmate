@@ -12,7 +12,7 @@ The main area has a 42px tab bar, a flexible active-tab pane, a hidden 700px rig
 
 The tab bar sits on the chrome background and shows tabs plus Board, Files, and Changes panel buttons.
 
-The board shows project rows above task columns, a footer with update and watcher status, and command controls below.
+The board shows project rows above the Kanban section, which holds a search field with a find icon above the task columns, a footer with update and watcher status, and command controls below.
 Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a consistent color and a three-letter abbreviation.
 Board text follows Herdr's terminal font size and grows as the board widens.
 
@@ -28,6 +28,9 @@ Todo, Queued, Working, Done, and Failed columns always appear.
 Held, Parked, Blocked, Paused, Review, and Unknown appear while they contain cards.
 Their header dots use the theme's idle, working, blocked, done, unknown, and red colors as appropriate.
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.
+The Kanban search matches task ids and the title, note, and decision text on cards, ignoring case.
+Enter or the find icon applies it: each column then shows only matching cards, columns and cards holding a match open even when folded, and the current match gets an accent border.
+Pressing Enter or the icon again steps through the matches with an `n/m` count; Esc, the Clear button, or an empty field restores the full board and the remembered folds.
 
 Cards show their project, priority when present, state, and available detail.
 Clicking a card header folds it; queued cards waiting on other tasks are dimmed, and clicking their waiting row expands the dependency chain.
@@ -57,6 +60,7 @@ The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-
 `fm-tabs` is based on Herdr's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, and `settings`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` icon.
 
 `fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, and `run` from `herdr`.
+It draws Herdr's shipped `files` folder icon and `workspace-chrome` search icon.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals.
 It uses `agent.focus` to show a matching worker, `ps` to check supervision processes, and `open` for folders or review URLs.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
@@ -77,7 +81,7 @@ The panel width is 700px and constrained to 280-2400px.
 With all 11 columns open at about 1,320px pane width, card titles wrap heavily.
 A Done card's PR waiting badge can overlap its title and leave the title wrapping one letter per line.
 Collapse some columns or give the board more width when this happens.
-The preview retains this known limit and shows the temporary capture mod's name in the pane header.
+The preview shows a search for one fictional project's tasks and the temporary capture mod's name in the pane header.
 The board shows at most 20 Done cards.
 The viewer bounds listings to 500 entries per folder and 5,000 total, changes to 1,000 files, and diffs to 1,500 lines.
 The Files and Changes viewer does not edit, commit, stage, or discard files.
@@ -90,6 +94,6 @@ Both mod folders pass `herdr-app check`.
 
 The layout opens with the configured Firstmate home, displays the board and panel controls, and switching spaces restores each space's selected panel.
 
-The board loads projects and cards, and its file viewer shows read-only file and Git change information for a selected project.
+The board loads projects and cards, its Kanban search narrows the columns to matching cards and steps through them, and its file viewer shows read-only file and Git change information for a selected project.
 
 With `home` missing or blank, a clear Firstmate home required card appears without reading home files or running helper programs.

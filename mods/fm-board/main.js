@@ -588,7 +588,7 @@ export default class FmBoard extends View {
       try { terminal = await this.firstmateTerminal(); } catch {}
       if (!terminal) {
         this.send(fallback, cx, after);
-        this.notice = "No firstmate session open: left as a request"; cx.notify(); return;
+        this.notice = "Could not find the firstmate terminal: left as a request"; cx.notify(); return;
       }
       const r = await exec("hc", ["send", terminal, line, "--json"]);
       if (r.code === 0) { this.notice = done; after?.(); }

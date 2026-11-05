@@ -41,7 +41,10 @@ Held cards can collect an answer, decision options can be selected before sendin
 Project rows can be expanded to show details, a project filter, color choices, a folder button, and a removal request.
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
 Folded sections and cards, collapsed columns, and project color choices are remembered locally.
-Command buttons type Bearings, Ahoy, Stow, Quiet, Quiet off, or AFK commands into the matching Firstmate terminal; the Scout and Task fields also type requests there, falling back to the Firstmate inbox when no session is open.
+Command buttons type Bearings, Ahoy, Stow, Quiet, Quiet off, or AFK commands into the verified Firstmate terminal; card answers and the Scout and Task fields also type requests there.
+On each send, the board asks `home/bin/fm-inbox.sh ready` to inspect the session lock and uses its PID only when the lock is held by a live harness.
+It matches that PID to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.
+If the lock cannot be read or no terminal can be proven, the request falls back to the Firstmate inbox.
 
 The tab bar marks working tabs with a spinner, blocked and done tabs with status dots, and zoomed tabs with a `Z` suffix.
 Idle tabs have no activity marker.
@@ -58,7 +61,7 @@ The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-
 
 `fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, and `run` from `herdr`.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals.
-It uses `agent.focus` to show a matching worker, `ps` to check supervision processes, and `open` for folders or review URLs.
+It uses `agent.focus` to show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, and `open` for folders or review URLs.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.
 Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews.

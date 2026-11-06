@@ -45,7 +45,7 @@ Held cards can collect an answer, decision options can be selected before sendin
 Project rows can be expanded to show details, a project filter, color choices, a folder button, and a removal request.
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
 Folded sections and cards, collapsed columns, and project color choices are remembered locally.
-Command buttons type Bearings, Ahoy, Stow, Quiet, Quiet off, or AFK commands into the verified Firstmate terminal; card answers and the Scout and Task fields also type requests there.
+Command buttons type Bearings, Ahoy, Stow, Quiet, Quiet off, AFK, or Update commands into the verified Firstmate terminal; card answers and the Scout and Task fields also type requests there.
 On each send, the board asks `home/bin/fm-inbox.sh ready` to inspect the session lock and uses its PID only when the lock is held by a live harness.
 It matches that PID to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.
 If the lock cannot be read or no terminal can be proven, the request falls back to the Firstmate inbox.

@@ -36,11 +36,9 @@ const COLLAPSED_KEY = "collapsed";
 const FOLDED_KEY = "folded";
 const PROJECTS = "projects";
 const COMMANDS = "commands";
-// AppleScript names for clipboard text forms: plain text round-trips through pbpaste and pbcopy,
-// and rich text comes back as its plain text with the formatting dropped.
-const TEXT_CLIPBOARD_TYPES = new Set(["«class utf8»", "«class ut16»", "string", "Unicode text",
-  "«class HTML»", "«class RTF »", "«class styl»"]);
-const IMAGE_OR_FILE_CLIPBOARD_TYPE = /picture|PNG|TIFF|JPEG|GIF|PDF|BMP|jp2|heic|8BPS|icns|furl|file|alias|«class fss »/i;
+// AppleScript names for clipboard images, file references, and RTFD, which can carry attachments.
+// pbpaste and pbcopy keep only text, so other clipboards come back as plain text.
+const IMAGE_OR_FILE_CLIPBOARD_TYPE = /picture|PNG|TIFF|JPEG|GIF|PDF|BMP|jp2|heic|8BPS|icns|RTFD|furl|file|alias|«class fss »/i;
 
 // Firstmate's own names. Optional columns appear only while they hold a card.
 const COLUMNS = [
@@ -627,7 +625,7 @@ export default class FmBoard extends View {
 
   // Paste has a different lifecycle from hc send: focus, insert without Enter,
   // then restore clipboard text after Herdr has had time to consume it.
-  // Only text survives pbpaste, so a clipboard holding anything else is left alone.
+  // Only text survives pbpaste, so a clipboard holding images, files, or no text is left alone.
   // The saved text stays in a temp file: argv cannot carry large text or NUL bytes.
   // Clipboard tools otherwise fall back to a legacy encoding in GUI environments.
   /** @param {string} terminal @param {string} line @param {import("gpui-kit").AsyncContext} cx */
@@ -641,15 +639,15 @@ export default class FmBoard extends View {
       const info = await exec("/usr/bin/env", ["LC_ALL=en_US.UTF-8", "osascript", "-e", "clipboard info"]);
       if (info.code !== 0) throw new Error("Could not read the clipboard types");
       const types = info.stdout.trim().split(", ").filter((x, i) => x && i % 2 === 0);
-      const other = types.filter((x) => !TEXT_CLIPBOARD_TYPES.has(x));
-      if (other.some((x) => IMAGE_OR_FILE_CLIPBOARD_TYPE.test(x))) {
+      if (types.some((x) => IMAGE_OR_FILE_CLIPBOARD_TYPE.test(x))) {
         throw new Error("Clipboard holds an image or file, so nothing was inserted. Paste it first, then click again.");
       }
-      if (other.length) throw new Error("Clipboard holds content that cannot be restored, so nothing was inserted.");
       run("agent.focus", { terminal });
       await new Promise((resolve) => cx.timer.after(100, () => resolve(null)));
       if (focused()?.terminal !== terminal) throw new Error("Could not focus the firstmate terminal");
-      const previous = await clip("f=$(mktemp -t fm-board-clipboard) || exit 1; pbpaste > \"$f\" && printf '%s' \"$f\" || { rm -f \"$f\"; exit 1; }");
+      const previous = await clip("f=$(mktemp -t fm-board-clipboard) || exit 1; pbpaste > \"$f\" || { rm -f \"$f\"; exit 1; }; "
+        + "if [ \"$1\" = filled ] && [ ! -s \"$f\" ]; then rm -f \"$f\"; exit 3; fi; printf '%s' \"$f\"", types.length ? "filled" : "empty");
+      if (previous.code === 3) throw new Error("Clipboard holds no plain text, so nothing was inserted. Paste it first, then click again.");
       if (previous.code !== 0 || !previous.stdout) throw new Error("Could not save clipboard text");
       saved = previous.stdout;
       const copied = await clip("printf '%s' \"$1\" | pbcopy", line);

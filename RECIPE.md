@@ -42,10 +42,10 @@ An unobservable worker uses recorded status evidence when available, otherwise i
 Cards with a finished worker and a review link show a PR waiting badge while the backlog and worker detail still indicate pending review.
 The board does not query the forge to check whether the link has merged.
 
-Clicking a decision option puts `[Board answer] <ids>: <label> (<option text>) ` into the Firstmate chat input, ready to edit and confirm with Enter.
+Clicking an option of a held decision puts `[Board answer] <ids>: <label> (<option text>) ` into the Firstmate chat input, ready to edit and confirm with Enter.
 The Ask icon inserts `[Board card] <ids>: <title or group question> ` for questions about the task.
 Both drafts stay on one line with a trailing space, and the input receives focus so you can keep typing.
-Held cards use the chat input for free-text answers.
+Held cards use the chat input for free-text answers; options elsewhere are shown as plain text.
 Live cards can open their worker or the read-only Files and Changes viewer when those paths are available.
 
 Project rows can be expanded to show details, a project filter, color choices, a folder button, and a removal request.
@@ -54,7 +54,7 @@ Folded sections and cards, collapsed columns, and project color choices are reme
 Command buttons submit Bearings, Ahoy, Stow, Quiet, Quiet off, AFK, or Update commands to the verified Firstmate terminal; the Scout and Task fields also submit requests there.
 On each insertion or send, the board asks `home/bin/fm-inbox.sh ready` to inspect the session lock and uses its PID only when the lock is held by a live harness.
 It matches that PID to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.
-If the lock cannot be read or no terminal can be proven, the request falls back to the Firstmate inbox.
+If the lock cannot be read or no terminal can be proven, commands and Scout or Task requests fall back to the Firstmate inbox, while card drafts only show a notice and file nothing.
 
 The tab bar marks working tabs with a spinner, blocked and done tabs with status dots, and zoomed tabs with a `Z` suffix.
 Idle tabs have no activity marker.
@@ -72,7 +72,8 @@ The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-
 `fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, and `run` from `herdr`.
 It draws Herdr's shipped `files` folder icon and `workspace-chrome` search icon.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals.
-Card drafts use macOS `pbpaste` and `pbcopy` to save and restore clipboard text around Herdr's `terminal.paste` action; they verify terminal focus before pasting and leave Enter to the owner.
+Card drafts use macOS `pbpaste` and `pbcopy` to save clipboard text to a temporary file and restore it around Herdr's `terminal.paste` action; they verify terminal focus before pasting and leave Enter to the owner.
+They first read the clipboard types with `osascript`; if the clipboard holds anything other than plain text, such as an image or files, nothing is inserted, the clipboard is left untouched, and a notice asks you to paste it first.
 It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, and `open` for folders or review URLs.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.

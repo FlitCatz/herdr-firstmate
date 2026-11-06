@@ -36,6 +36,8 @@ const COLLAPSED_KEY = "collapsed";
 const FOLDED_KEY = "folded";
 const PROJECTS = "projects";
 const COMMANDS = "commands";
+// AppleScript names for the plain-text clipboard forms that pbpaste and pbcopy round-trip.
+const PLAIN_CLIPBOARD_TYPES = new Set(["«class utf8»", "«class ut16»", "string", "Unicode text"]);
 
 // Firstmate's own names. Optional columns appear only while they hold a card.
 const COLUMNS = [
@@ -554,7 +556,7 @@ export default class FmBoard extends View {
   }
 
   // Resolve the session for both submitted requests and editable card drafts.
-  // When its terminal cannot be proven, leave a Board request for the next drain.
+  // When its terminal cannot be proven, a submitted request becomes a Board request for the next drain.
   async firstmateTerminal() {
     try {
       if (!home()) return null;
@@ -600,6 +602,7 @@ export default class FmBoard extends View {
     cx.spawn(async (cx) => {
       let terminal = null;
       try { terminal = await this.firstmateTerminal(); } catch {}
+      if (!terminal && insertOnly) { this.notice = "Could not find the firstmate terminal"; cx.notify(); return; }
       if (!terminal) {
         this.send(fallback, cx, after);
         this.notice = "Could not find the firstmate terminal: left as a request"; cx.notify(); return;
@@ -611,29 +614,40 @@ export default class FmBoard extends View {
           if (r.code !== 0) throw new Error(r.stderr.trim() || r.stdout.trim() || String(r.code));
         }
         this.notice = done; after?.();
-      } catch (e) { this.notice = `Could not type into firstmate: ${e instanceof Error ? e.message : String(e)}`; }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        this.notice = insertOnly ? message : `Could not type into firstmate: ${message}`;
+      }
       cx.notify();
     });
   }
 
   // Paste has a different lifecycle from hc send: focus, insert without Enter,
   // then restore clipboard text after Herdr has had time to consume it.
+  // Only plain text survives pbpaste, so any other clipboard content is left alone.
+  // The saved text stays in a temp file: argv cannot carry large text or NUL bytes.
   // Clipboard tools otherwise fall back to a legacy encoding in GUI environments.
   /** @param {string} terminal @param {string} line @param {import("gpui-kit").AsyncContext} cx */
   async pasteToFirstmate(terminal, line, cx) {
     if (this.pasting) throw new Error("A card is already being inserted; try again");
     this.pasting = true;
     let saved = null;
-    /** @param {string} text */
-    const copy = (text) => exec("/usr/bin/env", ["LC_ALL=en_US.UTF-8", "sh", "-c", "printf '%s' \"$1\" | pbcopy", "board-clipboard", text]);
+    /** @param {string} script @param {string[]} args */
+    const clip = (script, ...args) => exec("/usr/bin/env", ["LC_ALL=en_US.UTF-8", "sh", "-c", script, "board-clipboard", ...args]);
     try {
+      const info = await exec("/usr/bin/env", ["LC_ALL=en_US.UTF-8", "osascript", "-e", "clipboard info"]);
+      if (info.code !== 0) throw new Error("Could not read the clipboard types");
+      const types = info.stdout.trim().split(", ").filter((x, i) => x && i % 2 === 0);
+      if (types.some((x) => !PLAIN_CLIPBOARD_TYPES.has(x))) {
+        throw new Error("Clipboard holds an image or file, so nothing was inserted. Paste it first, then click again.");
+      }
       run("agent.focus", { terminal });
       await new Promise((resolve) => cx.timer.after(100, () => resolve(null)));
       if (focused()?.terminal !== terminal) throw new Error("Could not focus the firstmate terminal");
-      const previous = await exec("/usr/bin/env", ["LC_ALL=en_US.UTF-8", "pbpaste"]);
-      if (previous.code !== 0) throw new Error("Could not save clipboard text");
+      const previous = await clip("f=$(mktemp -t fm-board-clipboard) || exit 1; pbpaste > \"$f\" && printf '%s' \"$f\" || { rm -f \"$f\"; exit 1; }");
+      if (previous.code !== 0 || !previous.stdout) throw new Error("Could not save clipboard text");
       saved = previous.stdout;
-      const copied = await copy(line);
+      const copied = await clip("printf '%s' \"$1\" | pbcopy", line);
       if (copied.code !== 0) throw new Error("Could not copy the card text");
       // Focus may have changed while the clipboard command was running.
       if (focused()?.terminal !== terminal) throw new Error("Firstmate terminal focus changed; try again");
@@ -642,16 +656,16 @@ export default class FmBoard extends View {
     } finally {
       try {
         if (saved !== null) {
-          const restored = await copy(saved);
+          const restored = await clip("pbcopy < \"$1\"; s=$?; rm -f \"$1\"; exit $s", saved);
           if (restored.code !== 0) throw new Error("Could not restore clipboard text");
         }
       } finally { this.pasting = false; }
     }
   }
 
-  /** @param {string} text @param {string} fallback @param {import("gpui-kit").Context} cx */
-  insertCardText(text, fallback, cx) {
-    this.typeToFirstmate(text, fallback, "Text is in the firstmate input, waiting for Enter", cx, undefined, true);
+  /** @param {string} text @param {import("gpui-kit").Context} cx */
+  insertCardText(text, cx) {
+    this.typeToFirstmate(text, "", "Text is in the firstmate input, waiting for Enter", cx, undefined, true);
   }
 
   /** @param {string} key @param {string[]} ids @param {string} title @param {Record<string, `#${string}`>} t */
@@ -661,8 +675,7 @@ export default class FmBoard extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        this.insertCardText(`[Board card] ${ids.join(", ")}: ${title}`,
-          `[Board request] Ask about ${ids.join(", ")}: ${title}`, cx);
+        this.insertCardText(`[Board card] ${ids.join(", ")}: ${title}`, cx);
       })
       .child(div().w(fs(14)).h(fs(14)).rounded(fs(7)).border(1).border_color(t.muted)
         .flex().items_center().justify_center().text_size(fs(11)).text_color(t.muted).child("?"));
@@ -753,7 +766,7 @@ export default class FmBoard extends View {
     }
     if (c.detail && !inGroup) el.child(div().text_size(fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
     const ownDecision = c.decision && !c.decision.topic;
-    if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id]);
+    if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id], c.column === "held");
     if (c.pr && /^https:\/\//.test(c.pr)) {
       el.child(div().id(`pr-${c.id}`).text_size(fs(11)).text_color(t.accent).truncate()
         .hover((s) => s.text_color(t.foreground))
@@ -771,17 +784,14 @@ export default class FmBoard extends View {
     return el;
   }
 
-  // Options become editable chat drafts; the owner confirms them with Enter.
-  /** @param {string[]} ids */
-  decisionLines(el, decision, t, key, ids) {
+  // Options of a held decision become editable chat drafts; the owner confirms them with Enter.
+  // Elsewhere they are plain text: set-aside work in Todo waits until it is brought back.
+  /** @param {string[]} ids @param {boolean} answerable */
+  decisionLines(el, decision, t, key, ids, answerable) {
     for (const o of decision.options) {
-      el.child(h_flex().id(`opt-${key}-${o.label}`).gap(6).px(4).py(2).rounded(5).cursor_pointer()
-        .hover((s) => s.bg(t.hover)).tooltip("Put this answer in the firstmate input")
-        .on_click((_e, cx) => {
-          const answer = `${o.label} (${o.text})`;
-          this.insertCardText(`[Board answer] ${ids.join(", ")}: ${answer}`,
-            `[Board request] Captain's answer for ${ids.join(", ")}: ${answer}`, cx);
-        })
+      el.child(h_flex().id(`opt-${key}-${o.label}`).gap(6).px(4).py(2).rounded(5)
+        .when(answerable, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Put this answer in the firstmate input")
+          .on_click((_e, cx) => this.insertCardText(`[Board answer] ${ids.join(", ")}: ${o.label} (${o.text})`, cx)))
         .child(div().flex_none().text_size(fs(11)).font_semibold().text_color(t.accent).child(o.label))
         .child(div().flex_1().min_w(0).text_size(fs(11)).text_color(t.foreground).child(o.text)));
     }
@@ -889,7 +899,7 @@ export default class FmBoard extends View {
         div().flex_none().text_size(fs(11)).text_color(t.dim).child(String(cards.length)))
         .child(this.askButton(foldId, ids, question, t)));
     if (folded) return box;
-    this.decisionLines(box, first.decision, t, `group:${topic}`, ids);
+    this.decisionLines(box, first.decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
     return box.children(cards.map((c) => this.card(c, t, true)));
   }
 

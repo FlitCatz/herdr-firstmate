@@ -43,7 +43,7 @@ Cards with a finished worker and a review link show a PR waiting badge while the
 The board does not query the forge to check whether the link has merged.
 
 Clicking an option of a held decision puts `[Board answer] <ids>: <label> (<option text>) ` into the Firstmate chat input, ready to edit and confirm with Enter.
-The Ask icon inserts `[Board card] <ids>: <title or group question> ` for questions about the task.
+The Ask icon inserts `` `[Board card] <ids>: <title or group question>` `` followed by one space for questions about the task; backticks inside the title or group question are inserted as single quotes so they cannot close the code span early.
 Both drafts stay on one line with a trailing space, and the input receives focus so you can keep typing.
 Held cards use the chat input for free-text answers; options elsewhere are shown as plain text.
 Live cards can open their worker or the read-only Files and Changes viewer when those paths are available.

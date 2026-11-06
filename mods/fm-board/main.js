@@ -673,12 +673,13 @@ export default class FmBoard extends View {
 
   /** @param {string} key @param {string[]} ids @param {string} title @param {Record<string, `#${string}`>} t */
   askButton(key, ids, title, t) {
+    const cleanTitle = title.replace(/`/g, "'");
     return div().id(`ask-card-${key}`).flex_none().p(3).rounded(5).cursor_pointer()
       .hover((s) => s.bg(t.hover)).tooltip("Ask firstmate about this task")
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        this.insertCardText(`[Board card] ${ids.join(", ")}: ${title}`, cx);
+        this.insertCardText(`\`[Board card] ${ids.join(", ")}: ${cleanTitle}\``, cx);
       })
       .child(div().w(fs(14)).h(fs(14)).rounded(fs(7)).border(1).border_color(t.muted)
         .flex().items_center().justify_center().text_size(fs(11)).text_color(t.muted).child("?"));

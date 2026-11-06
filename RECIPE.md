@@ -73,7 +73,8 @@ The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-
 It draws Herdr's shipped `files` folder icon and `workspace-chrome` search icon.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals.
 Card drafts use macOS `pbpaste` and `pbcopy` to save clipboard text to a temporary file and restore it around Herdr's `terminal.paste` action; they verify terminal focus before pasting and leave Enter to the owner.
-They first read the clipboard types with `osascript`; if the clipboard holds anything other than plain text, such as an image or files, nothing is inserted, the clipboard is left untouched, and a notice asks you to paste it first.
+They first read the clipboard types with `osascript`; plain text is restored as is, and rich text such as HTML or RTF is restored as plain text with its formatting dropped.
+If the clipboard holds an image or files, nothing is inserted, the clipboard is left untouched, and a notice asks you to paste it first; any other content that cannot be restored is also left untouched with its own notice.
 It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, and `open` for folders or review URLs.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.

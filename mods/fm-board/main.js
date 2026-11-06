@@ -7,7 +7,7 @@
 // installation and operational home; the other props support preview fixtures.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel } from "gpui-base";
-import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run } from "herdr";
+import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused } from "herdr";
 import { FolderViewer } from "./viewer.js";
 
 // Board text follows the terminal font size and grows as the Board widens. The sizes below
@@ -36,6 +36,9 @@ const COLLAPSED_KEY = "collapsed";
 const FOLDED_KEY = "folded";
 const PROJECTS = "projects";
 const COMMANDS = "commands";
+// AppleScript names for clipboard images, file references, and RTFD, which can carry attachments.
+// pbpaste and pbcopy keep only text, so other clipboards come back as plain text.
+const IMAGE_OR_FILE_CLIPBOARD_TYPE = /picture|PNG|TIFF|JPEG|GIF|PDF|BMP|jp2|heic|8BPS|icns|RTFD|furl|file|alias|«class fss »/i;
 
 // Firstmate's own names. Optional columns appear only while they hold a card.
 const COLUMNS = [
@@ -240,7 +243,7 @@ export default class FmBoard extends View {
     this.folded = new Set(ui.folded ?? this.loadSet(FOLDED_KEY));
     this.open = new Set(ui.open ?? []); this.filter = ui.filter ?? null;
     this.chainOpen = new Set(ui.chains ?? []);
-    this.answerPick = new Map(); this.answerInputs = new Map(); this.answerSend = new Map();
+    this.pasting = false;
     this.colorChoice = {};
     try { this.colorChoice = JSON.parse(localStorage.getItem(PROJECT_COLORS_KEY) ?? "{}") ?? {}; } catch {}
     this.adding = Boolean(ui.adding); this.confirm = ui.confirm ?? null; this.mode = MODES[0].id;
@@ -553,10 +556,8 @@ export default class FmBoard extends View {
     return el.child(list);
   }
 
-  // Command buttons, card answers, and Scout/Task requests type into the firstmate session's own
-  // terminal, so they show up in that chat like typed input (hc queues it while
-  // the session is busy). When the session's terminal cannot be proven, they fall
-  // back to a Board request that firstmate sees at its next drain.
+  // Resolve the session for both submitted requests and editable card drafts.
+  // When its terminal cannot be proven, a submitted request becomes a Board request for the next drain.
   async firstmateTerminal() {
     try {
       if (!home()) return null;
@@ -596,20 +597,91 @@ export default class FmBoard extends View {
   }
 
   // One line only: a newline would submit the message early.
-  typeToFirstmate(text, fallback, done, cx, after) {
-    const line = text.replace(/\s*\n\s*/g, " ").trim();
+  typeToFirstmate(text, fallback, done, cx, after, insertOnly = false) {
+    const line = insertOnly ? text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim() + " "
+      : text.replace(/\s*\n\s*/g, " ").trim();
     cx.spawn(async (cx) => {
       let terminal = null;
       try { terminal = await this.firstmateTerminal(); } catch {}
+      if (!terminal && insertOnly) { this.notice = "Could not find the firstmate terminal"; cx.notify(); return; }
       if (!terminal) {
         this.send(fallback, cx, after);
         this.notice = "Could not find the firstmate terminal: left as a request"; cx.notify(); return;
       }
-      const r = await exec("hc", ["send", terminal, line, "--json"]);
-      if (r.code === 0) { this.notice = done; after?.(); }
-      else this.notice = `Could not type into firstmate: ${r.stderr.trim() || r.stdout.trim() || r.code}`;
+      try {
+        if (insertOnly) await this.pasteToFirstmate(terminal, line, cx);
+        else {
+          const r = await exec("hc", ["send", terminal, line, "--json"]);
+          if (r.code !== 0) throw new Error(r.stderr.trim() || r.stdout.trim() || String(r.code));
+        }
+        this.notice = done; after?.();
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        this.notice = insertOnly ? message : `Could not type into firstmate: ${message}`;
+      }
       cx.notify();
     });
+  }
+
+  // Paste has a different lifecycle from hc send: focus, insert without Enter,
+  // then restore clipboard text after Herdr has had time to consume it.
+  // Only text survives pbpaste, so a clipboard holding images, files, or no text is left alone.
+  // The saved text stays in a temp file: argv cannot carry large text or NUL bytes.
+  // Clipboard tools otherwise fall back to a legacy encoding in GUI environments.
+  /** @param {string} terminal @param {string} line @param {import("gpui-kit").AsyncContext} cx */
+  async pasteToFirstmate(terminal, line, cx) {
+    if (this.pasting) throw new Error("A card is already being inserted; try again");
+    this.pasting = true;
+    let saved = null;
+    /** @param {string} script @param {string[]} args */
+    const clip = (script, ...args) => exec("/usr/bin/env", ["LC_ALL=en_US.UTF-8", "sh", "-c", script, "board-clipboard", ...args]);
+    try {
+      const info = await exec("/usr/bin/env", ["LC_ALL=en_US.UTF-8", "osascript", "-e", "clipboard info"]);
+      if (info.code !== 0) throw new Error("Could not read the clipboard types");
+      const types = info.stdout.trim().split(", ").filter((x, i) => x && i % 2 === 0);
+      if (types.some((x) => IMAGE_OR_FILE_CLIPBOARD_TYPE.test(x))) {
+        throw new Error("Clipboard holds an image or file, so nothing was inserted. Paste it first, then click again.");
+      }
+      run("agent.focus", { terminal });
+      await new Promise((resolve) => cx.timer.after(100, () => resolve(null)));
+      if (focused()?.terminal !== terminal) throw new Error("Could not focus the firstmate terminal");
+      const previous = await clip("f=$(mktemp -t fm-board-clipboard) || exit 1; pbpaste > \"$f\" || { rm -f \"$f\"; exit 1; }; "
+        + "if [ \"$1\" = filled ] && [ ! -s \"$f\" ]; then rm -f \"$f\"; exit 3; fi; printf '%s' \"$f\"", types.length ? "filled" : "empty");
+      if (previous.code === 3) throw new Error("Clipboard holds no plain text, so nothing was inserted. Paste it first, then click again.");
+      if (previous.code !== 0 || !previous.stdout) throw new Error("Could not save clipboard text");
+      saved = previous.stdout;
+      const copied = await clip("printf '%s' \"$1\" | pbcopy", line);
+      if (copied.code !== 0) throw new Error("Could not copy the card text");
+      // Focus may have changed while the clipboard command was running.
+      if (focused()?.terminal !== terminal) throw new Error("Firstmate terminal focus changed; try again");
+      run("terminal.paste");
+      await new Promise((resolve) => cx.timer.after(300, () => resolve(null)));
+    } finally {
+      try {
+        if (saved !== null) {
+          const restored = await clip("pbcopy < \"$1\"; s=$?; rm -f \"$1\"; exit $s", saved);
+          if (restored.code !== 0) throw new Error("Could not restore clipboard text");
+        }
+      } finally { this.pasting = false; }
+    }
+  }
+
+  /** @param {string} text @param {import("gpui-kit").Context} cx */
+  insertCardText(text, cx) {
+    this.typeToFirstmate(text, "", "Text is in the firstmate input, waiting for Enter", cx, undefined, true);
+  }
+
+  /** @param {string} key @param {string[]} ids @param {string} title @param {Record<string, `#${string}`>} t */
+  askButton(key, ids, title, t) {
+    return div().id(`ask-card-${key}`).flex_none().p(3).rounded(5).cursor_pointer()
+      .hover((s) => s.bg(t.hover)).tooltip("Ask firstmate about this task")
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        this.insertCardText(`[Board card] ${ids.join(", ")}: ${title}`, cx);
+      })
+      .child(div().w(fs(14)).h(fs(14)).rounded(fs(7)).border(1).border_color(t.muted)
+        .flex().items_center().justify_center().text_size(fs(11)).text_color(t.muted).child("?"));
   }
 
   typeCommand(command, cx) {
@@ -676,7 +748,8 @@ export default class FmBoard extends View {
     const badge = c.prWaiting ? div().flex_none().text_size(fs(11)).font_semibold().text_color(t.blocked).child("PR waiting") : null;
     const el = v_flex().id(`card-${c.id}`).gap(4).p(8).rounded(6).bg(t.background)
       .border(current ? 2 : 1).border_color(current ? t.accent : t.border).when(waiting && !current, (e) => e.opacity(0.6))
-      .child(this.foldRow(foldId, t, folded, c.title, badge));
+      .child(this.foldRow(foldId, t, folded, c.title, badge)
+        .child(this.askButton(foldId, [c.id], c.title, t)));
     if (folded) return el;
     // The project sits on the state row so the title keeps the full card width.
     el.child(h_flex().gap(6).items_center().min_w(0)
@@ -696,14 +769,13 @@ export default class FmBoard extends View {
     }
     if (c.detail && !inGroup) el.child(div().text_size(fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
     const ownDecision = c.decision && !c.decision.topic;
-    if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`);
+    if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id], c.column === "held");
     if (c.pr && /^https:\/\//.test(c.pr)) {
       el.child(div().id(`pr-${c.id}`).text_size(fs(11)).text_color(t.accent).truncate()
         .hover((s) => s.text_color(t.foreground))
         .on_click(() => { exec("open", [c.pr]); })
         .child(c.pr.replace("https://github.com/", "")));
     }
-    if (c.column === "held" && !inGroup) this.answerBox(el, `card:${c.id}`, [c.id], ownDecision ? c.decision : null, t);
     const live = c.column !== "done";
     if (live && (c.terminal || c.worktree)) {
       const row = h_flex().gap(4);
@@ -715,47 +787,19 @@ export default class FmBoard extends View {
     return el;
   }
 
-  // Options are picked first and sent with the Send button, so a stray click never answers.
-  decisionLines(el, decision, t, key) {
-    const picked = this.answerPick.get(key);
+  // Options of a held decision become editable chat drafts; the owner confirms them with Enter.
+  // Elsewhere they are plain text: set-aside work in Todo waits until it is brought back.
+  /** @param {string[]} ids @param {boolean} answerable */
+  decisionLines(el, decision, t, key, ids, answerable) {
     for (const o of decision.options) {
-      const on = picked === o.label;
-      el.child(h_flex().id(`opt-${key}-${o.label}`).gap(6).px(4).py(2).rounded(5).cursor_pointer()
-        .when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { if (on) this.answerPick.delete(key); else this.answerPick.set(key, o.label); cx.notify(); })
-        .child(div().flex_none().text_size(fs(11)).font_semibold().text_color(t.accent).child(on ? `● ${o.label}` : o.label))
+      el.child(h_flex().id(`opt-${key}-${o.label}`).gap(6).px(4).py(2).rounded(5)
+        .when(answerable, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Put this answer in the firstmate input")
+          .on_click((_e, cx) => this.insertCardText(`[Board answer] ${ids.join(", ")}: ${o.label} (${o.text})`, cx)))
+        .child(div().flex_none().text_size(fs(11)).font_semibold().text_color(t.accent).child(o.label))
         .child(div().flex_1().min_w(0).text_size(fs(11)).text_color(t.foreground).child(o.text)));
     }
     if (decision.recommended) el.child(div().text_size(fs(11)).text_color(t.muted).child(`Recommended: ${decision.recommended}`));
     return el;
-  }
-
-  // The answer is typed into the firstmate chat naming each task it decides;
-  // firstmate records it as the captain's answer.
-  // Herdr allows input state only outside render, so the box opens from a click.
-  answerBox(el, key, ids, decision, t) {
-    const input = this.answerInputs.get(key);
-    const send = (cx) => {
-      const label = this.answerPick.get(key);
-      const option = decision?.options.find((o) => o.label === label);
-      const note = input?.value().trim() ?? "";
-      if (!option && !note) { this.notice = "Pick an option or type an answer"; cx.notify(); return; }
-      const parts = [option ? `${option.label} (${option.text})` : "", note].filter(Boolean).join(" - ");
-      const message = `[Board answer] ${ids.join(", ")}: ${parts}`;
-      this.typeToFirstmate(message, `[Board request] Captain's answer for ${ids.join(", ")}: ${parts}`,
-        "Answer typed into firstmate", cx, () => { this.answerPick.delete(key); input?.set_value(""); });
-    };
-    // Enter in the answer box sends like the Send button. The handler is bound once per
-    // box, so it calls the send from the latest render, which sees the current options.
-    this.answerSend.set(key, send);
-    const row = h_flex().gap(4).items_center();
-    if (input) row.child(div().flex_1().min_w(0).child(this.field(input, t)));
-    else row.child(this.button(`write-${key}`, "Write answer", t, (cx) => {
-      const state = InputState.new({ placeholder: "Answer in your own words" });
-      state.on("submit", (_e, cx) => this.answerSend.get(key)?.(cx));
-      this.answerInputs.set(key, state); state.focus(); cx.notify();
-    }));
-    el.child(row.child(this.button(`send-${key}`, "Send", t, send, true)));
   }
 
   // A project's local copy plus each live worker's isolated copy of it.
@@ -852,13 +896,13 @@ export default class FmBoard extends View {
   group(topic, cards, t) {
     const foldId = `group:${topic}`, folded = this.folded.has(foldId) && !this.query;
     const first = cards.find((c) => c.decision.options.length) ?? cards[0];
+    const ids = cards.map((c) => c.id), question = first.decision.question || topic;
     const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(6).bg(t.raised).border(1).border_color(t.accent)
-      .child(this.foldRow(foldId, t, folded, first.decision.question || topic,
-        div().flex_none().text_size(fs(11)).text_color(t.dim).child(String(cards.length))));
+      .child(this.foldRow(foldId, t, folded, question,
+        div().flex_none().text_size(fs(11)).text_color(t.dim).child(String(cards.length)))
+        .child(this.askButton(foldId, ids, question, t)));
     if (folded) return box;
-    this.decisionLines(box, first.decision, t, `group:${topic}`);
-    // Only a held decision takes an answer here; set-aside work in Todo waits until it is brought back.
-    if (cards.some((c) => c.column === "held")) this.answerBox(box, `group:${topic}`, cards.map((c) => c.id), first.decision, t);
+    this.decisionLines(box, first.decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
     return box.children(cards.map((c) => this.card(c, t, true)));
   }
 

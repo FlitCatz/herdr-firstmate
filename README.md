@@ -12,4 +12,6 @@ To add it using Herdr's sharing steps:
 3. Set the `home` prop on the layout's `fm-board` block to the absolute path of your Firstmate installation and home.
    Run `herdr-app check` on each installed mod folder, then select the Firstmate layout in Herdr settings or run `herdr-app do layout.switch --name firstmate` with your chosen layout name.
 
+Card headers fold and unfold; their Ask icons and held decisions' options prepare editable chat input as described in [RECIPE.md](RECIPE.md#how-it-behaves).
+
 The preview uses fictional projects and tasks.

@@ -154,8 +154,8 @@ function lastEventDetail(task) {
 
 // Firstmate's state detail is " · "-separated machine text, such as
 // "validating (running) · run: 01M6ZA…". Cards show a short reading of the shapes it is known
-// to take; anything else falls back to the worker's own last status text. Run ids and the PR
-// link are dropped: the card already links the PR.
+// to take; anything else keeps Firstmate's own text. Run ids and the PR link are dropped: the
+// card already links the PR. The worker's last status text shows only when nothing is left.
 const ULID = /\b[0-9A-HJKMNP-TV-Z]{26}\b/g;
 function readableDetail(task) {
   const raw = task?.current_state?.detail;
@@ -164,15 +164,18 @@ function readableDetail(task) {
     .filter((p) => p && !/^(?:earlier )?run: /.test(p) && !/^pr=/.test(p));
   const head = parts[0] ?? "";
   let m;
-  if ((m = /^validating \((.+)\)$/.exec(head))) return `Validating: ${m[1]}`;
+  if ((m = /^(?:validating|run active) \((.+)\)$/.exec(head))) return `Validating: ${m[1]}`;
   if ((m = /^parked at ([^:]+?)(?::\s*(\d+) finding\(s\))?$/.exec(head))) {
     if (parts.some((p) => p.startsWith("ask-user:"))) return `Waiting for a firstmate decision at ${m[1]}`;
     return `Stopped at ${m[1]}${m[2] ? ` · ${m[2]} finding${m[2] === "1" ? "" : "s"}` : ""}`;
   }
   if ((m = /^checks green: (PR [a-z ]+?)\s*(?:\(|:|$)/.exec(head))) return `Checks passed · ${m[1]}`;
+  if ((m = /^run passed: (PR [a-z ]+?)\s*(?:\(|:|$)/.exec(head))) return `Validation passed · ${m[1]}`;
   const known = { "ci running": "CI running", "run active": "Validating", "run completed": "Validation completed", "run failed": "Validation failed" };
   if (known[head]) return known[head];
-  return lastEventDetail(task) || parts.join(" · ").replace(ULID, "").replace(/\s{2,}/g, " ").trim();
+  const rest = parts.map((p) => p.replace(ULID, "").replace(/;?\s*(?:last reported )?run ids?:[\s,]*$/, "")
+    .replace(/\s{2,}/g, " ").trim()).filter(Boolean).join(" · ");
+  return rest || lastEventDetail(task);
 }
 
 function columnOf(record, task) {

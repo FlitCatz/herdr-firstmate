@@ -854,7 +854,7 @@ export default class FmBoard extends View {
     const lines = this.tails.get(c.terminal) ?? [];
     const blank = String.fromCharCode(0xa0); // a no-break space keeps an empty row one line tall
     const rows = Array.from({ length: TAIL_LINES }, (_, i) => lines[i] || blank);
-    return v_flex().id(`live-${c.id}`).gap(4).px(6).py(4).rounded(5).bg(t.working + "1f").border(1).border_color(t.border)
+    return v_flex().id(`live-${c.id}`).gap(4).px(6).py(4).rounded(5).bg(t.working + "1f")
       .child(h_flex().gap(6).items_center()
         .child(div().flex_none().w(6).h(6).rounded(3).bg(t.working))
         .child(div().flex_1().min_w(0).text_size(this.fs(10)).font_semibold().text_color(t.muted).child("Live"))

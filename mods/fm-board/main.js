@@ -848,12 +848,13 @@ export default class FmBoard extends View {
 
   // A live worker's own region below the card body, so the body keeps the shape of cards in
   // other columns. It always holds TAIL_LINES rows, blank until lines arrive, so the card does
-  // not change height as the worker's screen changes.
+  // not change height as the worker's screen changes. Its background is a light tint of the
+  // working color, because surface and raised sit too close to the card background to set it apart.
   liveStrip(c, t) {
     const lines = this.tails.get(c.terminal) ?? [];
     const blank = String.fromCharCode(0xa0); // a no-break space keeps an empty row one line tall
     const rows = Array.from({ length: TAIL_LINES }, (_, i) => lines[i] || blank);
-    return v_flex().id(`live-${c.id}`).gap(4).px(6).py(4).rounded(5).bg(t.surface)
+    return v_flex().id(`live-${c.id}`).gap(4).px(6).py(4).rounded(5).bg(t.working + "1f")
       .child(h_flex().gap(6).items_center()
         .child(div().flex_none().w(6).h(6).rounded(3).bg(t.working))
         .child(div().flex_1().min_w(0).text_size(this.fs(10)).font_semibold().text_color(t.muted).child("Live"))
@@ -862,7 +863,8 @@ export default class FmBoard extends View {
         .child(this.iconButton(`peek-${c.id}`, "mods/workspace-chrome/layers.svg", "Peek at the worker's terminal over this tab", t,
           () => { run("terminal.peek", { terminal: c.terminal }); })))
       .child(v_flex().id(`tail-${c.id}`).gap(1).font_family(this.monoFont).tooltip("Last lines of the worker's screen")
-        .children(rows.map((line) => div().min_w(0).truncate().text_size(this.fs(10.5)).text_color(t.dim).child(line))));
+        // Muted rather than dim: dim text loses too much contrast on the tinted background.
+        .children(rows.map((line) => div().min_w(0).truncate().text_size(this.fs(10.5)).text_color(t.muted).child(line))));
   }
 
   // Options of a held decision become editable chat drafts; the owner confirms them with Enter.

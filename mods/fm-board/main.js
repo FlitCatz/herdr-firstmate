@@ -722,6 +722,20 @@ export default class FmBoard extends View {
         .flex().items_center().justify_center().text_size(this.fs(11)).text_color(t.muted).child("?"));
   }
 
+  // A small icon-only card control in the Ask icon's style; the label is its tooltip and what a
+  // screen reader announces.
+  /** @param {string} id @param {string} icon @param {string} label @param {Record<string, `#${string}`>} t @param {(cx: import("gpui-kit").Context) => void} onClick */
+  iconButton(id, icon, label, t, onClick) {
+    return div().id(id).flex_none().p(3).rounded(5).cursor_pointer().role("button").accessibility_label(label)
+      .hover((s) => s.bg(t.hover)).tooltip(label)
+      .on_click((_e, cx) => onClick(cx))
+      .child(svg(icon).size(this.fs(14)).text_color(t.muted));
+  }
+
+  openWorkerIcon(c, t) {
+    return this.iconButton(`open-${c.id}`, "mods/workspace-chrome/terminal.svg", "Open worker", t, (cx) => this.openWorker(c, cx));
+  }
+
   typeCommand(command, cx) {
     this.typeToFirstmate(command, `[Board request] Run ${command}`, `Typed ${command} into firstmate`, cx);
   }
@@ -816,24 +830,39 @@ export default class FmBoard extends View {
     }
     const live = c.column !== "done";
     const workerLive = this.workerLive(c);
-    if (live && (c.terminal || c.worktree)) {
-      const row = h_flex().gap(4);
-      if (c.terminal) row.child(this.button(`open-${c.id}`, "Open worker", t, (cx) => this.openWorker(c, cx)));
-      // Herdr's own peek: the worker's terminal opens over the current tab, and nothing else changes.
-      if (workerLive) row.child(this.button(`peek-${c.id}`, "Peek", t, () => { run("terminal.peek", { terminal: c.terminal }); })
-        .tooltip("Peek at the worker's terminal over this tab"));
+    // A live worker's Open worker icon moves into its live strip, beside Peek.
+    const openHere = live && c.terminal && !workerLive;
+    if (openHere || (live && c.worktree && c.project)) {
+      const row = h_flex().gap(4).items_center();
+      if (openHere) row.child(this.openWorkerIcon(c, t));
       if (c.worktree && c.project) row.child(this.button(`files-${c.id}`, "Files · Changes", t, (cx) =>
         this.openView(c.project, { path: c.worktree, label: c.id, title: `${c.project} · ${c.id}` }, cx)));
       el.child(row);
     }
     if (workerLive) {
       this.shownTerminals.add(c.terminal);
-      const lines = this.tails.get(c.terminal) ?? [];
-      if (lines.length) el.child(v_flex().id(`tail-${c.id}`).gap(1).px(6).py(3).rounded(4).bg(t.raised)
-        .font_family(this.monoFont).tooltip("Last lines of the worker's screen")
-        .children(lines.map((line) => div().min_w(0).truncate().text_size(this.fs(10.5)).text_color(t.muted).child(line))));
+      el.child(this.liveStrip(c, t));
     }
     return el;
+  }
+
+  // A live worker's own region below the card body, so the body keeps the shape of cards in
+  // other columns. It always holds TAIL_LINES rows, blank until lines arrive, so the card does
+  // not change height as the worker's screen changes.
+  liveStrip(c, t) {
+    const lines = this.tails.get(c.terminal) ?? [];
+    const blank = String.fromCharCode(0xa0); // a no-break space keeps an empty row one line tall
+    const rows = Array.from({ length: TAIL_LINES }, (_, i) => lines[i] || blank);
+    return v_flex().id(`live-${c.id}`).gap(4).px(6).py(4).rounded(5).bg(t.surface)
+      .child(h_flex().gap(6).items_center()
+        .child(div().flex_none().w(6).h(6).rounded(3).bg(t.working))
+        .child(div().flex_1().min_w(0).text_size(this.fs(10)).font_semibold().text_color(t.muted).child("Live"))
+        .child(this.openWorkerIcon(c, t))
+        // Herdr's own peek: the worker's terminal opens over the current tab, and nothing else changes.
+        .child(this.iconButton(`peek-${c.id}`, "mods/workspace-chrome/layers.svg", "Peek at the worker's terminal over this tab", t,
+          () => { run("terminal.peek", { terminal: c.terminal }); })))
+      .child(v_flex().id(`tail-${c.id}`).gap(1).font_family(this.monoFont).tooltip("Last lines of the worker's screen")
+        .children(rows.map((line) => div().min_w(0).truncate().text_size(this.fs(10.5)).text_color(t.dim).child(line))));
   }
 
   // Options of a held decision become editable chat drafts; the owner confirms them with Enter.

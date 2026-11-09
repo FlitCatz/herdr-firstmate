@@ -152,6 +152,42 @@ function lastEventDetail(task) {
   return (task?.hints?.last_event_text ?? "").replace(/^[a-z-]+\s*(\[[^\]]*\]\s*)*:\s*/, "");
 }
 
+// Firstmate's state detail is " · "-separated machine text, such as
+// "validating (running) · run: 01M6ZA…". Cards show a short reading of the shapes it is known
+// to take; anything else keeps Firstmate's own text. Run ids and the PR link are dropped: the
+// card links the PR, from detailPr when nothing else names it. The worker's last status text
+// shows only when nothing is left.
+const ULID = /\b[0-9A-HJKMNP-TV-Z]{26}\b/g;
+const RUN_IDS = new RegExp(`;?\\s*(?:last reported )?run ids?:[\\s,]*(?:${ULID.source}[\\s,]*)*`, "g");
+function readableDetail(task) {
+  const raw = task?.current_state?.detail;
+  if (!raw) return "";
+  const parts = raw.split(" · ").map((p) => p.trim())
+    .filter((p) => p && !/^(?:earlier )?run: /.test(p) && !/^pr=/.test(p));
+  const head = parts[0] ?? "";
+  let m;
+  if ((m = /^(?:validating|run active) \((.+)\)$/.exec(head))) return `Validating: ${m[1]}`;
+  if ((m = /^parked at ([^:]+?)(?::\s*(\d+) finding\(s\))?$/.exec(head))) {
+    if (parts.includes("ask-user: authority decision")) return `Waiting for a firstmate decision at ${m[1]}`;
+    return `Stopped at ${m[1]}${m[2] ? ` · ${m[2]} finding${m[2] === "1" ? "" : "s"}` : ""}`;
+  }
+  if ((m = /^checks green: (PR [a-z ]+?)\s*(?:\(|:|$)/.exec(head))) return `Checks passed · ${m[1]}`;
+  if ((m = /^run passed: (PR [a-z ]+?)\s*(?:\(|:|$)/.exec(head))) {
+    return `Validation passed · ${m[1]}${/verification skipped\)$/.test(head) ? " · CI verification skipped" : ""}`;
+  }
+  const known = { "ci running": "CI running", "run active": "Validating", "run completed": "Validation completed", "run failed": "Validation failed" };
+  if (known[head]) return known[head];
+  const rest = parts.map((p) => p.replace(RUN_IDS, "; ").replace(ULID, "").replace(/^[;\s]+|[;\s]+$/g, "")
+    .replace(/\s{2,}/g, " ")).filter(Boolean).join(" · ");
+  return rest || lastEventDetail(task);
+}
+
+// The PR URL in Firstmate's detail, which it adds when the worker never reported one.
+function detailPr(detail) {
+  const parts = (detail ?? "").split(" · ").map((p) => p.trim());
+  return parts.find((p) => p.startsWith("pr="))?.slice(3) || /https:\/\/\S+?\/pull\/\d+/.exec(detail ?? "")?.[0] || null;
+}
+
 function columnOf(record, task) {
   const state = task?.current_state?.state;
   if (state === "failed") return "failed";
@@ -214,7 +250,7 @@ function waitingLabel(c) {
 // full note or detail even where the card truncates or hides it, and its decision's question and options).
 function searchText(c) {
   const decision = c.decision ? [c.decision.question, ...c.decision.options.map((o) => o.text)] : [];
-  return [c.id, c.title, c.detail, ...decision].filter(Boolean).join("\n").toLowerCase();
+  return [c.id, c.title, c.detail, c.sourceDetail, ...decision].filter(Boolean).join("\n").toLowerCase();
 }
 
 function cardsFrom(snapshot) {
@@ -240,8 +276,10 @@ function cardsFrom(snapshot) {
     project: projectOf(task?.project, record?.repo),
     // An unobservable worker shows the state its column was derived from, not "unknown".
     state: inferred(task, record) ? columnOf(record, task) : task?.current_state?.state ?? record?.state ?? "",
-    detail: decision?.question || (inferred(task, record) ? lastEventDetail(task) : "") || task?.current_state?.detail || record?.hold_reason || "",
-    pr: task?.pr?.url ?? record?.pr_url ?? null,
+    detail: decision?.question || (inferred(task, record) ? lastEventDetail(task) : "") || readableDetail(task) || record?.hold_reason || "",
+    // Firstmate's own wording, kept so the search still finds it.
+    sourceDetail: task?.current_state?.detail ?? "",
+    pr: task?.pr?.url ?? record?.pr_url ?? detailPr(task?.current_state?.detail),
     prWaiting: prWaiting(record, task),
     // Only hc runs workers in Herdr terminals, so only those can be opened from here.
     terminal: task?.backend === "hc" ? hcAddress(task) : null,
@@ -809,7 +847,8 @@ export default class FmBoard extends View {
       .when(c.priority !== null && c.column !== "done", (e) => e.child(div().flex_none().px(4).rounded(4).border(1)
         .border_color(c.priority === 0 ? t.foreground : t.border).text_size(this.fs(10))
         .text_color(c.priority === 0 ? t.foreground : t.muted).tooltip("Backlog priority, 0 is highest").child(`P${c.priority}`)))
-      .child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.muted).truncate().child(waiting ? "waiting" : c.state)));
+      .child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.muted).truncate()
+        .tooltip("Task state from firstmate").child(waiting ? "waiting" : c.state)));
     if (waiting) {
       const key = `chain:${c.id}`, shown = this.chainOpen.has(key);
       el.child(div().id(`wait-${c.id}`).min_w(0).text_size(this.fs(11)).text_color(t.blocked).truncate()
@@ -857,7 +896,8 @@ export default class FmBoard extends View {
     return v_flex().id(`live-${c.id}`).gap(4).px(6).py(4).rounded(5).bg(t.working + "1f")
       .child(h_flex().gap(6).items_center()
         .child(div().flex_none().w(6).h(6).rounded(3).bg(t.working))
-        .child(div().flex_1().min_w(0).text_size(this.fs(10)).font_semibold().text_color(t.muted).child("Live"))
+        .child(div().flex_1().min_w(0).text_size(this.fs(10)).font_semibold().text_color(t.muted)
+          .tooltip("The worker terminal's own status; the card's state above is the task's").child(this.workerStatusLabel(c)))
         .child(this.openWorkerIcon(c, t))
         // Herdr's own peek: the worker's terminal opens over the current tab, and nothing else changes.
         .child(this.iconButton(`peek-${c.id}`, "mods/workspace-chrome/layers.svg", "Peek at the worker's terminal over this tab", t,
@@ -927,7 +967,17 @@ export default class FmBoard extends View {
   // A card's worker terminal is live and still carries this task's label (hc can reuse an address).
   workerLive(c) {
     if (!c.terminal || c.column === "done") return false;
-    return this.liveWorkers?.get(c.terminal) === `fm-${c.id}`;
+    return this.liveWorkers?.get(c.terminal)?.task === `fm-${c.id}`;
+  }
+
+  // The worker terminal's own status, which Herdr reports, as opposed to the card's task state:
+  // a task can still be validating while its worker has ended its turn and sits idle.
+  // Herdr's "done" (finished while nobody looked) is idle too once seen, so both read as idle.
+  workerStatusLabel(c) {
+    const status = this.liveWorkers?.get(c.terminal)?.status;
+    if (status === "working" || status === "blocked") return `Worker ${status}`;
+    if (status === "idle" || status === "done") return "Worker idle";
+    return "Live";
   }
 
   // One read per worker whose card is on screen; a tick is skipped while a round is still
@@ -1171,7 +1221,7 @@ export default class FmBoard extends View {
         .child(div().text_size(13).text_color(t.muted).child("Set the home prop on this mod in your layout to the path of your firstmate home.")));
     // terminals() is live data, so a worker starting or ending redraws the cards.
     this.liveWorkers = new Map(terminals().filter((x) => x.state === "live")
-      .map((x) => [x.address, x.labels?.["firstmate.task"]]));
+      .map((x) => [x.address, { task: x.labels?.["firstmate.task"], status: x.status }]));
     this.monoFont = String(settings()?.font_family ?? "JetBrains Mono");
     // The cards drawn below record which worker screens are worth reading.
     this.shownTerminals = new Set();

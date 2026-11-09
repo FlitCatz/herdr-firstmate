@@ -157,6 +157,7 @@ function lastEventDetail(task) {
 // to take; anything else keeps Firstmate's own text. Run ids and the PR link are dropped: the
 // card already links the PR. The worker's last status text shows only when nothing is left.
 const ULID = /\b[0-9A-HJKMNP-TV-Z]{26}\b/g;
+const RUN_IDS = new RegExp(`;?\\s*(?:last reported )?run ids?:[\\s,]*(?:${ULID.source}[\\s,]*)*`, "g");
 function readableDetail(task) {
   const raw = task?.current_state?.detail;
   if (!raw) return "";
@@ -170,11 +171,13 @@ function readableDetail(task) {
     return `Stopped at ${m[1]}${m[2] ? ` · ${m[2]} finding${m[2] === "1" ? "" : "s"}` : ""}`;
   }
   if ((m = /^checks green: (PR [a-z ]+?)\s*(?:\(|:|$)/.exec(head))) return `Checks passed · ${m[1]}`;
-  if ((m = /^run passed: (PR [a-z ]+?)\s*(?:\(|:|$)/.exec(head))) return `Validation passed · ${m[1]}`;
+  if ((m = /^run passed: (PR [a-z ]+?)\s*(?:\(|:|$)/.exec(head))) {
+    return `Validation passed · ${m[1]}${/verification skipped\)$/.test(head) ? " · CI verification skipped" : ""}`;
+  }
   const known = { "ci running": "CI running", "run active": "Validating", "run completed": "Validation completed", "run failed": "Validation failed" };
   if (known[head]) return known[head];
-  const rest = parts.map((p) => p.replace(ULID, "").replace(/;?\s*(?:last reported )?run ids?:[\s,]*$/, "")
-    .replace(/\s{2,}/g, " ").trim()).filter(Boolean).join(" · ");
+  const rest = parts.map((p) => p.replace(RUN_IDS, "; ").replace(ULID, "").replace(/^[;\s]+|[;\s]+$/g, "")
+    .replace(/\s{2,}/g, " ")).filter(Boolean).join(" · ");
   return rest || lastEventDetail(task);
 }
 

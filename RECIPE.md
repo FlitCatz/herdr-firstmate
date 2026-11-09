@@ -48,7 +48,8 @@ Both drafts stay on one line with a trailing space, and the input receives focus
 Held cards use the chat input for free-text answers; options elsewhere are shown as plain text.
 Live cards can open their worker or the read-only Files and Changes viewer when those paths are available.
 When the card's worker terminal is live and still labeled with the card's task, a Peek button opens Herdr's peek of that terminal over the current tab without focusing, switching, or typing anything.
-Such a card also shows the last one or two lines of the worker's screen that hold text, with escape codes, blank rows, and rule, box, prompt, or spinner-only rows left out, each cut to the card width.
+Such a card also shows the last one or two lines of the worker's screen that hold text above its input row, the last row starting with a prompt glyph (`›`, `❯`, or `>`, bare or inside a box edge), so a coding agent's input box, status line, and key hints below it are left out; escape codes, blank rows, and rule, box, or spinner-only rows are left out too, and each line is cut to the card width.
+A screen with no input row, such as a plain shell, shows its last such lines, and a card whose screen has none shows no lines.
 Every 4 seconds the board reads the screen of each such card it last drew (not folded, filtered out, or in a collapsed column), at most once per terminal and never while the previous round is still reading; a failed read shows no lines.
 Herdr tells a mod nothing when its panel is hidden, so these reads continue while the Board panel is hidden, and stop when no drawn card has a live worker.
 These lines are only drawn on the card; the board does not log or save them.
@@ -84,7 +85,7 @@ If the clipboard holds an image, files, or RTFD, which can carry attachments, or
 It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, and `open` for folders or review URLs.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.
-Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews; `ui.tails` maps terminal addresses to fixed screen lines that stand in for live workers.
+Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews.
 
 ## Watch out
 

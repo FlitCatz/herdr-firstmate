@@ -128,10 +128,17 @@ const ESCAPES = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z
 // Rows with nothing to read: rules, box edges, prompts, and spinner or bullet glyphs alone.
 const DECORATION = /^[\s\u2500-\u25ff\u2700-\u27bf\u2800-\u28ff\u00b7\u2022\u2026\-=_*~|+.:;,<>\/\\#()[\]{}'"`^]*$/;
 
-// The last meaningful lines of a terminal screen, for display only.
+// A prompt row, bare or inside a box edge. Codex and Claude Code draw their input box at the
+// bottom with only their status line and key hints below it.
+const INPUT_ROW = /^[\u2502\u2503|]?\s*[\u203a\u276f>](?:\s|$)/;
+
+// The last meaningful lines of a terminal screen above its input row, for display only.
 /** @param {string} text @returns {string[]} */
 function screenTail(text) {
-  return text.replace(ESCAPES, "").split(/\r?\n|\r/).map((line) => line.trim())
+  const lines = text.replace(ESCAPES, "").split(/\r?\n|\r/).map((line) => line.trim());
+  let end = lines.length;
+  while (end > 0 && !INPUT_ROW.test(lines[end - 1])) end--;
+  return lines.slice(0, end ? end - 1 : lines.length)
     .filter((line) => line && !DECORATION.test(line)).slice(-TAIL_LINES).map((line) => line.slice(0, 400));
 }
 
@@ -268,10 +275,8 @@ export default class FmBoard extends View {
     this.chainOpen = new Set(ui.chains ?? []);
     this.pasting = false;
     // Worker screen tails by terminal address. Display only: never logged or written anywhere.
-    // props.ui.tails (previews) supplies fixed tails and stands in for live terminals.
-    this.previewTails = ui.tails ?? null;
     /** @type {Map<string, string[]>} */
-    this.tails = new Map(Object.entries(this.previewTails ?? {}));
+    this.tails = new Map();
     /** @type {Set<string>} */
     this.shownTerminals = new Set();
     this.readingTails = false;
@@ -891,7 +896,6 @@ export default class FmBoard extends View {
   // A card's worker terminal is live and still carries this task's label (hc can reuse an address).
   workerLive(c) {
     if (!c.terminal || c.column === "done") return false;
-    if (this.previewTails) return this.tails.has(c.terminal);
     return this.liveWorkers?.get(c.terminal) === `fm-${c.id}`;
   }
 
@@ -899,7 +903,7 @@ export default class FmBoard extends View {
   // running, and a failed read shows nothing for that card.
   readTails(cx) {
     const addresses = [...this.shownTerminals];
-    if (this.readingTails || this.previewTails) return;
+    if (this.readingTails) return;
     if (!addresses.length) { this.tails.clear(); return; }
     this.readingTails = true;
     cx.spawn(async (cx) => {

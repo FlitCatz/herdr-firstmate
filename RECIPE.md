@@ -33,7 +33,9 @@ Enter or the find icon applies it: each column then shows only matching cards, c
 Pressing Enter or the icon again steps through the matches with an `n/m` count; fold and collapse clicks on Kanban cards and columns do nothing while a search is set.
 Esc, or Enter or the icon with an empty field, restores the full board and the remembered folds.
 
-Cards show their project, priority when present, state, and available detail.
+Cards show their project, priority when present, the task's state, and available detail.
+Firstmate's validation detail reads as short text such as `Validating: running`, `Waiting for a firstmate decision at review`, or `Checks passed · PR ready for review`, without run ids or the PR link, which the card shows separately; other detail shows the worker's last status text when there is one.
+The search still matches Firstmate's original detail text.
 Clicking a card header folds it; its question-mark icon puts the task id and full title into the Firstmate chat input without pressing Enter.
 Topic-group headers have the same icon for all their task ids and the group question.
 Queued cards waiting on other tasks are dimmed, and clicking their waiting row expands the dependency chain.
@@ -48,7 +50,8 @@ Both drafts stay on one line with a trailing space, and the input receives focus
 Held cards use the chat input for free-text answers; options elsewhere are shown as plain text.
 Live cards can open their worker with a terminal icon, or the read-only Files and Changes viewer with its button, when those paths are available.
 When the card's worker terminal is live and still labeled with the card's task, the card ends in a Live strip set apart by a light tint of the theme's working color, so the card body above keeps the shape of cards in other columns.
-The strip's header holds a working-color dot, a Live label, the Open worker icon, and a Peek icon that opens Herdr's peek of that terminal over the current tab without focusing, switching, or typing anything; both icons have tooltips and screen reader labels.
+The strip's header holds a working-color dot, the worker terminal's own status as Herdr reports it (`Worker working`, `Worker blocked`, or `Worker idle`, which also covers a finished turn; `Live` when the terminal reports none), the Open worker icon, and a Peek icon that opens Herdr's peek of that terminal over the current tab without focusing, switching, or typing anything; both icons have tooltips and screen reader labels.
+That status describes the worker terminal, not the task, so a card can read `working` while its strip reads `Worker idle`, for example while validation runs in the background after the worker ended its turn.
 Below the header, in the terminal font, the strip shows the last one or two lines of the worker's screen that hold text above its input row, the last row starting with a prompt glyph (`›`, `❯`, or `>`, bare or inside a box edge), so a coding agent's input box, status line, and key hints below it are left out; escape codes, blank rows, and rule, box, or spinner-only rows are left out too, and each line is cut to the card width.
 A screen with no input row, such as a plain shell, shows its last such lines, and a card whose screen has none shows no lines; the strip keeps room for two lines, so the card's height does not change as lines come and go.
 Every 4 seconds the board reads the screen of each such card it last drew (not folded, filtered out, or in a collapsed column), at most once per terminal and never while the previous round is still reading; a failed read shows no lines.

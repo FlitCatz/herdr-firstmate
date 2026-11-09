@@ -34,7 +34,7 @@ Pressing Enter or the icon again steps through the matches with an `n/m` count; 
 Esc, or Enter or the icon with an empty field, restores the full board and the remembered folds.
 
 Cards show their project, priority when present, the task's state, and available detail.
-Firstmate's validation detail reads as short text such as `Validating: running`, `Waiting for a firstmate decision at review`, or `Checks passed · PR ready for review`, without run ids or the PR link, which the card shows separately; other detail keeps Firstmate's own text without run ids, and shows the worker's last status text only when nothing else is left.
+Firstmate's validation detail reads as short text such as `Validating: running`, `Waiting for a firstmate decision at review`, or `Checks passed · PR ready for review`, without run ids or the PR link, which the card shows separately, taking it from Firstmate's detail when the worker never reported one; other detail keeps Firstmate's own text without run ids, and shows the worker's last status text only when nothing else is left.
 The search still matches Firstmate's original detail text.
 Clicking a card header folds it; its question-mark icon puts the task id and full title into the Firstmate chat input without pressing Enter.
 Topic-group headers have the same icon for all their task ids and the group question.

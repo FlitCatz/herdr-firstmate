@@ -155,7 +155,8 @@ function lastEventDetail(task) {
 // Firstmate's state detail is " · "-separated machine text, such as
 // "validating (running) · run: 01M6ZA…". Cards show a short reading of the shapes it is known
 // to take; anything else keeps Firstmate's own text. Run ids and the PR link are dropped: the
-// card already links the PR. The worker's last status text shows only when nothing is left.
+// card links the PR, from detailPr when nothing else names it. The worker's last status text
+// shows only when nothing is left.
 const ULID = /\b[0-9A-HJKMNP-TV-Z]{26}\b/g;
 const RUN_IDS = new RegExp(`;?\\s*(?:last reported )?run ids?:[\\s,]*(?:${ULID.source}[\\s,]*)*`, "g");
 function readableDetail(task) {
@@ -179,6 +180,12 @@ function readableDetail(task) {
   const rest = parts.map((p) => p.replace(RUN_IDS, "; ").replace(ULID, "").replace(/^[;\s]+|[;\s]+$/g, "")
     .replace(/\s{2,}/g, " ")).filter(Boolean).join(" · ");
   return rest || lastEventDetail(task);
+}
+
+// The PR URL in Firstmate's detail, which it adds when the worker never reported one.
+function detailPr(detail) {
+  const parts = (detail ?? "").split(" · ").map((p) => p.trim());
+  return parts.find((p) => p.startsWith("pr="))?.slice(3) || /https:\/\/\S+?\/pull\/\d+/.exec(detail ?? "")?.[0] || null;
 }
 
 function columnOf(record, task) {
@@ -272,7 +279,7 @@ function cardsFrom(snapshot) {
     detail: decision?.question || (inferred(task, record) ? lastEventDetail(task) : "") || readableDetail(task) || record?.hold_reason || "",
     // Firstmate's own wording, kept so the search still finds it.
     sourceDetail: task?.current_state?.detail ?? "",
-    pr: task?.pr?.url ?? record?.pr_url ?? null,
+    pr: task?.pr?.url ?? record?.pr_url ?? detailPr(task?.current_state?.detail),
     prWaiting: prWaiting(record, task),
     // Only hc runs workers in Herdr terminals, so only those can be opened from here.
     terminal: task?.backend === "hc" ? hcAddress(task) : null,

@@ -167,7 +167,7 @@ function readableDetail(task) {
   let m;
   if ((m = /^(?:validating|run active) \((.+)\)$/.exec(head))) return `Validating: ${m[1]}`;
   if ((m = /^parked at ([^:]+?)(?::\s*(\d+) finding\(s\))?$/.exec(head))) {
-    if (parts.some((p) => p.startsWith("ask-user:"))) return `Waiting for a firstmate decision at ${m[1]}`;
+    if (parts.includes("ask-user: authority decision")) return `Waiting for a firstmate decision at ${m[1]}`;
     return `Stopped at ${m[1]}${m[2] ? ` · ${m[2]} finding${m[2] === "1" ? "" : "s"}` : ""}`;
   }
   if ((m = /^checks green: (PR [a-z ]+?)\s*(?:\(|:|$)/.exec(head))) return `Checks passed · ${m[1]}`;

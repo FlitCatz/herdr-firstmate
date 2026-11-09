@@ -224,6 +224,7 @@ function cardsFrom(snapshot) {
 }
 
 export default class FmBoard extends View {
+  /** @param {number} px */
   fs(px) { return Math.round(px * this.fontScale * 2) / 2; }
 
   readFontScale(width) {

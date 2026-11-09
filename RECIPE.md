@@ -14,7 +14,7 @@ The tab bar sits on the chrome background and shows tabs plus Board, Files, and 
 
 The board shows project rows above the Kanban section, which holds a search field with a find icon above the task columns, a footer with update and watcher status, and command controls below.
 Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a consistent color and a three-letter abbreviation.
-Board text follows Herdr's terminal font size and grows as the board widens.
+Each Board copy's text follows Herdr's terminal font size and grows with that copy's width.
 
 ## How it behaves
 

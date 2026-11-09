@@ -17,17 +17,6 @@ import { FolderViewer } from "./viewer.js";
 const DESIGN_FONT_PX = 14;
 const LARGEST_TEXT_PX = 12;
 const GROW_FULL_PX = 1600;
-let fontScale = 1;
-const fs = (px) => Math.round(px * fontScale * 2) / 2;
-function readFontScale(width) {
-  let terminal = DESIGN_FONT_PX;
-  try { terminal = Number(settings()?.font_size) || DESIGN_FONT_PX; } catch {}
-  const narrow = terminal / DESIGN_FONT_PX, wide = terminal / LARGEST_TEXT_PX;
-  const w = Number.isFinite(width) ? width : 0;
-  const k = Math.min(1, Math.max(0, (w - STACK_BELOW_PX) / (GROW_FULL_PX - STACK_BELOW_PX)));
-  fontScale = narrow + (wide - narrow) * k;
-}
-
 const REFRESH_FALLBACK_MS = 30000;
 const MIN_GAP_MS = 2000;
 const DONE_LIMIT = 20;
@@ -235,7 +224,20 @@ function cardsFrom(snapshot) {
 }
 
 export default class FmBoard extends View {
+  /** @param {number} px */
+  fs(px) { return Math.round(px * this.fontScale * 2) / 2; }
+
+  readFontScale(width) {
+    let terminal = DESIGN_FONT_PX;
+    try { terminal = Number(settings()?.font_size) || DESIGN_FONT_PX; } catch {}
+    const narrow = terminal / DESIGN_FONT_PX, wide = terminal / LARGEST_TEXT_PX;
+    const w = Number.isFinite(width) ? width : 0;
+    const k = Math.min(1, Math.max(0, (w - STACK_BELOW_PX) / (GROW_FULL_PX - STACK_BELOW_PX)));
+    this.fontScale = narrow + (wide - narrow) * k;
+  }
+
   init(_props, cx) {
+    this.fontScale = 1;
     const ui = props()?.ui ?? {};
     this.cards = null; this.projects = []; this.requests = []; this.ready = null;
     this.error = null; this.notice = ""; this.generated = ""; this.loading = false; this.last = 0;
@@ -295,10 +297,10 @@ export default class FmBoard extends View {
       .border(2).border_color(color === current && (label !== "Auto" || !this.colorChoice[name]) ? t.foreground : t.surface)
       .cursor_pointer().hover((s) => s.opacity(0.75)).tooltip(label).on_click((_e, cx) => onPick(cx));
     return h_flex().gap(4).items_center().flex_wrap()
-      .child(div().flex_none().text_size(fs(11)).text_color(t.dim).child("Color"))
+      .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child("Color"))
       .children(PROJECT_COLORS.map((c) => swatch(`color-${name}-${c}`, c, c, (cx) => this.pickColor(name, c, cx))))
       .child(div().id(`color-${name}-auto`).flex_none().px(6).py(1).rounded(9).border(1)
-        .border_color(this.colorChoice[name] ? t.border : t.foreground).text_size(fs(11)).text_color(t.muted)
+        .border_color(this.colorChoice[name] ? t.border : t.foreground).text_size(this.fs(11)).text_color(t.muted)
         .cursor_pointer().hover((s) => s.opacity(0.75)).child("Auto")
         .on_click((_e, cx) => this.pickColor(name, null, cx)));
   }
@@ -313,8 +315,8 @@ export default class FmBoard extends View {
   foldRow(id, t, folded, label, trailing) {
     const row = h_flex().id(`fold-${id}`).gap(6).items_center().cursor_pointer()
       .hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggleFold(id, cx))
-      .child(div().flex_none().text_size(fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
-      .child(div().flex_1().min_w(0).when(folded, (e) => e.truncate()).text_size(fs(12)).font_semibold().text_color(t.foreground).child(label));
+      .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
+      .child(div().flex_1().min_w(0).when(folded, (e) => e.truncate()).text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(label));
     return trailing ? row.child(trailing) : row;
   }
 
@@ -459,14 +461,14 @@ export default class FmBoard extends View {
   }
 
   button(id, label, t, onClick, strong) {
-    return div().id(id).px(6).py(2).rounded(5).cursor_pointer().text_size(fs(11))
+    return div().id(id).px(6).py(2).rounded(5).cursor_pointer().text_size(this.fs(11))
       .text_color(strong ? t.solid_foreground : t.muted).bg(strong ? t.solid : t.raised)
       .hover((s) => s.opacity(0.8)).on_click((_e, cx) => onClick(cx)).child(label);
   }
 
   field(state, t) {
     return Input.new(state).h(28).px(8).rounded(6).border_1().border_color(t.input)
-      .bg(t.background).text_size(fs(12)).text_color(t.foreground);
+      .bg(t.background).text_size(this.fs(12)).text_color(t.foreground);
   }
 
   addForm(t) {
@@ -475,11 +477,11 @@ export default class FmBoard extends View {
         .child(div().flex_1().min_w(0).child(this.field(this.source, t)))
         .child(this.button("add-pick", "Choose folder", t, (cx) => this.pick(cx))))
       .child(this.field(this.name, t))
-      .when(Boolean(this.picked), (el) => el.child(div().text_size(fs(11)).text_color(t.dim).child(
+      .when(Boolean(this.picked), (el) => el.child(div().text_size(this.fs(11)).text_color(t.dim).child(
         this.picked.remote ? `${this.picked.folder} · clones from remote`
           : `${this.picked.folder} · no remote, clones from this folder`)))
       .child(h_flex().gap(4).flex_wrap().children(MODES.map((m) =>
-        div().id(`mode-${m.id}`).px(6).py(2).rounded(5).cursor_pointer().text_size(fs(11))
+        div().id(`mode-${m.id}`).px(6).py(2).rounded(5).cursor_pointer().text_size(this.fs(11))
           .bg(this.mode === m.id ? t.selected : t.raised)
           .text_color(this.mode === m.id ? t.foreground : t.muted)
           .on_click((_e, cx) => { this.mode = m.id; cx.notify(); }).child(m.label))))
@@ -498,19 +500,19 @@ export default class FmBoard extends View {
       .child(h_flex().id(`project-${p.name}`).gap(6).items_center().cursor_pointer()
         .hover((s) => s.opacity(0.75))
         .on_click((_e, cx) => { if (!this.open.delete(p.name)) this.open.add(p.name); cx.notify(); })
-        .child(div().text_size(fs(10)).text_color(t.dim).child(open ? "▾" : "▸"))
+        .child(div().text_size(this.fs(10)).text_color(t.dim).child(open ? "▾" : "▸"))
         .child(this.projectBadge(p.name, t, `ptag-${p.name}`))
-        .child(div().flex_1().min_w(0).truncate().text_size(fs(12)).text_color(t.foreground).child(p.name))
-        .child(div().flex_none().text_size(fs(11)).text_color(t.dim)
+        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(12)).text_color(t.foreground).child(p.name))
+        .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim)
           .child(counts || "No tasks"))
         .child(this.viewButton(p.name, t)));
     if (!open) return row;
-    row.child(div().text_size(fs(11)).text_color(t.muted).child(p.desc))
-      .child(div().text_size(fs(11)).text_color(t.dim)
+    row.child(div().text_size(this.fs(11)).text_color(t.muted).child(p.desc))
+      .child(div().text_size(this.fs(11)).text_color(t.dim)
         .child(`${modeLabel(p.mode)} · Auto-merge ${p.yolo ? "on" : "off"}`))
       .child(this.colorPicker(p.name, t));
     if (this.confirm === p.name) {
-      return row.child(div().text_size(fs(11)).text_color(t.foreground)
+      return row.child(div().text_size(this.fs(11)).text_color(t.foreground)
           .child("Removes the registry entry and local clone. The remote repository stays."))
         .child(h_flex().gap(4)
           .child(this.button(`rm-yes-${p.name}`, "Request removal", t, (cx) => this.submitRemove(p.name, cx), true))
@@ -526,8 +528,8 @@ export default class FmBoard extends View {
 
   requestRow(n, t) {
     const body = n.body.replace(/^\[Board (?:요청|request)\]\s*/, "").split(/ source=| local_folder=| name=|\. /).slice(0, 2).join(" ");
-    return h_flex().gap(6).child(div().flex_1().min_w(0).text_size(fs(11)).text_color(t.muted).truncate().child(body))
-      .child(div().flex_none().text_size(fs(11)).text_color(t.dim).child("Pending"));
+    return h_flex().gap(6).child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.muted).truncate().child(body))
+      .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child("Pending"));
   }
 
   // The same card look as Herdr's panes.
@@ -540,9 +542,9 @@ export default class FmBoard extends View {
     const header = h_flex().gap(6).items_center().px(6).py(4).rounded(5).bg(t.selected)
       .child(h_flex().id("head-projects").flex_1().gap(6).items_center().cursor_pointer()
         .hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggle(PROJECTS, cx))
-        .child(div().text_size(fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
-        .child(div().text_size(fs(12)).font_semibold().text_color(t.foreground).child("Projects"))
-        .child(div().text_size(fs(11)).text_color(t.dim).child(String(this.projects.length))))
+        .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
+        .child(div().text_size(this.fs(12)).font_semibold().text_color(t.foreground).child("Projects"))
+        .child(div().text_size(this.fs(11)).text_color(t.dim).child(String(this.projects.length))))
       .child(this.button("add-open", "+ Add", t, (cx) => {
         this.adding = !this.adding; this.collapsed.delete(PROJECTS); cx.notify();
       }));
@@ -681,8 +683,8 @@ export default class FmBoard extends View {
         cx.stop_propagation();
         this.insertCardText(`\`[Board card] ${ids.join(", ")}: ${cleanTitle}\``, cx);
       })
-      .child(div().w(fs(14)).h(fs(14)).rounded(fs(7)).border(1).border_color(t.muted)
-        .flex().items_center().justify_center().text_size(fs(11)).text_color(t.muted).child("?"));
+      .child(div().w(this.fs(14)).h(this.fs(14)).rounded(this.fs(7)).border(1).border_color(t.muted)
+        .flex().items_center().justify_center().text_size(this.fs(11)).text_color(t.muted).child("?"));
   }
 
   typeCommand(command, cx) {
@@ -694,8 +696,8 @@ export default class FmBoard extends View {
     const el = this.frame(v_flex().flex_none().gap(8), t)
       .child(h_flex().id("head-commands").gap(6).items_center().px(6).py(4).rounded(5).bg(t.selected)
         .cursor_pointer().hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggle(COMMANDS, cx))
-        .child(div().text_size(fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
-        .child(div().text_size(fs(12)).font_semibold().text_color(t.foreground).child("Commands")));
+        .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
+        .child(div().text_size(this.fs(12)).font_semibold().text_color(t.foreground).child("Commands")));
     if (collapsed) return el;
     const run = (command) => (cx) => this.typeCommand(command, cx);
     const request = (kind) => (cx) => {
@@ -736,7 +738,7 @@ export default class FmBoard extends View {
         .child(this.button("ask-task", "Task", t, request("task"), true)
           .tooltip("Request a change to the project, delivered as a PR or branch")))
       .child(h_flex().gap(4).items_center().flex_wrap()
-        .child(div().flex_none().text_size(fs(11)).text_color(t.dim).child(this.askProject ? "Project" : "Project (optional)"))
+        .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(this.askProject ? "Project" : "Project (optional)"))
         .children(this.projects.map((p) => chip(p.name))));
   }
 
@@ -746,7 +748,7 @@ export default class FmBoard extends View {
     const current = this.query && this.currentMatch === c.id;
     // A queued card that still waits on other work is dimmed and says what it waits on.
     const waiting = c.column === "queued" && c.waitingOn.length > 0;
-    const badge = c.prWaiting ? div().flex_none().text_size(fs(11)).font_semibold().text_color(t.blocked).child("PR waiting") : null;
+    const badge = c.prWaiting ? div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.blocked).child("PR waiting") : null;
     const el = v_flex().id(`card-${c.id}`).gap(4).p(8).rounded(6).bg(t.background)
       .border(current ? 2 : 1).border_color(current ? t.accent : t.border).when(waiting && !current, (e) => e.opacity(0.6))
       .child(this.foldRow(foldId, t, folded, c.title, badge)
@@ -756,23 +758,23 @@ export default class FmBoard extends View {
     el.child(h_flex().gap(6).items_center().min_w(0)
       .child(this.projectBadge(c.project || "firstmate", t, `tag-${c.id}`))
       .when(c.priority !== null && c.column !== "done", (e) => e.child(div().flex_none().px(4).rounded(4).border(1)
-        .border_color(c.priority === 0 ? t.foreground : t.border).text_size(fs(10))
+        .border_color(c.priority === 0 ? t.foreground : t.border).text_size(this.fs(10))
         .text_color(c.priority === 0 ? t.foreground : t.muted).tooltip("Backlog priority, 0 is highest").child(`P${c.priority}`)))
-      .child(div().flex_1().min_w(0).text_size(fs(11)).text_color(t.muted).truncate().child(waiting ? "waiting" : c.state)));
+      .child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.muted).truncate().child(waiting ? "waiting" : c.state)));
     if (waiting) {
       const key = `chain:${c.id}`, shown = this.chainOpen.has(key);
-      el.child(div().id(`wait-${c.id}`).min_w(0).text_size(fs(11)).text_color(t.blocked).truncate()
+      el.child(div().id(`wait-${c.id}`).min_w(0).text_size(this.fs(11)).text_color(t.blocked).truncate()
         .cursor_pointer().hover((st) => st.opacity(0.75))
         .tooltip(shown ? "Hide the order" : "Show the order this task waits on")
         .on_click((_e, cx) => { if (!this.chainOpen.delete(key)) this.chainOpen.add(key); cx.notify(); })
         .child(`${shown ? "▾" : "▸"} ${waitingLabel(c)}`));
       if (shown) el.child(this.chain(c, t));
     }
-    if (c.detail && !inGroup) el.child(div().text_size(fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
+    if (c.detail && !inGroup) el.child(div().text_size(this.fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
     const ownDecision = c.decision && !c.decision.topic;
     if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id], c.column === "held");
     if (c.pr && /^https:\/\//.test(c.pr)) {
-      el.child(div().id(`pr-${c.id}`).text_size(fs(11)).text_color(t.accent).truncate()
+      el.child(div().id(`pr-${c.id}`).text_size(this.fs(11)).text_color(t.accent).truncate()
         .hover((s) => s.text_color(t.foreground))
         .on_click(() => { exec("open", [c.pr]); })
         .child(c.pr.replace("https://github.com/", "")));
@@ -796,10 +798,10 @@ export default class FmBoard extends View {
       el.child(h_flex().id(`opt-${key}-${o.label}`).gap(6).px(4).py(2).rounded(5)
         .when(answerable, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Put this answer in the firstmate input")
           .on_click((_e, cx) => this.insertCardText(`[Board answer] ${ids.join(", ")}: ${o.label} (${o.text})`, cx)))
-        .child(div().flex_none().text_size(fs(11)).font_semibold().text_color(t.accent).child(o.label))
-        .child(div().flex_1().min_w(0).text_size(fs(11)).text_color(t.foreground).child(o.text)));
+        .child(div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.accent).child(o.label))
+        .child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.foreground).child(o.text)));
     }
-    if (decision.recommended) el.child(div().text_size(fs(11)).text_color(t.muted).child(`Recommended: ${decision.recommended}`));
+    if (decision.recommended) el.child(div().text_size(this.fs(11)).text_color(t.muted).child(`Recommended: ${decision.recommended}`));
     return el;
   }
 
@@ -826,7 +828,7 @@ export default class FmBoard extends View {
         if (shown) this.viewer.close(cx);
         else this.openView(project, this.viewSources(project)[0], cx);
       })
-      .child(svg("mods/files/folder.svg").size(fs(14)).text_color(shown ? t.foreground : t.muted));
+      .child(svg("mods/files/folder.svg").size(this.fs(14)).text_color(shown ? t.foreground : t.muted));
   }
 
   openView(project, source, cx) {
@@ -879,12 +881,12 @@ export default class FmBoard extends View {
       const [label, color] = self ? ["this task", t.accent] : status(x);
       return h_flex().gap(6).items_center().min_w(0)
         .child(div().flex_none().w(6).h(6).rounded(3).bg(color))
-        .child(div().flex_1().min_w(0).text_size(fs(11)).truncate()
+        .child(div().flex_1().min_w(0).text_size(this.fs(11)).truncate()
           .text_color(self ? t.foreground : t.dim).when(self, (e) => e.font_semibold())
           .child(strip(x?.title ?? id)))
-        .child(div().flex_none().text_size(fs(10)).text_color(color).child(label));
+        .child(div().flex_none().text_size(this.fs(10)).text_color(color).child(label));
     };
-    const arrow = () => div().pl(1).text_size(fs(11)).text_color(t.muted).child("↓");
+    const arrow = () => div().pl(1).text_size(this.fs(11)).text_color(t.muted).child("↓");
     const box = v_flex().gap(2).p(6).rounded(5).bg(t.raised).border(1).border_color(t.border);
     levels.filter(Boolean).forEach((ids, i) => {
       if (i) box.child(arrow());
@@ -900,7 +902,7 @@ export default class FmBoard extends View {
     const ids = cards.map((c) => c.id), question = first.decision.question || topic;
     const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(6).bg(t.raised).border(1).border_color(t.accent)
       .child(this.foldRow(foldId, t, folded, question,
-        div().flex_none().text_size(fs(11)).text_color(t.dim).child(String(cards.length)))
+        div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)))
         .child(this.askButton(foldId, ids, question, t)));
     if (folded) return box;
     this.decisionLines(box, first.decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
@@ -959,9 +961,9 @@ export default class FmBoard extends View {
       .child(div().id("search-find").flex_none().p(5).rounded(5).cursor_pointer().bg(t.raised)
         .hover((s) => s.bg(t.hover)).tooltip("Find next (Enter) · Esc clears")
         .on_click((_e, cx) => this.findNext(cx))
-        .child(svg("mods/workspace-chrome/search.svg").size(fs(14)).text_color(t.muted)))
+        .child(svg("mods/workspace-chrome/search.svg").size(this.fs(14)).text_color(t.muted)))
       .when(count !== null, (el) =>
-        el.child(div().flex_none().text_size(fs(11)).text_color(matches.length ? t.muted : t.blocked).child(count)));
+        el.child(div().flex_none().text_size(this.fs(11)).text_color(matches.length ? t.muted : t.blocked).child(count)));
   }
 
   cardsIn(id) {
@@ -980,18 +982,18 @@ export default class FmBoard extends View {
     const header = h_flex().id(`head-${col.id}`).gap(6).items_center().cursor_pointer()
       .hover((s) => s.opacity(0.75))
       .on_click((_e, cx) => { if (!this.query) this.toggle(col.id, cx); })
-      .child(div().text_size(fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
+      .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
       .child(div().w(8).h(8).rounded(4).bg(t[col.color]));
     if (collapsed && !stacked) {
       return v_flex().id(`col-${col.id}`).w(36).h_full().p(8).gap(6).rounded(8).bg(t.surface).items_center()
         .child(header)
-        .child(div().text_size(fs(11)).text_color(t.dim).child(String(cards.length)))
+        .child(div().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)))
         .child(v_flex().items_center().children([...col.title].map((letter) =>
-          div().text_size(fs(11)).font_semibold().text_color(t.foreground).child(letter))));
+          div().text_size(this.fs(11)).font_semibold().text_color(t.foreground).child(letter))));
     }
     header.px(6).py(4).rounded(5).bg(t.selected)
-      .child(div().text_size(fs(12)).font_semibold().text_color(t.foreground).child(col.title))
-      .child(div().text_size(fs(11)).text_color(t.dim).child(String(cards.length)));
+      .child(div().text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(col.title))
+      .child(div().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)));
     const el = v_flex().id(`col-${col.id}`).min_w(0).gap(8).p(8).rounded(8).bg(t.surface).child(header);
     if (!stacked) el.flex_1().h_full();
     else el.flex_none(); // stacked columns keep their height; the board scrolls as one list
@@ -1005,12 +1007,12 @@ export default class FmBoard extends View {
     const color = this.colorOf(name, t);
     const tag = this.tags?.get(name) ?? name.slice(0, 3).toUpperCase();
     // A fixed width (scaled with the text) keeps every tag the same size, whatever its letters.
-    return h_flex().id(id).flex_none().w(fs(38)).justify_center().py(1).rounded(9).bg(color)
-      .text_size(fs(11)).font_semibold().text_color("#ffffff").tooltip(name).child(tag);
+    return h_flex().id(id).flex_none().w(this.fs(38)).justify_center().py(1).rounded(9).bg(color)
+      .text_size(this.fs(11)).font_semibold().text_color("#ffffff").tooltip(name).child(tag);
   }
 
   badge(label, color) {
-    return div().flex_none().px(6).py(1).rounded(5).border(1).border_color(color).text_size(fs(11)).text_color(color).child(label);
+    return div().flex_none().px(6).py(1).rounded(5).border(1).border_color(color).text_size(this.fs(11)).text_color(color).child(label);
   }
 
   // One chip per supervision process: a dot (alive or gone), the role, and how long it
@@ -1031,12 +1033,12 @@ export default class FmBoard extends View {
       return h_flex().id(`watch-${w.role}`).flex_none().gap(4).items_center()
         .tooltip(`${w.role} pid ${w.pid}${w.up ? `, running ${w.up}` : ", not running"}`)
         .child(div().w(6).h(6).rounded(3).bg(color))
-        .child(div().text_size(fs(11)).text_color(w.up ? t.dim : t.ansi1).child(label));
+        .child(div().text_size(this.fs(11)).text_color(w.up ? t.dim : t.ansi1).child(label));
     });
   }
 
   footer(t) {
-    const text = (value) => div().min_w(0).text_size(fs(11)).text_color(t.dim).truncate().child(value);
+    const text = (value) => div().min_w(0).text_size(this.fs(11)).text_color(t.dim).truncate().child(value);
     const right = h_flex().flex_none().gap(6).items_center().min_w(0);
     if (this.error) right.child(text(this.error)).child(this.badge("Update failed", t.ansi1));
     else if (!this.cards) right.child(text("Loading"));
@@ -1050,7 +1052,7 @@ export default class FmBoard extends View {
   }
 
   render(_cx) {
-    readFontScale(this.size?.width);
+    this.readFontScale(this.size?.width);
     const names = [...this.projects.map((p) => p.name), ...(this.cards ?? []).map((c) => c.project).filter(Boolean)];
     this.tags = abbreviations(["firstmate", ...names]);
     this.autoColor = autoColors(names);
@@ -1069,7 +1071,7 @@ export default class FmBoard extends View {
       .child(this.projectSection(t));
     if (this.filter) {
       root.child(h_flex().gap(6).items_center()
-        .child(div().text_size(fs(11)).text_color(t.muted).child(`Filter: ${this.filter}`))
+        .child(div().text_size(this.fs(11)).text_color(t.muted).child(`Filter: ${this.filter}`))
         .child(this.button("filter-clear", "Clear", t, (cx) => { this.filter = null; cx.notify(); })));
     }
     root.child(this.frame(v_flex().flex_1().min_h(0).gap(6), t)
@@ -1083,7 +1085,7 @@ export default class FmBoard extends View {
       .child(resizable_panel().size_range(280).child(root))
       .child(resizable_panel().size(this.viewerWidth()).size_range(260)
         .child(div().id("viewer-wrap").size_full().pl(4).pr(8).pt(2.5).pb(3)
-          .child(this.viewer.render(t, fs, this.viewSources(this.viewProject)))));
+          .child(this.viewer.render(t, (px) => this.fs(px), this.viewSources(this.viewProject)))));
   }
 
   // The starting width only: after the first drag Herdr keeps the user's width under

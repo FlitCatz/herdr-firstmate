@@ -7,7 +7,7 @@
 // installation and operational home; the other props support preview fixtures.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel } from "gpui-base";
-import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused } from "herdr";
+import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals } from "herdr";
 import { FolderViewer } from "./viewer.js";
 
 // Board text follows the terminal font size and grows as the Board widens. The sizes below
@@ -19,6 +19,10 @@ const LARGEST_TEXT_PX = 12;
 const GROW_FULL_PX = 1600;
 const REFRESH_FALLBACK_MS = 30000;
 const MIN_GAP_MS = 2000;
+// Shown worker cards repeat the last lines of their worker's screen, read this often.
+const TAIL_REFRESH_MS = 4000;
+const TAIL_READ_TIMEOUT_MS = 1500;
+const TAIL_LINES = 2;
 const DONE_LIMIT = 20;
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
 const COLLAPSED_KEY = "collapsed";
@@ -112,6 +116,30 @@ function parseRegistry(text) {
     out.push({ name: m[1], mode, yolo: tokens.includes("+yolo"), desc: m[3] });
   }
   return out;
+}
+
+// hc endpoints look like "default:t3x"; the part after the colon is the terminal address.
+function hcAddress(task) {
+  return /^[^:]+:(t[0-9a-z]+)$/.exec(task?.endpoint?.target ?? "")?.[1] ?? null;
+}
+
+// Escape sequences (CSI, OSC, and single-character escapes) and other control characters.
+const ESCAPES = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])|[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+// Rows with nothing to read: rules, box edges, prompts, and spinner or bullet glyphs alone.
+const DECORATION = /^[\s\u2500-\u25ff\u2700-\u27bf\u2800-\u28ff\u00b7\u2022\u2026\-=_*~|+.:;,<>\/\\#()[\]{}'"`^]*$/;
+
+// A prompt row, bare or inside a box edge. Codex and Claude Code draw their input box at the
+// bottom with only their status line and key hints below it.
+const INPUT_ROW = /^[\u2502\u2503|]?\s*[\u203a\u276f>](?:\s|$)/;
+
+// The last meaningful lines of a terminal screen above its input row, for display only.
+/** @param {string} text @returns {string[]} */
+function screenTail(text) {
+  const lines = text.replace(ESCAPES, "").split(/\r?\n|\r/).map((line) => line.trim());
+  let end = lines.length;
+  while (end > 0 && !INPUT_ROW.test(lines[end - 1])) end--;
+  return lines.slice(0, end ? end - 1 : lines.length)
+    .filter((line) => line && !DECORATION.test(line)).slice(-TAIL_LINES).map((line) => line.slice(0, 400));
 }
 
 // True when the harness state is unknown but the board placed the card from other evidence.
@@ -216,7 +244,7 @@ function cardsFrom(snapshot) {
     pr: task?.pr?.url ?? record?.pr_url ?? null,
     prWaiting: prWaiting(record, task),
     // Only hc runs workers in Herdr terminals, so only those can be opened from here.
-    terminal: task?.backend === "hc" ? /^[^:]+:(t\d+)$/.exec(task.endpoint?.target ?? "")?.[1] ?? null : null,
+    terminal: task?.backend === "hc" ? hcAddress(task) : null,
     // The worker's isolated copy, for the read-only Files/Changes view.
     worktree: task?.worktree?.present ? task.worktree.path : null,
     };
@@ -246,6 +274,12 @@ export default class FmBoard extends View {
     this.open = new Set(ui.open ?? []); this.filter = ui.filter ?? null;
     this.chainOpen = new Set(ui.chains ?? []);
     this.pasting = false;
+    // Worker screen tails by terminal address. Display only: never logged or written anywhere.
+    /** @type {Map<string, string[]>} */
+    this.tails = new Map();
+    /** @type {Set<string>} */
+    this.shownTerminals = new Set();
+    this.readingTails = false;
     this.colorChoice = {};
     try { this.colorChoice = JSON.parse(localStorage.getItem(PROJECT_COLORS_KEY) ?? "{}") ?? {}; } catch {}
     this.adding = Boolean(ui.adding); this.confirm = ui.confirm ?? null; this.mode = MODES[0].id;
@@ -268,6 +302,7 @@ export default class FmBoard extends View {
     if (props()?.snapshot_file) return;
     cx.timer.every(REFRESH_FALLBACK_MS, (cx) => this.refresh(cx));
     cx.timer.every(10000, (cx) => this.viewer.refresh(cx));
+    cx.timer.every(TAIL_REFRESH_MS, (cx) => this.readTails(cx));
     for (const dir of ["state", "data"]) {
       cx.spawn(async (cx) => {
         for (;;) { await watchFolder(`${home()}/${dir}`); this.refresh(cx); }
@@ -356,7 +391,7 @@ export default class FmBoard extends View {
   async readCoreStatus(snapshot) {
     for (const task of snapshot.tasks ?? []) {
       if (task.backend !== "hc" || task.current_state?.state !== "unknown") continue;
-      const address = /^[^:]+:(t\d+)$/.exec(task.endpoint?.target ?? "")?.[1];
+      const address = hcAddress(task);
       if (!address) continue;
       const r = await exec("hc", ["get", address, "--json"]);
       if (r.code !== 0) continue;
@@ -687,6 +722,20 @@ export default class FmBoard extends View {
         .flex().items_center().justify_center().text_size(this.fs(11)).text_color(t.muted).child("?"));
   }
 
+  // A small icon-only card control in the Ask icon's style; the label is its tooltip and what a
+  // screen reader announces.
+  /** @param {string} id @param {string} icon @param {string} label @param {Record<string, `#${string}`>} t @param {(cx: import("gpui-kit").Context) => void} onClick */
+  iconButton(id, icon, label, t, onClick) {
+    return div().id(id).flex_none().p(3).rounded(5).cursor_pointer().role("button").accessibility_label(label)
+      .hover((s) => s.bg(t.hover)).tooltip(label)
+      .on_click((_e, cx) => onClick(cx))
+      .child(svg(icon).size(this.fs(14)).text_color(t.muted));
+  }
+
+  openWorkerIcon(c, t) {
+    return this.iconButton(`open-${c.id}`, "mods/workspace-chrome/terminal.svg", "Open worker", t, (cx) => this.openWorker(c, cx));
+  }
+
   typeCommand(command, cx) {
     this.typeToFirstmate(command, `[Board request] Run ${command}`, `Typed ${command} into firstmate`, cx);
   }
@@ -780,14 +829,40 @@ export default class FmBoard extends View {
         .child(c.pr.replace("https://github.com/", "")));
     }
     const live = c.column !== "done";
-    if (live && (c.terminal || c.worktree)) {
-      const row = h_flex().gap(4);
-      if (c.terminal) row.child(this.button(`open-${c.id}`, "Open worker", t, (cx) => this.openWorker(c, cx)));
+    const workerLive = this.workerLive(c);
+    // A live worker's Open worker icon moves into its live strip, beside Peek.
+    const openHere = live && c.terminal && !workerLive;
+    if (openHere || (live && c.worktree && c.project)) {
+      const row = h_flex().gap(4).items_center();
+      if (openHere) row.child(this.openWorkerIcon(c, t));
       if (c.worktree && c.project) row.child(this.button(`files-${c.id}`, "Files · Changes", t, (cx) =>
         this.openView(c.project, { path: c.worktree, label: c.id, title: `${c.project} · ${c.id}` }, cx)));
       el.child(row);
     }
+    if (workerLive) {
+      this.shownTerminals.add(c.terminal);
+      el.child(this.liveStrip(c, t));
+    }
     return el;
+  }
+
+  // A live worker's own region below the card body, so the body keeps the shape of cards in
+  // other columns. It always holds TAIL_LINES rows, blank until lines arrive, so the card does
+  // not change height as the worker's screen changes.
+  liveStrip(c, t) {
+    const lines = this.tails.get(c.terminal) ?? [];
+    const blank = String.fromCharCode(0xa0); // a no-break space keeps an empty row one line tall
+    const rows = Array.from({ length: TAIL_LINES }, (_, i) => lines[i] || blank);
+    return v_flex().id(`live-${c.id}`).gap(4).px(6).py(4).rounded(5).bg(t.surface)
+      .child(h_flex().gap(6).items_center()
+        .child(div().flex_none().w(6).h(6).rounded(3).bg(t.working))
+        .child(div().flex_1().min_w(0).text_size(this.fs(10)).font_semibold().text_color(t.muted).child("Live"))
+        .child(this.openWorkerIcon(c, t))
+        // Herdr's own peek: the worker's terminal opens over the current tab, and nothing else changes.
+        .child(this.iconButton(`peek-${c.id}`, "mods/workspace-chrome/layers.svg", "Peek at the worker's terminal over this tab", t,
+          () => { run("terminal.peek", { terminal: c.terminal }); })))
+      .child(v_flex().id(`tail-${c.id}`).gap(1).font_family(this.monoFont).tooltip("Last lines of the worker's screen")
+        .children(rows.map((line) => div().min_w(0).truncate().text_size(this.fs(10.5)).text_color(t.dim).child(line))));
   }
 
   // Options of a held decision become editable chat drafts; the owner confirms them with Enter.
@@ -844,6 +919,37 @@ export default class FmBoard extends View {
       if (label === `fm-${c.id}`) { run("agent.focus", { terminal: c.terminal }); this.notice = ""; }
       else this.notice = "Worker terminal not found";
       cx.notify();
+    });
+  }
+
+  // A card's worker terminal is live and still carries this task's label (hc can reuse an address).
+  workerLive(c) {
+    if (!c.terminal || c.column === "done") return false;
+    return this.liveWorkers?.get(c.terminal) === `fm-${c.id}`;
+  }
+
+  // One read per worker whose card is on screen; a tick is skipped while a round is still
+  // running, and a failed read shows nothing for that card.
+  readTails(cx) {
+    const addresses = [...this.shownTerminals];
+    if (this.readingTails) return;
+    if (!addresses.length) { this.tails.clear(); return; }
+    this.readingTails = true;
+    cx.spawn(async (cx) => {
+      /** @type {Map<string, string[]>} */
+      const next = new Map();
+      try {
+        await Promise.all(addresses.map(async (address) => {
+          try {
+            const r = await exec("hc", ["read", address], { timeout: TAIL_READ_TIMEOUT_MS });
+            if (r.code === 0) next.set(address, screenTail(r.stdout));
+          } catch {}
+        }));
+      } finally { this.readingTails = false; }
+      const changed = next.size !== this.tails.size
+        || [...next].some(([address, lines]) => this.tails.get(address)?.join("\n") !== lines.join("\n"));
+      this.tails = next;
+      if (changed) cx.notify();
     });
   }
 
@@ -1061,6 +1167,12 @@ export default class FmBoard extends View {
       .child(v_flex().gap(8).p(16).rounded(8).bg(t.surface).border(1).border_color(t.border)
         .child(div().text_size(16).font_semibold().text_color(t.foreground).child("Firstmate home required"))
         .child(div().text_size(13).text_color(t.muted).child("Set the home prop on this mod in your layout to the path of your firstmate home.")));
+    // terminals() is live data, so a worker starting or ending redraws the cards.
+    this.liveWorkers = new Map(terminals().filter((x) => x.state === "live")
+      .map((x) => [x.address, x.labels?.["firstmate.task"]]));
+    this.monoFont = String(settings()?.font_family ?? "JetBrains Mono");
+    // The cards drawn below record which worker screens are worth reading.
+    this.shownTerminals = new Set();
     const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
     const matches = this.query ? this.matchIds() : [];
     this.currentMatch = matches.length ? matches[this.matchAt % matches.length] : null;

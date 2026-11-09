@@ -46,7 +46,14 @@ Clicking an option of a held decision puts `[Board answer] <ids>: <label> (<opti
 The Ask icon inserts `` `[Board card] <ids>: <title or group question>` `` followed by one space for questions about the task; backticks inside the title or group question are inserted as single quotes so they cannot close the code span early.
 Both drafts stay on one line with a trailing space, and the input receives focus so you can keep typing.
 Held cards use the chat input for free-text answers; options elsewhere are shown as plain text.
-Live cards can open their worker or the read-only Files and Changes viewer when those paths are available.
+Live cards can open their worker with a terminal icon, or the read-only Files and Changes viewer with its button, when those paths are available.
+When the card's worker terminal is live and still labeled with the card's task, the card ends in a Live strip set apart on the theme's surface color, so the card body above keeps the shape of cards in other columns.
+The strip's header holds a working-color dot, a Live label, the Open worker icon, and a Peek icon that opens Herdr's peek of that terminal over the current tab without focusing, switching, or typing anything; both icons have tooltips and screen reader labels.
+Below the header, in the terminal font, the strip shows the last one or two lines of the worker's screen that hold text above its input row, the last row starting with a prompt glyph (`›`, `❯`, or `>`, bare or inside a box edge), so a coding agent's input box, status line, and key hints below it are left out; escape codes, blank rows, and rule, box, or spinner-only rows are left out too, and each line is cut to the card width.
+A screen with no input row, such as a plain shell, shows its last such lines, and a card whose screen has none shows no lines; the strip keeps room for two lines, so the card's height does not change as lines come and go.
+Every 4 seconds the board reads the screen of each such card it last drew (not folded, filtered out, or in a collapsed column), at most once per terminal and never while the previous round is still reading; a failed read shows no lines.
+Herdr tells a mod nothing when its panel is hidden, so these reads continue while the Board panel is hidden, and stop when no drawn card has a live worker.
+These lines are only drawn on the card; the board does not log or save them.
 
 Project rows can be expanded to show details, a project filter, color choices, a folder button, and a removal request.
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
@@ -69,9 +76,10 @@ The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-
 
 `fm-tabs` is based on Herdr's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, and `settings`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` icon.
 
-`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, and `focused` from `herdr`.
-It draws Herdr's shipped `files` folder icon and `workspace-chrome` search icon.
-It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals.
+`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, and `terminals` from `herdr`.
+It draws Herdr's shipped `files` folder icon and `workspace-chrome` search, terminal, and layers icons.
+It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals and `hc read` to read live worker screens for the card lines.
+Its Peek icon runs Herdr's `terminal.peek` command.
 Card drafts use macOS `pbpaste` and `pbcopy` to save clipboard text to a temporary file and restore it around Herdr's `terminal.paste` action; they verify terminal focus before pasting and leave Enter to the owner.
 They first read the clipboard types with `osascript`; plain text is restored as is, and rich text such as HTML, RTF, or a web archive is restored as plain text with its formatting dropped.
 If the clipboard holds an image, files, or RTFD, which can carry attachments, or holds no plain text at all, nothing is inserted, the clipboard is left untouched, and a notice asks you to paste it first.
@@ -83,6 +91,7 @@ Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data an
 ## Watch out
 
 The board is trusted code: it runs `hc`, Firstmate scripts, Git, and other local programs through Herdr, and it reads the configured Firstmate home outside its own mod folder.
+It reads the screens of live worker terminals every 4 seconds, so whatever a worker prints can appear on its card.
 Its request controls communicate with the Firstmate session and can ask it to make changes.
 
 The layout ships with an empty `home` prop.

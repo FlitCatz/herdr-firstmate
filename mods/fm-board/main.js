@@ -23,6 +23,7 @@ const MIN_GAP_MS = 2000;
 const TAIL_REFRESH_MS = 4000;
 const TAIL_READ_TIMEOUT_MS = 1500;
 const TAIL_ROUND_LIMIT_MS = 10000;
+const TAIL_READS_PER_TERMINAL = 2;
 const TAIL_LINES = 2;
 const DONE_LIMIT = 20;
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
@@ -323,9 +324,9 @@ export default class FmBoard extends View {
     this.tailNotes = new Map();
     /** @type {{ started: number } | null} */
     this.tailRound = null;
-    // Terminals whose read has not ended, so a dropped round's hung read is never started again.
-    /** @type {Set<string>} */
-    this.tailReading = new Set();
+    // Start times of the reads that have not ended, by terminal address, so hung reads cannot pile up.
+    /** @type {Map<string, number[]>} */
+    this.tailReading = new Map();
     this.colorChoice = {};
     try { this.colorChoice = JSON.parse(localStorage.getItem(PROJECT_COLORS_KEY) ?? "{}") ?? {}; } catch {}
     this.adding = Boolean(ui.adding); this.confirm = ui.confirm ?? null; this.mode = MODES[0].id;
@@ -996,7 +997,8 @@ export default class FmBoard extends View {
 
   // One read per worker whose card is on screen; a tick is skipped while a round is still
   // running, and a failed read shows nothing for that card, with the reason in its tooltip.
-  // A terminal whose read from a dropped round is still running is skipped until that read ends.
+  // A read still running belongs to a dropped round, so it is at least TAIL_ROUND_LIMIT_MS old;
+  // its terminal is read once more, with at most TAIL_READS_PER_TERMINAL reads running for it.
   // exec settles only once the program's output closes, so a process left holding it keeps a
   // round open past the read timeout. Such a round stops holding back new rounds after
   // TAIL_ROUND_LIMIT_MS and its late result is dropped; otherwise the lines would stop for good.
@@ -1012,17 +1014,23 @@ export default class FmBoard extends View {
       /** @type {Map<string, string>} */
       const notes = new Map();
       await Promise.all(addresses.map(async (address) => {
-        if (this.tailReading.has(address)) {
-          notes.set(address, `An earlier read has not ended after ${TAIL_ROUND_LIMIT_MS / 1000} s.`);
+        const reading = this.tailReading.get(address) ?? [];
+        const { started } = round;
+        if (reading.length >= TAIL_READS_PER_TERMINAL) {
+          notes.set(address, `An earlier read has not ended after ${Math.round((started - reading[0]) / 1000)} s.`);
           return;
         }
-        this.tailReading.add(address);
+        reading.push(started);
+        this.tailReading.set(address, reading);
         try {
           const r = await exec("hc", ["read", address], { timeout: TAIL_READ_TIMEOUT_MS });
           if (r.code === 0) next.set(address, screenTail(r.stdout));
           else notes.set(address, `The last read failed: ${r.stderr.trim() || `hc read exited ${r.code}`}`);
         } catch (e) { notes.set(address, `The last read failed: ${String(e?.message ?? e)}`); }
-        finally { this.tailReading.delete(address); }
+        finally {
+          reading.splice(reading.indexOf(started), 1);
+          if (!reading.length) this.tailReading.delete(address);
+        }
       }));
       if (this.tailRound !== round) return;
       this.tailRound = null;

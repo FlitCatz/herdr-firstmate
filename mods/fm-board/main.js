@@ -22,6 +22,11 @@ const MIN_GAP_MS = 2000;
 // Shown worker cards repeat the last lines of their worker's screen, read this often.
 const TAIL_REFRESH_MS = 4000;
 const TAIL_READ_TIMEOUT_MS = 1500;
+const TAIL_ROUND_LIMIT_MS = 10000;
+const TAIL_READS_PER_TERMINAL = 2;
+// A read still running after this long no longer counts toward TAIL_READS_PER_TERMINAL, so a
+// terminal whose reads hung is read again within a minute of reads working again.
+const TAIL_STALE_READ_MS = 60000;
 const TAIL_LINES = 2;
 const DONE_LIMIT = 20;
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
@@ -317,7 +322,14 @@ export default class FmBoard extends View {
     this.tails = new Map();
     /** @type {Set<string>} */
     this.shownTerminals = new Set();
-    this.readingTails = false;
+    // Why a shown worker's last read gave no lines, by terminal address, for the lines' tooltip.
+    /** @type {Map<string, string>} */
+    this.tailNotes = new Map();
+    /** @type {{ started: number } | null} */
+    this.tailRound = null;
+    // Start times of the reads that have not ended, by terminal address, so hung reads cannot pile up.
+    /** @type {Map<string, number[]>} */
+    this.tailReading = new Map();
     this.colorChoice = {};
     try { this.colorChoice = JSON.parse(localStorage.getItem(PROJECT_COLORS_KEY) ?? "{}") ?? {}; } catch {}
     this.adding = Boolean(ui.adding); this.confirm = ui.confirm ?? null; this.mode = MODES[0].id;
@@ -902,9 +914,15 @@ export default class FmBoard extends View {
         // Herdr's own peek: the worker's terminal opens over the current tab, and nothing else changes.
         .child(this.iconButton(`peek-${c.id}`, "mods/workspace-chrome/layers.svg", "Peek at the worker's terminal over this tab", t,
           () => { run("terminal.peek", { terminal: c.terminal }); })))
-      .child(v_flex().id(`tail-${c.id}`).gap(1).font_family(this.monoFont).tooltip("Last lines of the worker's screen")
+      .child(v_flex().id(`tail-${c.id}`).gap(1).font_family(this.monoFont).tooltip(this.tailTooltip(c.terminal))
         // Muted rather than dim: dim text loses too much contrast on the tinted background.
         .children(rows.map((line) => div().min_w(0).truncate().text_size(this.fs(10.5)).text_color(t.muted).child(line))));
+  }
+
+  // Says why the lines are empty when this terminal's last read failed or has not ended.
+  tailTooltip(address) {
+    const note = this.tailNotes.get(address);
+    return note ? `Last lines of the worker's screen. ${note.slice(0, 200)}` : "Last lines of the worker's screen";
   }
 
   // Options of a held decision become editable chat drafts; the owner confirms them with Enter.
@@ -981,26 +999,50 @@ export default class FmBoard extends View {
   }
 
   // One read per worker whose card is on screen; a tick is skipped while a round is still
-  // running, and a failed read shows nothing for that card.
+  // running, and a failed read shows nothing for that card, with the reason in its tooltip.
+  // A read still running belongs to a dropped round, so it is at least TAIL_ROUND_LIMIT_MS old;
+  // its terminal is read once more, with at most TAIL_READS_PER_TERMINAL reads younger than
+  // TAIL_STALE_READ_MS running for it.
+  // exec settles only once the program's output closes, so a process left holding it keeps a
+  // round open past the read timeout. Such a round stops holding back new rounds after
+  // TAIL_ROUND_LIMIT_MS and its late result is dropped; otherwise the lines would stop for good.
   readTails(cx) {
     const addresses = [...this.shownTerminals];
-    if (this.readingTails) return;
-    if (!addresses.length) { this.tails.clear(); return; }
-    this.readingTails = true;
+    if (this.tailRound && Date.now() - this.tailRound.started < TAIL_ROUND_LIMIT_MS) return;
+    this.tailRound = null;
+    if (!addresses.length) { this.tails.clear(); this.tailNotes.clear(); return; }
+    const round = this.tailRound = { started: Date.now() };
     cx.spawn(async (cx) => {
       /** @type {Map<string, string[]>} */
       const next = new Map();
-      try {
-        await Promise.all(addresses.map(async (address) => {
-          try {
-            const r = await exec("hc", ["read", address], { timeout: TAIL_READ_TIMEOUT_MS });
-            if (r.code === 0) next.set(address, screenTail(r.stdout));
-          } catch {}
-        }));
-      } finally { this.readingTails = false; }
+      /** @type {Map<string, string>} */
+      const notes = new Map();
+      await Promise.all(addresses.map(async (address) => {
+        const reading = this.tailReading.get(address) ?? [];
+        const { started } = round;
+        if (reading.filter((t) => started - t < TAIL_STALE_READ_MS).length >= TAIL_READS_PER_TERMINAL) {
+          notes.set(address, `An earlier read has not ended after ${Math.round((started - reading[0]) / 1000)} s.`);
+          return;
+        }
+        reading.push(started);
+        this.tailReading.set(address, reading);
+        try {
+          const r = await exec("hc", ["read", address], { timeout: TAIL_READ_TIMEOUT_MS });
+          if (r.code === 0) next.set(address, screenTail(r.stdout));
+          else notes.set(address, `The last read failed: ${r.stderr.trim() || `hc read exited ${r.code}`}`);
+        } catch (e) { notes.set(address, `The last read failed: ${String(e?.message ?? e)}`); }
+        finally {
+          reading.splice(reading.indexOf(started), 1);
+          if (!reading.length) this.tailReading.delete(address);
+        }
+      }));
+      if (this.tailRound !== round) return;
+      this.tailRound = null;
       const changed = next.size !== this.tails.size
-        || [...next].some(([address, lines]) => this.tails.get(address)?.join("\n") !== lines.join("\n"));
+        || [...next].some(([address, lines]) => this.tails.get(address)?.join("\n") !== lines.join("\n"))
+        || [...notes].some(([address, note]) => this.tailNotes.get(address) !== note) || notes.size !== this.tailNotes.size;
       this.tails = next;
+      this.tailNotes = notes;
       if (changed) cx.notify();
     });
   }

@@ -323,8 +323,9 @@ export default class FmBoard extends View {
     this.tailNotes = new Map();
     /** @type {{ started: number } | null} */
     this.tailRound = null;
-    // Rounds that never finished and were given up on, also for the tooltip.
-    this.tailStalls = 0;
+    // Terminals whose read has not ended, so a dropped round's hung read is never started again.
+    /** @type {Set<string>} */
+    this.tailReading = new Set();
     this.colorChoice = {};
     try { this.colorChoice = JSON.parse(localStorage.getItem(PROJECT_COLORS_KEY) ?? "{}") ?? {}; } catch {}
     this.adding = Boolean(ui.adding); this.confirm = ui.confirm ?? null; this.mode = MODES[0].id;
@@ -914,12 +915,10 @@ export default class FmBoard extends View {
         .children(rows.map((line) => div().min_w(0).truncate().text_size(this.fs(10.5)).text_color(t.muted).child(line))));
   }
 
-  // Says why the lines are empty when the last read failed, or when reads have stalled before.
+  // Says why the lines are empty when this terminal's last read failed or has not ended.
   tailTooltip(address) {
     const note = this.tailNotes.get(address);
-    if (note) return `Last lines of the worker's screen. The last read failed: ${note.slice(0, 200)}`;
-    if (this.tailStalls) return `Last lines of the worker's screen. ${this.tailStalls} read round(s) did not finish within ${TAIL_ROUND_LIMIT_MS / 1000} s and were dropped`;
-    return "Last lines of the worker's screen";
+    return note ? `Last lines of the worker's screen. ${note.slice(0, 200)}` : "Last lines of the worker's screen";
   }
 
   // Options of a held decision become editable chat drafts; the owner confirms them with Enter.
@@ -997,13 +996,13 @@ export default class FmBoard extends View {
 
   // One read per worker whose card is on screen; a tick is skipped while a round is still
   // running, and a failed read shows nothing for that card, with the reason in its tooltip.
+  // A terminal whose read from a dropped round is still running is skipped until that read ends.
   // exec settles only once the program's output closes, so a process left holding it keeps a
   // round open past the read timeout. Such a round stops holding back new rounds after
   // TAIL_ROUND_LIMIT_MS and its late result is dropped; otherwise the lines would stop for good.
   readTails(cx) {
     const addresses = [...this.shownTerminals];
     if (this.tailRound && Date.now() - this.tailRound.started < TAIL_ROUND_LIMIT_MS) return;
-    if (this.tailRound) this.tailStalls++;
     this.tailRound = null;
     if (!addresses.length) { this.tails.clear(); this.tailNotes.clear(); return; }
     const round = this.tailRound = { started: Date.now() };
@@ -1013,11 +1012,17 @@ export default class FmBoard extends View {
       /** @type {Map<string, string>} */
       const notes = new Map();
       await Promise.all(addresses.map(async (address) => {
+        if (this.tailReading.has(address)) {
+          notes.set(address, `An earlier read has not ended after ${TAIL_ROUND_LIMIT_MS / 1000} s.`);
+          return;
+        }
+        this.tailReading.add(address);
         try {
           const r = await exec("hc", ["read", address], { timeout: TAIL_READ_TIMEOUT_MS });
           if (r.code === 0) next.set(address, screenTail(r.stdout));
-          else notes.set(address, r.stderr.trim() || `hc read exited ${r.code}`);
-        } catch (e) { notes.set(address, String(e?.message ?? e)); }
+          else notes.set(address, `The last read failed: ${r.stderr.trim() || `hc read exited ${r.code}`}`);
+        } catch (e) { notes.set(address, `The last read failed: ${String(e?.message ?? e)}`); }
+        finally { this.tailReading.delete(address); }
       }));
       if (this.tailRound !== round) return;
       this.tailRound = null;

@@ -24,6 +24,9 @@ const TAIL_REFRESH_MS = 4000;
 const TAIL_READ_TIMEOUT_MS = 1500;
 const TAIL_ROUND_LIMIT_MS = 10000;
 const TAIL_READS_PER_TERMINAL = 2;
+// A read still running after this long no longer counts toward TAIL_READS_PER_TERMINAL, so a
+// terminal whose reads hung is read again within a minute of reads working again.
+const TAIL_STALE_READ_MS = 60000;
 const TAIL_LINES = 2;
 const DONE_LIMIT = 20;
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
@@ -998,7 +1001,8 @@ export default class FmBoard extends View {
   // One read per worker whose card is on screen; a tick is skipped while a round is still
   // running, and a failed read shows nothing for that card, with the reason in its tooltip.
   // A read still running belongs to a dropped round, so it is at least TAIL_ROUND_LIMIT_MS old;
-  // its terminal is read once more, with at most TAIL_READS_PER_TERMINAL reads running for it.
+  // its terminal is read once more, with at most TAIL_READS_PER_TERMINAL reads younger than
+  // TAIL_STALE_READ_MS running for it.
   // exec settles only once the program's output closes, so a process left holding it keeps a
   // round open past the read timeout. Such a round stops holding back new rounds after
   // TAIL_ROUND_LIMIT_MS and its late result is dropped; otherwise the lines would stop for good.
@@ -1016,7 +1020,7 @@ export default class FmBoard extends View {
       await Promise.all(addresses.map(async (address) => {
         const reading = this.tailReading.get(address) ?? [];
         const { started } = round;
-        if (reading.length >= TAIL_READS_PER_TERMINAL) {
+        if (reading.filter((t) => started - t < TAIL_STALE_READ_MS).length >= TAIL_READS_PER_TERMINAL) {
           notes.set(address, `An earlier read has not ended after ${Math.round((started - reading[0]) / 1000)} s.`);
           return;
         }

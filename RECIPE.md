@@ -26,6 +26,9 @@ The panel buttons select or hide their panel; the chosen panel is remembered per
 
 Todo, Queued, Working, Done, and Failed columns always appear.
 Held, Parked, Blocked, Paused, Review, and Unknown appear while they contain cards.
+The Held column draws its cards in up to three labelled groups, each with its card count and shown only while it holds a card: `Answer now`, then `Deferred`, then `Waiting on other work`.
+The fleet snapshot's `hold_bucket` places a card: `dated` is deferred, `blocked` waits on other work, and every other held card, including one with no bucket, is one to answer now.
+A deferred card shows its `hold_until` date on its state row as `until <month>-<day>`, such as `until 12-01`, and a card waiting on other work has the same waiting row as a waiting Queued card.
 Their header dots use the theme's idle, working, blocked, done, unknown, and red colors as appropriate.
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.
 The Kanban search matches task ids and the title, note, and decision text on cards, ignoring case.
@@ -39,16 +42,19 @@ The search still matches Firstmate's original detail text.
 Clicking a card header folds it; its question-mark icon puts the task id and full title into the Firstmate chat input without pressing Enter.
 Topic-group headers have the same icon for all their task ids and the group question.
 Queued cards waiting on other tasks are dimmed, and clicking their waiting row expands the dependency chain.
-Decisions with the same explicit topic share a question and options.
+Decisions with the same explicit topic share a question and options; in the Held column a topic box is drawn inside each group that holds one of its cards.
+A card lists every decision its worker's status log still holds open, from the snapshot's `hints.open_decisions`, oldest first: the decision's verb (`needs-decision` or `blocked`) and key, its text up to 240 characters, and its options when the text has them.
+A detail line that would only repeat one of those decisions is left out.
 An unobservable worker uses recorded status evidence when available, otherwise it appears in Unknown.
 Cards with a finished worker and a review link show a PR waiting badge while the backlog and worker detail still indicate pending review.
 The board does not query the forge to check whether the link has merged.
 
 Clicking an option of a held decision puts `[Board answer] <ids>: <label> (<option text>) ` into the Firstmate chat input, ready to edit and confirm with Enter.
 The Ask icon inserts `` `[Board card] <ids>: <title or group question>` `` followed by one space for questions about the task; backticks inside the title or group question are inserted as single quotes so they cannot close the code span early.
-Both drafts stay on one line with a trailing space, and the input receives focus so you can keep typing.
-Held cards use the chat input for free-text answers; options elsewhere are shown as plain text.
-Live cards can open their worker with a terminal icon, or the read-only Files and Changes viewer with its button, when those paths are available.
+Clicking an open decision's text puts `[Board answer] <id> [key=<key>]: ` there, and clicking one of its options puts `[Board answer] <id> [key=<key>]: <label> (<option text>) `; the key names that one decision, so Firstmate can close it with `fm-send.sh --resolve-key <key>` even when the card has several.
+All these drafts stay on one line with a trailing space, and the input receives focus so you can keep typing.
+Held cards without options use the chat input for free-text answers; a hold's options outside the Held column are shown as plain text.
+Live cards can open their worker with a terminal icon, and the read-only Files and Changes viewer with a `Files · Changes` button when the snapshot reports the worker's copy of the project as present (`paths.worktree`); the viewer's source picker then offers that copy beside the project's local copy.
 When the card's worker terminal is live and still labeled with the card's task, the card ends in a Live strip set apart by a light tint of the theme's working color, so the card body above keeps the shape of cards in other columns.
 The strip's header holds a working-color dot, the worker terminal's own status as Herdr reports it (`Worker working`, `Worker blocked`, or `Worker idle`, which also covers a finished turn; `Live` when the terminal reports none), the Open worker icon, and a Peek icon that opens Herdr's peek of that terminal over the current tab without focusing, switching, or typing anything; both icons have tooltips and screen reader labels.
 That status describes the worker terminal, not the task, so a card can read `working` while its strip reads `Worker idle`, for example while validation runs in the background after the worker ended its turn.
@@ -131,6 +137,8 @@ The layout and mods expect Herdr's shipped `workspace-chrome`, `spaces`, `agents
 ## Done when
 
 Both mod folders pass `herdr-app check`.
+
+`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files · Changes` button, the Held groups, and the open decisions with their answer drafts.
 
 The layout opens with the configured Firstmate home, displays the board and panel controls, and switching spaces restores each space's selected panel.
 

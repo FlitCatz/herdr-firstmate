@@ -163,11 +163,12 @@ const SHELL = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
 const INTERPRETER = /^(?:sh|bash|zsh|dash|ksh|fish|node|bun|deno|python[\d.]*|ruby)$/;
 const WORK_VERBS = new Map([
   ["test", "테스트"], ["vstest", "테스트"], ["build", "빌드"], ["msbuild", "빌드"], ["publish", "빌드"], ["pack", "빌드"],
-  ["check", "검사"], ["format", "검사"], ["lint", "검사"], ["clippy", "검사"], ["vet", "검사"],
-  ["run", "실행"], ["watch", "실행"], ["restore", "설치"], ["install", "설치"], ["ci", "설치"],
+  ["check", "검사"], ["typecheck", "검사"], ["format", "검사"], ["lint", "검사"], ["clippy", "검사"], ["vet", "검사"],
+  ["restore", "설치"], ["install", "설치"], ["ci", "설치"],
 ]);
 // Programs that take one of WORK_VERBS as their subcommand, and programs that are a job whatever their arguments.
 const VERB_TOOLS = new Set(["dotnet", "npm", "pnpm", "yarn", "bun", "cargo", "go", "swift", "make"]);
+const SCRIPT_RUNNERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 const WHOLE_TOOLS = new Map([
   ["no-mistakes", "no-mistakes 검증"], ["pytest", "pytest 테스트"], ["jest", "jest 테스트"], ["vitest", "vitest 테스트"],
   ["xcodebuild", "xcodebuild 빌드"], ["tsc", "tsc 빌드"],
@@ -189,16 +190,18 @@ function workLabel(command) {
     return /\bgh(?:-axi)?\s+(?:run|pr)\s/.test(script) ? "CI 대기" : WAIT_LOOP;
   }
   // A script or tool started through its interpreter is named by its file, not the interpreter.
-  if (INTERPRETER.test(program) && args[0] && !args[0].startsWith("-")) { program = base(args[0]); args = args.slice(1); }
-  if (WHOLE_TOOLS.has(program)) return WHOLE_TOOLS.get(program) ?? null;
+  const subcommand = VERB_TOOLS.has(program) && !/[./]/.test(args[0] ?? "");
+  if (INTERPRETER.test(program) && args[0] && !args[0].startsWith("-") && !subcommand) { program = base(args[0]); args = args.slice(1); }
   if ((program === "gh" || program === "gh-axi") && /^(?:run watch|pr checks)$/.test(args.slice(0, 2).join(" "))) return "CI 대기";
+  if (args.some((a) => /^--watch/.test(a) || (program === "tsc" && a === "-w"))) return null;
+  if (WHOLE_TOOLS.has(program)) return WHOLE_TOOLS.get(program) ?? null;
   if (program === "node" && args.includes("--test")) return "node 테스트";
   if (VERB_TOOLS.has(program)) {
-    // The subcommand is the first word that is not an option; "npm run test" names it after "run".
+    // The subcommand is the first word that is not an option; "npm run test:unit" names it after "run".
     // A build server's first word is a file path, so an idle MSBuild or compiler server never counts.
     const words = args.filter((a) => !/^[-+]/.test(a));
-    const verb = words[0] === "run" && WORK_VERBS.has(words[1]) ? words[1] : words[0];
-    return WORK_VERBS.has(verb) ? `${program} ${WORK_VERBS.get(verb)}` : null;
+    const verb = SCRIPT_RUNNERS.has(program) && words[0] === "run" ? words[1]?.split(":")[0] : words[0];
+    return WORK_VERBS.has(verb ?? "") ? `${program} ${WORK_VERBS.get(verb ?? "")}` : null;
   }
   return WORK_SCRIPT.test(program) ? program.slice(0, 40) : null;
 }

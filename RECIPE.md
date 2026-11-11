@@ -8,7 +8,8 @@ A Herdr window with a task board, read-only Files and Changes viewer, and a tab 
 
 A 268px left sidebar contains the workspace brand, spaces, agents, and footer.
 
-The main area has a 42px tab bar, a flexible active-tab pane, a hidden 700px right panel, and a 28px status bar.
+The main area has a 42px tab bar, a flexible active-tab pane, a hidden right panel, and a 28px status bar.
+When the panel is shown it takes two thirds of the row and the active-tab pane one third, so both narrow and widen with the window.
 
 The tab bar sits on the chrome background and shows tabs plus Board, Files, and Changes panel buttons.
 
@@ -95,7 +96,7 @@ The board watches the home's state and data folders and has a 30-second refresh 
 
 ## Built from
 
-`layouts/firstmate.json` is a row with a 268px sidebar and a flexible work column. The work column contains the 42px `fm-tabs` block, a row with an active-tab block and a hidden 700px panel stack, and a 28px `workspace-status` block.
+`layouts/firstmate.json` is a row with a 268px sidebar and a flexible work column. The work column contains the 42px `fm-tabs` block, a row with an active-tab block (weight 1, at least 480px) and a hidden panel stack (weight 2, at least 280px), and a 28px `workspace-status` block.
 
 The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-board` mod. Its `home` prop is the path to the Firstmate home; set it before using the layout.
 
@@ -125,7 +126,10 @@ Fill it with the absolute Firstmate installation and home path or the board show
 The home must contain the matching `bin`, `data`, `state`, and `projects` folders and produce `fm-fleet-snapshot.v1` snapshots.
 This build assumes Unix tools such as `sh`, `ps`, Git, and `/usr/bin/env`; opening folders and URLs uses macOS's `open` command.
 
-The panel width is 700px and constrained to 280-2400px.
+The panel is sized as a share of the row, not in pixels, because Herdr never shrinks a node sized in pixels: in a narrow window such a panel keeps its width, takes the active-tab pane's room, and runs past the window's right edge.
+The active-tab pane keeps at least 480px and the panel at least 280px; with the sidebar open, a window narrower than about 1,053px leaves the panel running past the right edge.
+`layout.resize` with `weight` on `panel` changes the share and keeps it flexible; with `px` it pins a pixel width, and then only the pane's 480px minimum still holds in a narrow window.
+Whether dragging the divider saves a share or a pixel width has not been tested.
 With all 11 columns open at about 1,320px pane width, card titles wrap heavily.
 A Done card's PR waiting badge can overlap its title and leave the title wrapping one letter per line.
 Collapse some columns or give the board more width when this happens.

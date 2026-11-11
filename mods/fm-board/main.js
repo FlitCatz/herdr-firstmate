@@ -197,11 +197,15 @@ function workLabel(command) {
   if (WHOLE_TOOLS.has(program)) return WHOLE_TOOLS.get(program) ?? null;
   if (program === "node" && args.includes("--test")) return "node 테스트";
   if (VERB_TOOLS.has(program)) {
-    // The subcommand is the first word that is not an option; "npm run test" names it after "run".
+    // The subcommand is the first word that is not an option; "npm run test:unit" names it after "run",
+    // by the part before its first ":", unless a later part names a watcher or server, as in "test:watch".
     // A build server's first word is a file path, so an idle MSBuild or compiler server never counts.
     const words = args.filter((a) => !/^[-+]/.test(a));
-    const verb = SCRIPT_RUNNERS.has(program) && words[0] === "run" ? words[1] : words[0];
-    return WORK_VERBS.has(verb ?? "") ? `${program} ${WORK_VERBS.get(verb ?? "")}` : null;
+    const script = SCRIPT_RUNNERS.has(program) && words[0] === "run";
+    const name = (script ? words[1] : words[0]) ?? "";
+    const [verb, ...variants] = script ? name.split(":") : [name];
+    if (variants.some((part) => /^(?:watch|dev|serve|start)$/.test(part))) return null;
+    return WORK_VERBS.has(verb) ? `${program} ${WORK_VERBS.get(verb)}` : null;
   }
   return WORK_SCRIPT.test(program) ? program.slice(0, 40) : null;
 }

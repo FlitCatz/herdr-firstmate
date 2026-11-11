@@ -14,5 +14,6 @@ To add it using Herdr's sharing steps:
 
 Card headers fold and unfold; their Ask icons and held decisions' options prepare editable chat input as described in [RECIPE.md](RECIPE.md#how-it-behaves).
 Cards with a live worker terminal end in a separate Live strip with Open worker and Peek icons, where Peek opens that terminal over the current tab, and the last lines of the worker's screen, refreshed every few seconds.
+A card whose worker terminal still runs a job after its agent's turn ended, such as a build, a test run, or a CI wait, says so with `백그라운드 실행 중: <job>`, and a Paused card is drawn in Working while that job runs.
 
 The preview uses fictional projects and tasks.

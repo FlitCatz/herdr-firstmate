@@ -13,7 +13,7 @@ To add it using Herdr's sharing steps:
    Run `herdr-app check` on each installed mod folder, then select the Firstmate layout in Herdr settings or run `herdr-app do layout.switch --name firstmate` with your chosen layout name.
 
 Card headers fold and unfold; their Ask icons and held decisions' options prepare editable chat input as described in [RECIPE.md](RECIPE.md#how-it-behaves).
-The Held column groups its cards under `Answer now`, `Deferred` (with each card's `until` date), and `Waiting on other work`.
+The Held column groups its cards under `Answer now`, `Deferred` (with a card's `until` date when it has one), and `Waiting on other work`.
 A card lists every decision its worker still has open, and answering one from the card names its key in the draft so Firstmate can close exactly that decision.
 Cards whose worker has its own copy of the project open it in the Files and Changes viewer with a `Files · Changes` button.
 Cards with a live worker terminal end in a separate Live strip with Open worker and Peek icons, where Peek opens that terminal over the current tab, and the last lines of the worker's screen, refreshed every few seconds.

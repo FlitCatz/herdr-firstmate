@@ -75,15 +75,14 @@ const HOLD_GROUPS = [
   { id: "deferred", title: "Deferred" },
   { id: "waiting", title: "Waiting on other work" },
 ];
-// The group a hold belongs to. The snapshot's hold_bucket decides first: "dated" is deferred
-// until hold_until and "blocked" waits on unfinished work. Only captain holds have a bucket, so
-// without one hold_kind decides: a "future" hold is deferred and an "external" one waits on
-// something outside. Every other hold (live, aged, or a captain hold with no bucket) is one to
-// answer now.
+// The group a hold belongs to, following the snapshot's hold_bucket: only a "live" hold is the
+// captain's current call. "dated" (until hold_until) and "aged" holds are deferred, and "blocked"
+// waits on unfinished work. Only captain holds have a bucket: an "external" hold waits on
+// something outside, and a captain hold with no bucket is one to answer now.
 function holdGroupOf(record) {
-  const bucket = record?.hold_bucket, kind = record?.hold_kind;
-  if (bucket === "dated" || (!bucket && kind === "future")) return "deferred";
-  if (bucket === "blocked" || (!bucket && kind === "external")) return "waiting";
+  const bucket = record?.hold_bucket;
+  if (bucket === "dated" || bucket === "aged") return "deferred";
+  if (bucket === "blocked" || record?.hold_kind === "external") return "waiting";
   return "now";
 }
 const home = () => typeof props()?.home === "string" ? props().home.trim().replace(/(.)\/+$/, "$1") : "";
@@ -999,10 +998,8 @@ export default class FmBoard extends View {
     const current = this.query && this.currentMatch === c.id;
     // A queued card that still waits on other work is dimmed and says what it waits on.
     const waiting = c.column === "queued" && c.waitingOn.length > 0;
-    // A held card in the "Waiting on other work" group says what it waits on the same way.
-    const waitsOn = waiting || (c.column === "held" && c.holdGroup === "waiting" && c.waitingOn.length > 0);
-    // A deferred hold shows its date when it has one. A "future" hold is drawn in Todo, not Held.
-    const until = (c.column === "held" || c.column === "todo") && c.holdGroup === "deferred" ? c.holdUntil : null;
+    // A deferred hold shows its date when it has one.
+    const until = c.column === "held" && c.holdGroup === "deferred" ? c.holdUntil : null;
     const badge = c.prWaiting ? div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.blocked).child("PR waiting") : null;
     const el = v_flex().id(`card-${c.id}`).gap(4).p(8).rounded(6).bg(t.background)
       .border(current ? 2 : 1).border_color(current ? t.accent : t.border).when(waiting && !current, (e) => e.opacity(0.6))
@@ -1020,7 +1017,7 @@ export default class FmBoard extends View {
       // The year is left out: a deferral date is always ahead, and "until 12-01" fits a narrow card.
       .when(Boolean(until), (e) => e.child(div().id(`until-${c.id}`).flex_none().text_size(this.fs(11)).font_semibold()
         .text_color(t.muted).tooltip(`Deferred until ${until}`).child(`until ${String(until).replace(/^\d{4}-/, "")}`))));
-    if (waitsOn) {
+    if (waiting) {
       const key = `chain:${c.id}`, shown = this.chainOpen.has(key);
       el.child(div().id(`wait-${c.id}`).min_w(0).text_size(this.fs(11)).text_color(t.blocked).truncate()
         .cursor_pointer().hover((st) => st.opacity(0.75))
@@ -1343,10 +1340,11 @@ export default class FmBoard extends View {
   }
 
   // A column's entries in drawing order: a card, or a topic group at its first card's place.
+  // Only holds share a topic box; a card lists its open decisions itself, each with its own key.
   entries(cards) {
     const groups = new Map(), out = [];
     for (const c of cards) {
-      const topic = c.decision?.topic;
+      const topic = c.heldDecision ? c.decision?.topic : null;
       if (!topic) { out.push({ card: c }); continue; }
       if (!groups.has(topic)) { groups.set(topic, []); out.push({ topic, cards: groups.get(topic) }); }
       groups.get(topic).push(c);

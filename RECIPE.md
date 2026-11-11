@@ -27,11 +27,9 @@ The panel buttons select or hide their panel; the chosen panel is remembered per
 Todo, Queued, Working, Done, and Failed columns always appear.
 Held, Parked, Blocked, Paused, Review, and Unknown appear while they contain cards.
 The Held column draws its cards in up to three labelled groups, each with its card count and shown only while it holds a card: `Answer now`, then `Deferred`, then `Waiting on other work`.
-The fleet snapshot's `hold_bucket` places a card first: `dated` is deferred and `blocked` waits on other work.
-Only captain holds have a bucket, so without one `hold_kind` decides: a `future` hold is deferred and an `external` hold waits on other work.
-Every other held card, such as a live or aged captain hold or a captain hold with no bucket, is one to answer now.
-A deferred card that has a `hold_until` date shows it on its state row as `until <month>-<day>`, such as `until 12-01`; a set-aside (`future`) card with a date shows it the same way in Todo, where such cards are drawn.
-A card waiting on other tasks has the same waiting row as a waiting Queued card.
+The fleet snapshot's `hold_bucket` places a card: `live` is answered now, `dated` and `aged` are deferred, and `blocked` waits on other work.
+Only captain holds have a bucket: an `external` hold waits on other work, and a captain hold with no bucket is answered now.
+A deferred card that has a `hold_until` date shows it on its state row as `until <month>-<day>`, such as `until 12-01`.
 Their header dots use the theme's idle, working, blocked, done, unknown, and red colors as appropriate.
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.
 The Kanban search matches task ids and the title, note, and decision text on cards, ignoring case.
@@ -45,7 +43,7 @@ The search still matches Firstmate's original detail text.
 Clicking a card header folds it; its question-mark icon puts the task id and full title into the Firstmate chat input without pressing Enter.
 Topic-group headers have the same icon for all their task ids and the group question.
 Queued cards waiting on other tasks are dimmed, and clicking their waiting row expands the dependency chain.
-Decisions with the same explicit topic share a question and options; in the Held column a topic box is drawn inside each group that holds one of its cards.
+Held decisions with the same explicit topic share a question and options; in the Held column a topic box is drawn inside each group that holds one of its cards.
 A card lists every decision its worker's status log still holds open, from the snapshot's `hints.open_decisions`, oldest first: the decision's verb (`needs-decision` or `blocked`) and key, its text up to 240 characters, and its options when the text has them.
 A detail line that would only repeat one of those decisions is left out.
 An unobservable worker uses recorded status evidence when available, otherwise it appears in Unknown.

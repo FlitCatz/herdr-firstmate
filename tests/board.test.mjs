@@ -137,48 +137,38 @@ test("the Held column draws three labelled groups, answer now first", async () =
     const to = next ? b.ids.indexOf(next) : b.ids.indexOf("col-working");
     return b.ids.slice(from, to).filter((id) => id.startsWith("card-")).map((id) => id.slice(5));
   };
-  // Live and aged holds are answered now; the topic box stays whole.
-  assert.deepEqual(cardsIn("hold-now"), ["maple-icon-set", "maple-tour-sketch", "maple-empty-state", "maple-old-palette"]);
-  assert.deepEqual(cardsIn("hold-deferred"), ["orchard-license-renewal", "orchard-tile-refresh"]);
+  // Only live holds are answered now; the topic box stays whole. Dated and aged holds are deferred.
+  assert.deepEqual(cardsIn("hold-now"), ["maple-icon-set", "maple-tour-sketch", "maple-empty-state"]);
+  assert.deepEqual(cardsIn("hold-deferred"), ["orchard-license-renewal", "orchard-tile-refresh", "maple-old-palette"]);
   // An external hold has no bucket and waits on something outside.
   assert.deepEqual(cardsIn("hold-waiting"), ["orchard-label-polish", "maple-release-notes"]);
-  assert.match(b.text("hold-now"), /^Answer now 4 /);
-  assert.match(b.text("hold-deferred"), /^Deferred 2 /);
+  assert.match(b.text("hold-now"), /^Answer now 3 /);
+  assert.match(b.text("hold-deferred"), /^Deferred 3 /);
   assert.match(b.text("hold-waiting"), /^Waiting on other work 2 /);
   assert.ok(b.ids.indexOf("group-preview-style") > b.ids.indexOf("hold-now"));
   assert.ok(b.ids.indexOf("group-preview-style") < b.ids.indexOf("hold-deferred"));
-  // Deferred cards show their date; a card waiting on other work names that work.
+  // Deferred cards show their date when they have one.
   assert.equal(b.text("until-orchard-tile-refresh"), "until 12-01");
   assert.equal(b.text("until-orchard-license-renewal"), "until 11-20");
+  assert.ok(!b.ids.includes("until-maple-old-palette"));
   assert.ok(!b.ids.includes("until-maple-icon-set"));
-  assert.match(b.text("wait-orchard-label-polish"), /Waiting on Add map labels$/);
-  assert.ok(!b.ids.includes("wait-maple-release-notes"));
   // The search steps through cards in the same order.
   b.view.query = "orchard";
   assert.deepEqual(matches(b.view).filter((id) => b.view.cards.find((c) => c.id === id).column === "held"),
     ["orchard-license-renewal", "orchard-tile-refresh", "orchard-label-polish"]);
 });
 
-test("hold_bucket places a hold first, then hold_kind when there is no bucket", async () => {
+test("hold_bucket places a hold, and hold_kind places one with no bucket", async () => {
   const { cardsFrom } = await board();
   const group = (hold) => cardsFrom({ backlog: { records: [{ id: "x", title: "Fictional task", structured: true,
     state: "queued", hold_reason: "Fictional hold", ...hold }] } })[0].holdGroup;
   assert.equal(group({ hold_kind: "captain", hold_bucket: "live" }), "now");
-  assert.equal(group({ hold_kind: "captain", hold_bucket: "aged" }), "now");
   assert.equal(group({ hold_kind: "captain", hold_bucket: null }), "now");
   assert.equal(group({ hold_kind: null, hold_bucket: null }), "now");
   assert.equal(group({ hold_kind: "captain", hold_bucket: "dated", hold_until: "2026-12-01" }), "deferred");
-  assert.equal(group({ hold_kind: "future", hold_bucket: null }), "deferred");
-  assert.equal(group({ hold_kind: "future", hold_bucket: null, hold_until: "2026-11-17" }), "deferred");
+  assert.equal(group({ hold_kind: "captain", hold_bucket: "aged" }), "deferred");
   assert.equal(group({ hold_kind: "captain", hold_bucket: "blocked", unresolved_blocker_ids: ["y"] }), "waiting");
   assert.equal(group({ hold_kind: "external", hold_bucket: null }), "waiting");
-});
-
-test("a set-aside card with a date shows it in Todo", async () => {
-  // Todo is drawn open here; the fixture's future hold carries hold_until 2026-11-17.
-  const b = await board();
-  assert.equal(b.view.cards.find((c) => c.id === "maple-welcome-tour").column, "todo");
-  assert.equal(b.text("until-maple-welcome-tour"), "until 11-17");
 });
 
 test("held decision options keep their answer draft", async () => {
@@ -218,4 +208,16 @@ test("a card lists every open decision and its answer drafts name the decision's
   // The search finds a decision that is not the first one.
   b.view.query = "coordinates file";
   assert.deepEqual(matches(b.view), ["orchard-nav-style"]);
+});
+
+test("an open decision with a topic is drawn once, in its card, with keyed drafts", async () => {
+  // The parked card's only open decision is "[topic=sample-labels] ... | A: Verbs | B: Nouns".
+  const b = await board();
+  assert.equal(b.view.cards.find((c) => c.id === "maple-button-labels").column, "parked");
+  assert.ok(!b.ids.includes("group-sample-labels"));
+  assert.deepEqual(b.items.filter((x) => x.id.startsWith("opt-") && x.text === "A Verbs").map((x) => x.id),
+    ["opt-open-maple-button-labels-0-A"]);
+  assert.equal(b.text("open-maple-button-labels-0"), "needs-decision default Choose clear sample labels");
+  b.click("opt-open-maple-button-labels-0-B");
+  assert.deepEqual(b.drafts, ["[Board answer] maple-button-labels [key=default]: B (Nouns)"]);
 });

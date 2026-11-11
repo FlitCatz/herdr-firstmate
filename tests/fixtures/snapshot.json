@@ -628,7 +628,7 @@
      "last_event": {
       "state": "",
       "note": "",
-      "raw": "needs-decision: Choose clear sample labels | A: Verbs | B: Nouns",
+      "raw": "needs-decision: [topic=sample-labels] Choose clear sample labels | A: Verbs | B: Nouns",
       "age_seconds": null
      }
     },
@@ -674,11 +674,11 @@
      {
       "key": "default",
       "verb": "needs-decision",
-      "summary": "Choose clear sample labels | A: Verbs | B: Nouns"
+      "summary": "[topic=sample-labels] Choose clear sample labels | A: Verbs | B: Nouns"
      }
     ],
     "scout_report_present": false,
-    "last_event_text": "needs-decision: Choose clear sample labels | A: Verbs | B: Nouns"
+    "last_event_text": "needs-decision: [topic=sample-labels] Choose clear sample labels | A: Verbs | B: Nouns"
    },
    "actions": {
     "watch": "bin/fm-peek.sh fm-maple-button-labels",

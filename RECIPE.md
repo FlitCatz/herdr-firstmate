@@ -27,8 +27,11 @@ The panel buttons select or hide their panel; the chosen panel is remembered per
 Todo, Queued, Working, Done, and Failed columns always appear.
 Held, Parked, Blocked, Paused, Review, and Unknown appear while they contain cards.
 The Held column draws its cards in up to three labelled groups, each with its card count and shown only while it holds a card: `Answer now`, then `Deferred`, then `Waiting on other work`.
-The fleet snapshot's `hold_bucket` places a card: `dated` is deferred, `blocked` waits on other work, and every other held card, including one with no bucket, is one to answer now.
-A deferred card shows its `hold_until` date on its state row as `until <month>-<day>`, such as `until 12-01`, and a card waiting on other work has the same waiting row as a waiting Queued card.
+The fleet snapshot's `hold_bucket` places a card first: `dated` is deferred and `blocked` waits on other work.
+Only captain holds have a bucket, so without one `hold_kind` decides: a `future` hold is deferred and an `external` hold waits on other work.
+Every other held card, such as a live or aged captain hold or a captain hold with no bucket, is one to answer now.
+A deferred card that has a `hold_until` date shows it on its state row as `until <month>-<day>`, such as `until 12-01`; a set-aside (`future`) card with a date shows it the same way in Todo, where such cards are drawn.
+A card waiting on other tasks has the same waiting row as a waiting Queued card.
 Their header dots use the theme's idle, working, blocked, done, unknown, and red colors as appropriate.
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.
 The Kanban search matches task ids and the title, note, and decision text on cards, ignoring case.

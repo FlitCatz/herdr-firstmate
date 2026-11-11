@@ -69,15 +69,23 @@ const MODES = [
   { id: "local-only", label: "Local only" },
 ];
 const modeLabel = (id) => MODES.find((m) => m.id === id)?.label ?? id;
-// The Held column's groups, in drawing order. The snapshot's hold_bucket places a card: "dated"
-// is deferred until hold_until, "blocked" waits on unfinished work, and every other card (a
-// live or aged hold, or one with no bucket) is one to answer now.
+// The Held column's groups, in drawing order.
 const HOLD_GROUPS = [
   { id: "now", title: "Answer now" },
   { id: "deferred", title: "Deferred" },
   { id: "waiting", title: "Waiting on other work" },
 ];
-const HOLD_GROUP_OF = { dated: "deferred", blocked: "waiting" };
+// The group a hold belongs to. The snapshot's hold_bucket decides first: "dated" is deferred
+// until hold_until and "blocked" waits on unfinished work. Only captain holds have a bucket, so
+// without one hold_kind decides: a "future" hold is deferred and an "external" one waits on
+// something outside. Every other hold (live, aged, or a captain hold with no bucket) is one to
+// answer now.
+function holdGroupOf(record) {
+  const bucket = record?.hold_bucket, kind = record?.hold_kind;
+  if (bucket === "dated" || (!bucket && kind === "future")) return "deferred";
+  if (bucket === "blocked" || (!bucket && kind === "external")) return "waiting";
+  return "now";
+}
 const home = () => typeof props()?.home === "string" ? props().home.trim().replace(/(.)\/+$/, "$1") : "";
 // Fixed to Korea time, which has no daylight saving.
 function koreaTime(iso) {
@@ -402,7 +410,7 @@ function cardsFrom(snapshot) {
     heldDecision: Boolean(record?.hold_reason),
     openDecisions,
     // Which HOLD_GROUPS entry a Held card is drawn under, and the date a deferred one waits for.
-    holdGroup: HOLD_GROUP_OF[record?.hold_bucket] ?? "now",
+    holdGroup: holdGroupOf(record),
     holdUntil: typeof record?.hold_until === "string" ? record.hold_until : null,
     column: columnOf(record, task),
     // What columnOf says; column moves away from it only while the worker runs a background job.
@@ -993,7 +1001,8 @@ export default class FmBoard extends View {
     const waiting = c.column === "queued" && c.waitingOn.length > 0;
     // A held card in the "Waiting on other work" group says what it waits on the same way.
     const waitsOn = waiting || (c.column === "held" && c.holdGroup === "waiting" && c.waitingOn.length > 0);
-    const until = c.column === "held" && c.holdGroup === "deferred" && c.holdUntil ? c.holdUntil : null;
+    // A deferred hold shows its date when it has one. A "future" hold is drawn in Todo, not Held.
+    const until = (c.column === "held" || c.column === "todo") && c.holdGroup === "deferred" ? c.holdUntil : null;
     const badge = c.prWaiting ? div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.blocked).child("PR waiting") : null;
     const el = v_flex().id(`card-${c.id}`).gap(4).p(8).rounded(6).bg(t.background)
       .border(current ? 2 : 1).border_color(current ? t.accent : t.border).when(waiting && !current, (e) => e.opacity(0.6))

@@ -224,7 +224,7 @@
     "requires_child_metadata": false,
     "hold_reason": "Later: after the preview ships",
     "hold_kind": "future",
-    "hold_until": null,
+    "hold_until": "2026-11-17",
     "hold_set": null,
     "hold_age_days": null,
     "hold_bucket": null,

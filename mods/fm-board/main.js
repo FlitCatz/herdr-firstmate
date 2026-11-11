@@ -395,18 +395,16 @@ function cardsFrom(snapshot) {
       const summary = String(d?.summary ?? "");
       return { key: String(d?.key ?? ""), verb: String(d?.verb ?? ""), summary, decision: parseDecision(summary) };
     });
-    const decisionText = record?.hold_reason || openDecisions[0]?.summary || "";
-    const decision = parseDecision(decisionText);
+    // Only a backlog hold has a card-level decision; open decisions are listed on their own.
+    const decision = parseDecision(record?.hold_reason || "");
     // A hold's question is the card's detail. An open decision is listed in full below the
     // detail instead, so a detail that only repeats one is left out.
-    const detail = (record?.hold_reason ? decision?.question : "") || (inferred(task, record) ? lastEventDetail(task) : "")
+    const detail = decision?.question || (inferred(task, record) ? lastEventDetail(task) : "")
       || readableDetail(task) || record?.hold_reason || "";
     const listed = openDecisions.some((d) => d.summary && (detail.includes(d.summary) || detail === d.decision?.question));
     return {
     id: record?.id ?? task.id,
     decision,
-    // True when the decision above is the backlog hold's own, which the card draws as before.
-    heldDecision: Boolean(record?.hold_reason),
     openDecisions,
     // Which HOLD_GROUPS entry a Held card is drawn under, and the date a deferred one waits for.
     holdGroup: holdGroupOf(record),
@@ -1034,7 +1032,7 @@ export default class FmBoard extends View {
       .child(h_flex().flex_1().min_w(0).flex_wrap().gap_x(4).text_size(this.fs(11)).font_semibold().text_color(t.foreground)
         .child(div().flex_none().child("백그라운드 실행 중:")).child(div().min_w(0).truncate().child(c.background))));
     if (c.detail && !inGroup) el.child(div().text_size(this.fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
-    const ownDecision = c.heldDecision && c.decision && !c.decision.topic;
+    const ownDecision = c.decision && !c.decision.topic;
     if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id], c.column === "held");
     c.openDecisions.forEach((d, i) => this.openDecision(el, c, d, i, t));
     if (c.pr && /^https:\/\//.test(c.pr)) {
@@ -1344,7 +1342,7 @@ export default class FmBoard extends View {
   entries(cards) {
     const groups = new Map(), out = [];
     for (const c of cards) {
-      const topic = c.heldDecision ? c.decision?.topic : null;
+      const topic = c.decision?.topic;
       if (!topic) { out.push({ card: c }); continue; }
       if (!groups.has(topic)) { groups.set(topic, []); out.push({ topic, cards: groups.get(topic) }); }
       groups.get(topic).push(c);

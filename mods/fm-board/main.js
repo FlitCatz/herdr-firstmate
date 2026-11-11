@@ -28,6 +28,15 @@ const TAIL_READS_PER_TERMINAL = 2;
 // terminal whose reads hung is read again within a minute of reads working again.
 const TAIL_STALE_READ_MS = 60000;
 const TAIL_LINES = 2;
+// Worker terminals are checked for the worker's own running commands this often, all from one
+// process listing.
+const BACKGROUND_REFRESH_MS = 5000;
+const PROCESS_LIST_TIMEOUT_MS = 3000;
+const BACKGROUND_ROUND_LIMIT_MS = 10000;
+// A listing still running after BACKGROUND_STALE_LISTING_MS no longer counts toward
+// BACKGROUND_OPEN_LISTINGS, so listings start again within a minute of working again.
+const BACKGROUND_OPEN_LISTINGS = 2;
+const BACKGROUND_STALE_LISTING_MS = 60000;
 const DONE_LIMIT = 20;
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
 const COLLAPSED_KEY = "collapsed";
@@ -145,6 +154,88 @@ function screenTail(text) {
   while (end > 0 && !INPUT_ROW.test(lines[end - 1])) end--;
   return lines.slice(0, end ? end - 1 : lines.length)
     .filter((line) => line && !DECORATION.test(line)).slice(-TAIL_LINES).map((line) => line.slice(0, 400));
+}
+
+// Commands that count as a worker's own job when its terminal runs them. Only a known program
+// counts: an agent keeps helpers such as tool servers running the whole time, so "any process
+// under the terminal" would show every worker as busy.
+const SHELL = /^(?:sh|bash|zsh|dash|ksh|fish)$/;
+const INTERPRETER = /^(?:sh|bash|zsh|dash|ksh|fish|node|bun|deno|python[\d.]*|ruby)$/;
+const WORK_VERBS = new Map([
+  ["test", "테스트"], ["vstest", "테스트"], ["build", "빌드"], ["msbuild", "빌드"], ["publish", "빌드"], ["pack", "빌드"],
+  ["check", "검사"], ["format", "검사"], ["lint", "검사"], ["clippy", "검사"], ["vet", "검사"],
+  ["run", "실행"], ["watch", "실행"], ["restore", "설치"], ["install", "설치"], ["ci", "설치"],
+]);
+// Programs that take one of WORK_VERBS as their subcommand, and programs that are a job whatever their arguments.
+const VERB_TOOLS = new Set(["dotnet", "npm", "pnpm", "yarn", "bun", "cargo", "go", "swift", "make"]);
+const WHOLE_TOOLS = new Map([
+  ["no-mistakes", "no-mistakes 검증"], ["pytest", "pytest 테스트"], ["jest", "jest 테스트"], ["vitest", "vitest 테스트"],
+  ["xcodebuild", "xcodebuild 빌드"], ["tsc", "tsc 빌드"],
+]);
+// A script named for what it does, such as check.sh, run-tests.sh, or lexer.test.sh.
+const WORK_SCRIPT = /(?:^|[-_.])(?:tests?|check|lint|build|validate|verify)(?:[-_.]|$)/i;
+const WAIT_LOOP = "sleep 대기";
+
+// The short label of a process that is a worker's own job, from its command line; null otherwise.
+/** @param {string} command @returns {string | null} */
+function workLabel(command) {
+  let [program, ...args] = command.trim().split(/\s+/);
+  program = base(program);
+  // An inline shell command that sleeps is a wait loop, such as polling CI until it finishes.
+  // The shell counts rather than its sleep, so the label holds while the loop runs its check.
+  if (SHELL.test(program) && /^-[a-z]*c$/.test(args[0] ?? "")) {
+    const script = args.slice(1).join(" ").replaceAll("\\012", " "); // ps prints a newline as \012
+    if (!/\bsleep\s/.test(script)) return null;
+    return /\bgh(?:-axi)?\s+(?:run|pr)\s/.test(script) ? "CI 대기" : WAIT_LOOP;
+  }
+  // A script or tool started through its interpreter is named by its file, not the interpreter.
+  if (INTERPRETER.test(program) && args[0] && !args[0].startsWith("-")) { program = base(args[0]); args = args.slice(1); }
+  if (WHOLE_TOOLS.has(program)) return WHOLE_TOOLS.get(program) ?? null;
+  if ((program === "gh" || program === "gh-axi") && /^(?:run watch|pr checks)$/.test(args.slice(0, 2).join(" "))) return "CI 대기";
+  if (program === "node" && args.includes("--test")) return "node 테스트";
+  if (VERB_TOOLS.has(program)) {
+    // The subcommand is the first word that is not an option; "npm run test" names it after "run".
+    // A build server's first word is a file path, so an idle MSBuild or compiler server never counts.
+    const words = args.filter((a) => !/^[-+]/.test(a));
+    const verb = words[0] === "run" && WORK_VERBS.has(words[1]) ? words[1] : words[0];
+    return WORK_VERBS.has(verb) ? `${program} ${WORK_VERBS.get(verb)}` : null;
+  }
+  return WORK_SCRIPT.test(program) ? program.slice(0, 40) : null;
+}
+
+// The job each terminal runs, by terminal address, from one "pid ppid command" process listing.
+// Only processes started under the terminal's own program count, never that program itself, and
+// the one nearest to it names the job; a wait loop names it only when nothing else does.
+/** @param {string} listing @param {Map<string, number>} roots @returns {Map<string, string>} */
+function backgroundWork(listing, roots) {
+  /** @type {Map<number, number[]>} */
+  const children = new Map();
+  /** @type {Map<number, string>} */
+  const commands = new Map();
+  for (const line of listing.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (!m) continue;
+    const pid = Number(m[1]), parent = Number(m[2]);
+    commands.set(pid, m[3]);
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent)?.push(pid);
+  }
+  /** @type {Map<string, string>} */
+  const out = new Map();
+  for (const [address, root] of roots) {
+    const seen = new Set([root]), queue = [...(children.get(root) ?? [])];
+    let wait = null, label = null;
+    while (queue.length && !label) {
+      const pid = Number(queue.shift());
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      const found = workLabel(commands.get(pid) ?? "");
+      if (found === WAIT_LOOP) wait ??= found; else label = found;
+      queue.push(...(children.get(pid) ?? []));
+    }
+    if (label ?? wait) out.set(address, String(label ?? wait));
+  }
+  return out;
 }
 
 // True when the harness state is unknown but the board placed the card from other evidence.
@@ -272,6 +363,8 @@ function cardsFrom(snapshot) {
     id: record?.id ?? task.id,
     decision,
     column: columnOf(record, task),
+    // What columnOf says; column moves away from it only while the worker runs a background job.
+    ownColumn: columnOf(record, task),
     title: record?.title ?? task.id,
     // Unfinished work this item waits on, by title; empty when it can start.
     waitingOn: (record?.unresolved_blocker_ids ?? []).map((id) => titles.get(id) ?? id),
@@ -330,6 +423,14 @@ export default class FmBoard extends View {
     // Start times of the reads that have not ended, by terminal address, so hung reads cannot pile up.
     /** @type {Map<string, number[]>} */
     this.tailReading = new Map();
+    // The job each live worker's terminal runs, by terminal address, from the last process listing.
+    /** @type {Map<string, string>} */
+    this.background = new Map();
+    /** @type {{ started: number } | null} */
+    this.backgroundRound = null;
+    // Start times of the listings that have not ended, so hung listings cannot pile up.
+    /** @type {number[]} */
+    this.backgroundListing = [];
     this.colorChoice = {};
     try { this.colorChoice = JSON.parse(localStorage.getItem(PROJECT_COLORS_KEY) ?? "{}") ?? {}; } catch {}
     this.adding = Boolean(ui.adding); this.confirm = ui.confirm ?? null; this.mode = MODES[0].id;
@@ -353,6 +454,7 @@ export default class FmBoard extends View {
     cx.timer.every(REFRESH_FALLBACK_MS, (cx) => this.refresh(cx));
     cx.timer.every(10000, (cx) => this.viewer.refresh(cx));
     cx.timer.every(TAIL_REFRESH_MS, (cx) => this.readTails(cx));
+    cx.timer.every(BACKGROUND_REFRESH_MS, (cx) => this.readBackground(cx));
     for (const dir of ["state", "data"]) {
       cx.spawn(async (cx) => {
         for (;;) { await watchFolder(`${home()}/${dir}`); this.refresh(cx); }
@@ -870,6 +972,13 @@ export default class FmBoard extends View {
         .child(`${shown ? "▾" : "▸"} ${waitingLabel(c)}`));
       if (shown) el.child(this.chain(c, t));
     }
+    // The same tint as the Live strip: the working color alone is too faint as text on a light theme.
+    if (c.background) el.child(h_flex().id(`background-${c.id}`).gap(6).px(6).py(2).rounded(5).items_center().min_w(0)
+      .bg(t.working + "1f").tooltip("Its agent's turn has ended, but the worker's terminal is still running this")
+      .child(div().flex_none().w(6).h(6).rounded(3).bg(t.working))
+      // In a narrow column the job's name moves to a second line whole, instead of being cut off.
+      .child(h_flex().flex_1().min_w(0).flex_wrap().gap_x(4).text_size(this.fs(11)).font_semibold().text_color(t.foreground)
+        .child(div().flex_none().child("백그라운드 실행 중:")).child(div().min_w(0).truncate().child(c.background))));
     if (c.detail && !inGroup) el.child(div().text_size(this.fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
     const ownDecision = c.decision && !c.decision.topic;
     if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id], c.column === "held");
@@ -996,6 +1105,56 @@ export default class FmBoard extends View {
     if (status === "working" || status === "blocked") return `Worker ${status}`;
     if (status === "idle" || status === "done") return "Worker idle";
     return "Live";
+  }
+
+  // What the worker's terminal still runs after its agent's turn ended, or null. A working
+  // agent runs its commands as part of its turn, which the card already shows.
+  /** @returns {string | null} */
+  backgroundOf(c) {
+    if (!this.workerLive(c) || this.liveWorkers?.get(c.terminal)?.status === "working") return null;
+    return this.background.get(c.terminal) ?? null;
+  }
+
+  // One process listing for every card with a live worker; a tick is skipped while a round is
+  // still running. A card is shown as running only on a listing that just succeeded: a failed
+  // listing, one not ended after BACKGROUND_ROUND_LIMIT_MS, or one held back because
+  // BACKGROUND_OPEN_LISTINGS earlier listings are still running, clears every card's job. A round
+  // past the limit is dropped with its late result, so a hung listing cannot stop later rounds.
+  readBackground(cx) {
+    const now = Date.now();
+    if (this.backgroundRound && now - this.backgroundRound.started < BACKGROUND_ROUND_LIMIT_MS) return;
+    if (this.backgroundRound) this.setBackground(new Map(), cx);
+    this.backgroundRound = null;
+    /** @type {Map<string, number>} */
+    const roots = new Map();
+    for (const c of this.cards ?? []) {
+      const pid = this.workerLive(c) ? this.liveWorkers?.get(c.terminal)?.pid : null;
+      if (Number.isSafeInteger(pid) && pid > 1) roots.set(c.terminal, pid);
+    }
+    this.backgroundListing = this.backgroundListing.filter((t) => now - t < BACKGROUND_STALE_LISTING_MS);
+    if (!roots.size || this.backgroundListing.length >= BACKGROUND_OPEN_LISTINGS) { this.setBackground(new Map(), cx); return; }
+    const round = this.backgroundRound = { started: now };
+    this.backgroundListing.push(now);
+    cx.spawn(async (cx) => {
+      /** @type {Map<string, string>} */
+      let next = new Map();
+      try {
+        // By absolute path, so the listing does not depend on the PATH the app was started with.
+        const r = await exec("/bin/ps", ["-axww", "-o", "pid=,ppid=,command="], { timeout: PROCESS_LIST_TIMEOUT_MS });
+        if (r.code === 0) next = backgroundWork(r.stdout, roots);
+      } catch {} // a failed or stopped listing leaves every card as it is without a job
+      this.backgroundListing = this.backgroundListing.filter((t) => t !== now);
+      if (this.backgroundRound !== round) return;
+      this.backgroundRound = null;
+      this.setBackground(next, cx);
+    });
+  }
+
+  /** @param {Map<string, string>} next @param {import("gpui-kit").Context | import("gpui-kit").AsyncContext} cx */
+  setBackground(next, cx) {
+    const changed = next.size !== this.background.size || [...next].some(([address, label]) => this.background.get(address) !== label);
+    this.background = next;
+    if (changed) cx.notify();
   }
 
   // One read per worker whose card is on screen; a tick is skipped while a round is still
@@ -1263,7 +1422,12 @@ export default class FmBoard extends View {
         .child(div().text_size(13).text_color(t.muted).child("Set the home prop on this mod in your layout to the path of your firstmate home.")));
     // terminals() is live data, so a worker starting or ending redraws the cards.
     this.liveWorkers = new Map(terminals().filter((x) => x.state === "live")
-      .map((x) => [x.address, { task: x.labels?.["firstmate.task"], status: x.status }]));
+      .map((x) => [x.address, { task: x.labels?.["firstmate.task"], status: x.status, pid: x.pid }]));
+    // A paused card whose worker still runs a job is drawn in Working until that job ends.
+    for (const c of this.cards ?? []) {
+      c.background = this.backgroundOf(c);
+      c.column = c.background && c.ownColumn === "paused" ? "working" : c.ownColumn;
+    }
     this.monoFont = String(settings()?.font_family ?? "JetBrains Mono");
     // The cards drawn below record which worker screens are worth reading.
     this.shownTerminals = new Set();

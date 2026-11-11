@@ -59,6 +59,18 @@ A read can outlast its 1.5-second timeout when a process it started keeps its ou
 Herdr tells a mod nothing when its panel is hidden, so these reads continue while the Board panel is hidden, and stop when no drawn card has a live worker.
 These lines are only drawn on the card; the board does not log or save them.
 
+A card with a live worker terminal shows `백그라운드 실행 중: <job>` on a tinted row with a working-color dot while that terminal still runs a job after its agent's turn ended, such as a build, a test run, a validation run, or a CI wait.
+A Paused card is also drawn in the Working column for as long as the job runs and returns to Paused when it ends; cards in other columns keep their column and only gain the row.
+A worker that Herdr reports as working gains nothing, because the commands it runs are part of its turn.
+The job comes from the processes under the worker's terminal, not from the worker's status text, so a worker that only reported a wait and stopped stays Paused.
+Every 5 seconds the board takes one process listing with `/bin/ps` for all such cards, drawn or not, and looks at the processes started under each terminal's own program.
+Only known commands count, because an agent keeps helpers such as tool servers running the whole time: `no-mistakes`; `dotnet`, `npm`, `pnpm`, `yarn`, `bun`, `cargo`, `go`, `swift`, and `make` with a subcommand that tests, builds, checks, runs, or installs, such as `test`, `build`, `format`, `run`, or `restore`; `pytest`, `jest`, `vitest`, `node --test`, `xcodebuild`, and `tsc`; `gh run watch` and `gh pr checks`, also through `gh-axi`; a script whose file name has `test`, `tests`, `check`, `lint`, `build`, `validate`, or `verify` as a word, shown by its name; and an inline shell command that contains `sleep`, which is a wait loop.
+The agent itself, a tool server, and an idle MSBuild or compiler server never count, and neither does a command the board does not know or a job detached from the terminal's process tree.
+The row names one job: the one nearest the terminal's program, with a wait loop named only when nothing else runs.
+A listing that fails, or is stopped after 3 seconds, clears the row from every card, so no card is shown as running on old evidence.
+A round still unfinished after 10 seconds is dropped the same way and the next one starts, with at most two listings under a minute old running at once, so the rows come back within a minute of listings working again.
+The command lines are only read to find these jobs; the board does not log or save them.
+
 Project rows can be expanded to show details, a project filter, color choices, a folder button, and a removal request.
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
 Folded sections and cards, collapsed columns, and project color choices are remembered locally.
@@ -87,7 +99,7 @@ Its Peek icon runs Herdr's `terminal.peek` command.
 Card drafts use macOS `pbpaste` and `pbcopy` to save clipboard text to a temporary file and restore it around Herdr's `terminal.paste` action; they verify terminal focus before pasting and leave Enter to the owner.
 They first read the clipboard types with `osascript`; plain text is restored as is, and rich text such as HTML, RTF, or a web archive is restored as plain text with its formatting dropped.
 If the clipboard holds an image, files, or RTFD, which can carry attachments, or holds no plain text at all, nothing is inserted, the clipboard is left untouched, and a notice asks you to paste it first.
-It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, and `open` for folders or review URLs.
+It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, `/bin/ps` to list processes for the cards' background job rows, and `open` for folders or review URLs.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.
 Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews.
@@ -96,6 +108,7 @@ Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data an
 
 The board is trusted code: it runs `hc`, Firstmate scripts, Git, and other local programs through Herdr, and it reads the configured Firstmate home outside its own mod folder.
 It reads the screens of live worker terminals every 4 seconds, so whatever a worker prints can appear on its card.
+While a card has a live worker it also lists every process on the machine with its command line every 5 seconds, and the file name of a script a worker runs can appear on its card.
 Its request controls communicate with the Firstmate session and can ask it to make changes.
 
 The layout ships with an empty `home` prop.

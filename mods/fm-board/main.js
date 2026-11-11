@@ -193,7 +193,7 @@ function workLabel(command) {
   const subcommand = VERB_TOOLS.has(program) && !/[./]/.test(args[0] ?? "");
   if (INTERPRETER.test(program) && args[0] && !args[0].startsWith("-") && !subcommand) { program = base(args[0]); args = args.slice(1); }
   if ((program === "gh" || program === "gh-axi") && /^(?:run watch|pr checks)$/.test(args.slice(0, 2).join(" "))) return "CI 대기";
-  if (args.some((a) => /^--watch/.test(a) || (program === "tsc" && a === "-w"))) return null;
+  if (args.some((a) => /^--watch(?:All)?(?:=(?!false$|0$).*)?$/.test(a) || (program === "tsc" && a === "-w"))) return null;
   if (WHOLE_TOOLS.has(program)) return WHOLE_TOOLS.get(program) ?? null;
   if (program === "node" && args.includes("--test")) return "node 테스트";
   if (VERB_TOOLS.has(program)) {

@@ -142,9 +142,9 @@ test("the Held column draws three labelled groups, answer now first", async () =
   assert.deepEqual(cardsIn("hold-deferred"), ["orchard-license-renewal", "orchard-tile-refresh", "maple-old-palette"]);
   // An external hold has no bucket and waits on something outside.
   assert.deepEqual(cardsIn("hold-waiting"), ["orchard-label-polish", "maple-release-notes"]);
-  assert.match(b.text("hold-now"), /^Answer now 3 /);
-  assert.match(b.text("hold-deferred"), /^Deferred 3 /);
-  assert.match(b.text("hold-waiting"), /^Waiting on other work 2 /);
+  assert.match(b.text("hold-now"), /^▾ Answer now 3 /);
+  assert.match(b.text("hold-deferred"), /^▾ Deferred 3 /);
+  assert.match(b.text("hold-waiting"), /^▾ Waiting on other work 2 /);
   assert.ok(b.ids.indexOf("group-preview-style") > b.ids.indexOf("hold-now"));
   assert.ok(b.ids.indexOf("group-preview-style") < b.ids.indexOf("hold-deferred"));
   // Deferred cards show their date when they have one.
@@ -156,6 +156,20 @@ test("the Held column draws three labelled groups, answer now first", async () =
   b.view.query = "orchard";
   assert.deepEqual(matches(b.view).filter((id) => b.view.cards.find((c) => c.id === id).column === "held"),
     ["orchard-license-renewal", "orchard-tile-refresh", "orchard-label-polish"]);
+});
+
+test("a Held group heading folds its group, and a search opens it again", async () => {
+  const b = await board();
+  b.click("fold-hold:deferred");
+  const redrawn = () => drawn(b.view.render());
+  const folded = redrawn();
+  // The heading keeps its count; only that group's cards are gone.
+  assert.equal(folded.find((x) => x.id === "hold-deferred").text, "▸ Deferred 3");
+  assert.ok(!folded.some((x) => x.id === "card-orchard-tile-refresh"));
+  assert.ok(folded.some((x) => x.id === "card-maple-icon-set"));
+  assert.ok(folded.some((x) => x.id === "card-orchard-label-polish"));
+  b.view.query = "orchard";
+  assert.ok(redrawn().some((x) => x.id === "card-orchard-tile-refresh"));
 });
 
 test("hold_bucket places a hold, and hold_kind places one with no bucket", async () => {

@@ -1413,11 +1413,9 @@ export default class FmBoard extends View {
   }
 
   // A Held group's heading: the column header's strip, so the groups stand apart from the cards
-  // between them, but quieter than that header: no dot, smaller text. A click folds the group.
-  holdHeading(foldId, s, t, folded) {
-    return h_flex().id(`fold-${foldId}`).gap(6).items_center().px(6).py(3).rounded(5).bg(t.selected)
-      .cursor_pointer().hover((e) => e.opacity(0.75)).on_click((_e, cx) => this.toggleFold(foldId, cx))
-      .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
+  // between them, but quieter than that header: no dot, smaller text.
+  holdHeading(s, t) {
+    return h_flex().gap(6).items_center().px(6).py(3).rounded(5).bg(t.selected)
       .child(div().min_w(0).truncate().text_size(this.fs(11)).font_semibold().text_color(t.foreground).child(s.title))
       .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(String(s.cards.length)));
   }
@@ -1448,13 +1446,11 @@ export default class FmBoard extends View {
     const list = v_flex().id(`list-${col.id}`).gap(6);
     for (const [i, s] of this.sections(col.id).entries()) {
       if (!s.title) { list.children(this.items(s.cards, t)); continue; }
-      // A search shows matching groups open, without changing the remembered folds.
-      const foldId = `hold:${s.id}`, folded = this.folded.has(foldId) && !this.query;
       // Each group is its own element, so a topic box drawn in two groups keeps a distinct id.
       // Extra room above every group after the first, so a heading belongs to the cards below it.
-      const group = v_flex().id(`hold-${s.id}`).gap(6).when(i > 0, (e) => e.mt(6))
-        .child(this.holdHeading(foldId, s, t, folded));
-      list.child(folded ? group : group.children(this.items(s.cards, t)));
+      list.child(v_flex().id(`hold-${s.id}`).gap(6).when(i > 0, (e) => e.mt(6))
+        .child(this.holdHeading(s, t))
+        .children(this.items(s.cards, t)));
     }
     return el.child(stacked ? list : list.flex_1().min_h(0).overflow_y_scrollbar());
   }

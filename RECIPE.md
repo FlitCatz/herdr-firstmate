@@ -27,7 +27,7 @@ The panel buttons select or hide their panel; the chosen panel is remembered per
 Todo, Queued, Working, Done, and Failed columns always appear.
 Held, Parked, Blocked, Paused, Review, and Unknown appear while they contain cards.
 The Held column draws its cards in up to three labelled groups, each with its card count and shown only while it holds a card: `Answer now`, then `Deferred`, then `Waiting on other work`.
-Each group starts with a heading strip across the column that carries its name and card count; clicking the heading folds or unfolds the group, and a search shows matching cards of a folded group.
+Each group starts with a heading strip across the column that carries its name and card count.
 The fleet snapshot's `hold_bucket` places a card: `live` is answered now, `dated` and `aged` are deferred, and `blocked` waits on other work.
 Only captain holds have a bucket: an `external` hold waits on other work, and a captain hold with no bucket is answered now.
 A deferred card that has a `hold_until` date shows it on its state row as `until <month>-<day>`, such as `until 12-01`.

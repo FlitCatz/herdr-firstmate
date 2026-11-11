@@ -69,6 +69,22 @@ const MODES = [
   { id: "local-only", label: "Local only" },
 ];
 const modeLabel = (id) => MODES.find((m) => m.id === id)?.label ?? id;
+// The Held column's groups, in drawing order.
+const HOLD_GROUPS = [
+  { id: "now", title: "Answer now" },
+  { id: "deferred", title: "Deferred" },
+  { id: "waiting", title: "Waiting on other work" },
+];
+// The group a hold belongs to, following the snapshot's hold_bucket: only a "live" hold is the
+// captain's current call. "dated" (until hold_until) and "aged" holds are deferred, and "blocked"
+// waits on unfinished work. Only captain holds have a bucket: an "external" hold waits on
+// something outside, and a captain hold with no bucket is one to answer now.
+function holdGroupOf(record) {
+  const bucket = record?.hold_bucket;
+  if (bucket === "dated" || bucket === "aged") return "deferred";
+  if (bucket === "blocked" || record?.hold_kind === "external") return "waiting";
+  return "now";
+}
 const home = () => typeof props()?.home === "string" ? props().home.trim().replace(/(.)\/+$/, "$1") : "";
 // Fixed to Korea time, which has no daylight saving.
 function koreaTime(iso) {
@@ -334,6 +350,13 @@ function parseDecision(text) {
   return { topic: tagged?.[1] ?? null, question: parts[0], options, recommended };
 }
 
+// The start of a Board answer draft. An open decision's key rides along as "[key=<key>]", which
+// firstmate passes to fm-send --resolve-key to close exactly that decision.
+/** @param {string[]} ids @param {string} [key] */
+function answerHead(ids, key = "") {
+  return `[Board answer] ${ids.join(", ")}${key ? ` [key=${key}]` : ""}:`;
+}
+
 // Done means the worker finished, not that its PR landed. Teardown moves landed
 // work to the backlog's Done section, so a live done task with an unmerged PR is waiting.
 function prWaiting(record, task) {
@@ -351,10 +374,12 @@ function waitingLabel(c) {
 }
 
 // What the Kanban search matches, lowercased: the task id and the card's text (title,
-// full note or detail even where the card truncates or hides it, and its decision's question and options).
+// full note or detail even where the card truncates or hides it, its decision's question and
+// options, and every open decision's text).
 function searchText(c) {
   const decision = c.decision ? [c.decision.question, ...c.decision.options.map((o) => o.text)] : [];
-  return [c.id, c.title, c.detail, c.sourceDetail, ...decision].filter(Boolean).join("\n").toLowerCase();
+  const open = c.openDecisions.map((d) => d.summary);
+  return [c.id, c.title, c.detail, c.sourceDetail, ...decision, ...open].filter(Boolean).join("\n").toLowerCase();
 }
 
 function cardsFrom(snapshot) {
@@ -365,11 +390,25 @@ function cardsFrom(snapshot) {
   const titles = new Map(records.map((r) => [r.id, r.title ?? r.id]));
   for (const t of snapshot.tasks ?? []) if (!known.has(t.id)) pairs.push({ record: null, task: t });
   return pairs.map(({ record, task }) => {
-    const decisionText = record?.hold_reason || task?.hints?.open_decisions?.[0]?.summary || "";
-    const decision = parseDecision(decisionText);
+    // Every decision the worker's status log still holds open, in the snapshot's order: newest last.
+    const openDecisions = (task?.hints?.open_decisions ?? []).map((d) => {
+      const summary = String(d?.summary ?? "");
+      return { key: String(d?.key ?? ""), verb: String(d?.verb ?? ""), summary, decision: parseDecision(summary) };
+    });
+    // Only a backlog hold has a card-level decision; open decisions are listed on their own.
+    const decision = parseDecision(record?.hold_reason || "");
+    // A hold's question is the card's detail. An open decision is listed in full below the
+    // detail instead, so a detail that only repeats one is left out.
+    const detail = decision?.question || (inferred(task, record) ? lastEventDetail(task) : "")
+      || readableDetail(task) || record?.hold_reason || "";
+    const listed = openDecisions.some((d) => d.summary && (detail.includes(d.summary) || detail === d.decision?.question));
     return {
     id: record?.id ?? task.id,
     decision,
+    openDecisions,
+    // Which HOLD_GROUPS entry a Held card is drawn under, and the date a deferred one waits for.
+    holdGroup: holdGroupOf(record),
+    holdUntil: typeof record?.hold_until === "string" ? record.hold_until : null,
     column: columnOf(record, task),
     // What columnOf says; column moves away from it only while the worker runs a background job.
     ownColumn: columnOf(record, task),
@@ -382,7 +421,7 @@ function cardsFrom(snapshot) {
     project: projectOf(task?.project, record?.repo),
     // An unobservable worker shows the state its column was derived from, not "unknown".
     state: inferred(task, record) ? columnOf(record, task) : task?.current_state?.state ?? record?.state ?? "",
-    detail: decision?.question || (inferred(task, record) ? lastEventDetail(task) : "") || readableDetail(task) || record?.hold_reason || "",
+    detail: listed ? "" : detail,
     // Firstmate's own wording, kept so the search still finds it.
     sourceDetail: task?.current_state?.detail ?? "",
     pr: task?.pr?.url ?? record?.pr_url ?? detailPr(task?.current_state?.detail),
@@ -390,7 +429,7 @@ function cardsFrom(snapshot) {
     // Only hc runs workers in Herdr terminals, so only those can be opened from here.
     terminal: task?.backend === "hc" ? hcAddress(task) : null,
     // The worker's isolated copy, for the read-only Files/Changes view.
-    worktree: task?.worktree?.present ? task.worktree.path : null,
+    worktree: task?.paths?.worktree?.present ? task.paths.worktree.path : null,
     };
   });
 }
@@ -957,6 +996,8 @@ export default class FmBoard extends View {
     const current = this.query && this.currentMatch === c.id;
     // A queued card that still waits on other work is dimmed and says what it waits on.
     const waiting = c.column === "queued" && c.waitingOn.length > 0;
+    // A deferred hold shows its date when it has one.
+    const until = c.column === "held" && c.holdGroup === "deferred" ? c.holdUntil : null;
     const badge = c.prWaiting ? div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.blocked).child("PR waiting") : null;
     const el = v_flex().id(`card-${c.id}`).gap(4).p(8).rounded(6).bg(t.background)
       .border(current ? 2 : 1).border_color(current ? t.accent : t.border).when(waiting && !current, (e) => e.opacity(0.6))
@@ -970,7 +1011,10 @@ export default class FmBoard extends View {
         .border_color(c.priority === 0 ? t.foreground : t.border).text_size(this.fs(10))
         .text_color(c.priority === 0 ? t.foreground : t.muted).tooltip("Backlog priority, 0 is highest").child(`P${c.priority}`)))
       .child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.muted).truncate()
-        .tooltip("Task state from firstmate").child(waiting ? "waiting" : c.state)));
+        .tooltip("Task state from firstmate").child(waiting ? "waiting" : c.state))
+      // The year is left out: a deferral date is always ahead, and "until 12-01" fits a narrow card.
+      .when(Boolean(until), (e) => e.child(div().id(`until-${c.id}`).flex_none().text_size(this.fs(11)).font_semibold()
+        .text_color(t.muted).tooltip(`Deferred until ${until}`).child(`until ${String(until).replace(/^\d{4}-/, "")}`))));
     if (waiting) {
       const key = `chain:${c.id}`, shown = this.chainOpen.has(key);
       el.child(div().id(`wait-${c.id}`).min_w(0).text_size(this.fs(11)).text_color(t.blocked).truncate()
@@ -990,6 +1034,7 @@ export default class FmBoard extends View {
     if (c.detail && !inGroup) el.child(div().text_size(this.fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
     const ownDecision = c.decision && !c.decision.topic;
     if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id], c.column === "held");
+    c.openDecisions.forEach((d, i) => this.openDecision(el, c, d, i, t));
     if (c.pr && /^https:\/\//.test(c.pr)) {
       el.child(div().id(`pr-${c.id}`).text_size(this.fs(11)).text_color(t.accent).truncate()
         .hover((s) => s.text_color(t.foreground))
@@ -1044,17 +1089,33 @@ export default class FmBoard extends View {
 
   // Options of a held decision become editable chat drafts; the owner confirms them with Enter.
   // Elsewhere they are plain text: set-aside work in Todo waits until it is brought back.
-  /** @param {string[]} ids @param {boolean} answerable */
-  decisionLines(el, decision, t, key, ids, answerable) {
+  // An open decision's options carry its key in the draft, so firstmate can close that decision.
+  /** @param {string[]} ids @param {boolean} answerable @param {string} [decisionKey] */
+  decisionLines(el, decision, t, key, ids, answerable, decisionKey = "") {
     for (const o of decision.options) {
       el.child(h_flex().id(`opt-${key}-${o.label}`).gap(6).px(4).py(2).rounded(5)
         .when(answerable, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Put this answer in the firstmate input")
-          .on_click((_e, cx) => this.insertCardText(`[Board answer] ${ids.join(", ")}: ${o.label} (${o.text})`, cx)))
+          .on_click((_e, cx) => this.insertCardText(`${answerHead(ids, decisionKey)} ${o.label} (${o.text})`, cx)))
         .child(div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.accent).child(o.label))
         .child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.foreground).child(o.text)));
     }
     if (decision.recommended) el.child(div().text_size(this.fs(11)).text_color(t.muted).child(`Recommended: ${decision.recommended}`));
     return el;
+  }
+
+  // One decision the worker's status log still holds open: its verb and key, its text, and its
+  // options when the text has them. Clicking the text starts an answer draft that names the
+  // decision's key; an option fills the answer in. The owner confirms either with Enter.
+  openDecision(el, c, d, i, t) {
+    const id = `open-${c.id}-${i}`;
+    el.child(v_flex().id(id).gap(1).px(4).py(2).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
+      .tooltip("Start an answer to this decision in the firstmate input")
+      .on_click((_e, cx) => this.insertCardText(answerHead([c.id], d.key), cx))
+      .child(h_flex().gap(6).items_center().min_w(0)
+        .child(div().flex_none().text_size(this.fs(10)).font_semibold().text_color(t.blocked).child(d.verb))
+        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(10)).text_color(t.dim).child(d.key)))
+      .child(div().text_size(this.fs(11)).text_color(t.foreground).child((d.decision?.question || d.summary).slice(0, 240))));
+    if (d.decision) this.decisionLines(el, d.decision, t, id, [c.id], true, d.key);
   }
 
   // A project's local copy plus each live worker's isolated copy of it.
@@ -1277,6 +1338,7 @@ export default class FmBoard extends View {
   }
 
   // A column's entries in drawing order: a card, or a topic group at its first card's place.
+  // Only holds share a topic box; a card lists its open decisions itself, each with its own key.
   entries(cards) {
     const groups = new Map(), out = [];
     for (const c of cards) {
@@ -1292,10 +1354,18 @@ export default class FmBoard extends View {
     return this.entries(cards).map((x) => (x.topic ? this.group(x.topic, x.cards, t) : this.card(x.card, t)));
   }
 
+  // A column's cards in drawing order, split into its labelled groups: the Held column has
+  // HOLD_GROUPS (only those holding a card), every other column one unlabelled group.
+  sections(id) {
+    const cards = this.cardsIn(id);
+    if (id !== "held") return [{ id, title: null, cards }];
+    return HOLD_GROUPS.map((g) => ({ ...g, cards: cards.filter((c) => c.holdGroup === g.id) })).filter((s) => s.cards.length);
+  }
+
   // Matching card ids in the order the board draws them: columns left to right, then down each column.
   matchIds() {
-    return this.shownColumns().flatMap((col) => this.entries(this.cardsIn(col.id))
-      .flatMap((x) => (x.topic ? x.cards : [x.card])).map((c) => c.id));
+    return this.shownColumns().flatMap((col) => this.sections(col.id)).flatMap((s) => this.entries(s.cards))
+      .flatMap((x) => (x.topic ? x.cards : [x.card])).map((c) => c.id);
   }
 
   shownColumns() {
@@ -1365,7 +1435,16 @@ export default class FmBoard extends View {
     if (!stacked) el.flex_1().h_full();
     else el.flex_none(); // stacked columns keep their height; the board scrolls as one list
     if (collapsed) return el;
-    const list = v_flex().id(`list-${col.id}`).gap(6).children(this.items(cards, t));
+    const list = v_flex().id(`list-${col.id}`).gap(6);
+    for (const s of this.sections(col.id)) {
+      if (!s.title) { list.children(this.items(s.cards, t)); continue; }
+      // Each group is its own element, so a topic box drawn in two groups keeps a distinct id.
+      list.child(v_flex().id(`hold-${s.id}`).gap(6)
+        .child(h_flex().gap(6).items_center().px(2).pt(2)
+          .child(div().text_size(this.fs(11)).font_semibold().text_color(s.id === "now" ? t.foreground : t.muted).child(s.title))
+          .child(div().text_size(this.fs(11)).text_color(t.dim).child(String(s.cards.length))))
+        .children(this.items(s.cards, t)));
+    }
     return el.child(stacked ? list : list.flex_1().min_h(0).overflow_y_scrollbar());
   }
 

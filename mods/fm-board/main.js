@@ -684,11 +684,11 @@ export default class FmBoard extends View {
     this.watchers = roles.map((x) => ({ ...x, up: alive.get(x.pid) ?? null }));
   }
 
-  send(text, cx, after) {
+  send(text, cx, after, sent = "Request sent") {
     cx.spawn(async (cx) => {
       const r = await this.fm("fm-inbox.sh", ["note", "--json", "--request-id", `board-${Date.now()}`, "--", text]);
       // 3 means saved but not announced: the request exists and firstmate sees it at its next drain.
-      if (r.code === 0 || r.code === 3) { this.notice = "Request sent"; after?.(); }
+      if (r.code === 0 || r.code === 3) { this.notice = sent; after?.(); }
       else this.notice = `Request failed: ${r.stderr.trim() || r.code}`;
       this.last = 0; this.refresh(cx);
       cx.notify();
@@ -1000,6 +1000,15 @@ export default class FmBoard extends View {
         `[Board request] New ${kind}: project=${project} - ${text}`, `${kind === "scout" ? "Scout" : "Task"} request typed into firstmate`,
         cx, () => { this.ask.set_value(""); this.askProject = null; });
     };
+    // A memo never types into the terminal: it is saved as an inbox note at once, so it survives
+    // a firstmate that is stopped on a limit or closed.
+    const memo = (cx) => {
+      const text = this.ask.value().trim();
+      if (!text) { this.notice = "Type the note to save"; cx.notify(); return; }
+      const project = this.askProject ?? "(firstmate picks)";
+      this.send(`[Board memo] project=${project}: ${text} - file this in the backlog only; do not start work`,
+        cx, () => { this.ask.set_value(""); this.askProject = null; }, "Memo saved");
+    };
     const chip = (name) => {
       const on = this.askProject === name;
       return div().id(`ask-${name}`).flex_none().rounded(9).border(2).border_color(on ? t.foreground : t.surface)
@@ -1028,7 +1037,9 @@ export default class FmBoard extends View {
         .child(this.button("ask-scout", "Scout", t, request("scout"), true)
           .tooltip("Request an investigation that produces a report, not a code change"))
         .child(this.button("ask-task", "Task", t, request("task"), true)
-          .tooltip("Request a change to the project, delivered as a PR or branch")))
+          .tooltip("Request a change to the project, delivered as a PR or branch"))
+        .child(this.button("ask-memo", "Memo", t, memo, true)
+          .tooltip("Save a note for firstmate to file in the backlog later, without starting work. Works even when firstmate is stopped")))
       .child(h_flex().gap(4).items_center().flex_wrap()
         .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(this.askProject ? "Project" : "Project (optional)"))
         .children(this.projects.map((p) => chip(p.name))));

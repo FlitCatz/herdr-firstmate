@@ -22,13 +22,14 @@ const RECORD_KEYS = ["blocked_by", "blocked_by_ids", "blocked_reason", "body_exc
   "hold_until", "id", "kind", "links", "local_note", "merged", "order", "pr_url", "priority", "raw", "repo", "report_path",
   "reported", "requires_child_metadata", "since", "state", "structured", "title", "unresolved_blocker_ids"];
 
-// A stand-in for a gpui-kit element: it keeps the id, click handler, and children it is given.
+// A stand-in for a gpui-kit element: it keeps the id, click handler, children, and styling calls it is given.
 function element() {
-  const node = { id: null, click: null, kids: [] };
+  const node = { id: null, click: null, kids: [], calls: [] };
   const self = new Proxy(node, {
     get(target, name) {
       if (name === "node") return target;
       return (...args) => {
+        if (!["child", "children", "when", "id", "on_click"].includes(name)) target.calls.push([name, ...args]);
         if (name === "id") target.id = args[0];
         else if (name === "on_click") target.click = args[0];
         else if (name === "child") target.kids.push(args[0]);
@@ -47,8 +48,8 @@ function drawn(tree) {
   const walk = (kid) => {
     if (kid === null || kid === undefined) return "";
     if (typeof kid !== "object") return String(kid);
-    const { id, click, kids } = kid.node;
-    const entry = id === null ? null : { id, click, text: "" };
+    const { id, click, kids, calls } = kid.node;
+    const entry = id === null ? null : { id, click, calls, text: "" };
     if (entry) out.push(entry);
     const text = kids.map(walk).filter(Boolean).join(" ");
     if (entry) entry.text = text;
@@ -59,7 +60,9 @@ function drawn(tree) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board() {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false } = {}) {
+  // The registry the Board reads; tests change it, then reload.
+  const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
@@ -72,10 +75,13 @@ async function board() {
     FolderViewer: class { constructor() { this.root = null; } },
     props: () => ({ home: HOME, snapshot_file: snapshotFile, collapsed: [], ui: {} }),
     theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: store,
     readTextFile: async (file) => {
       if (file === snapshotFile) return readFile(file, "utf8");
-      if (file === `${HOME}/data/projects.md`) return "- maple-workshop - Fictional project.\n- orchard-atlas - Fictional project.\n";
+      if (file === `${HOME}/data/projects.md`) {
+        if (registry.fails) throw new Error("registry unreadable");
+        return registry.projects.map((name) => `- ${name} - Fictional project.\n`).join("");
+      }
       throw new Error(`no such file: ${file}`);
     },
     // No helper program exists here; the Board treats every one as failed.
@@ -86,7 +92,7 @@ async function board() {
   const view = new FmBoard();
   view.init({}, cx);
   await Promise.all(pending);
-  assert.equal(view.error, null);
+  if (!registryFails) assert.equal(view.error, null);
   const drafts = [], opened = [];
   view.insertCardText = (text) => drafts.push(text);
   view.openView = (project, source) => opened.push({ project, ...source });
@@ -96,7 +102,15 @@ async function board() {
     assert.ok(item?.click, `nothing to click at ${id}`);
     item.click({}, cx);
   };
-  return { view, cardsFrom, items, ids: items.map((x) => x.id), click, drafts, opened,
+  // Draws again after the test changed the Board, as Herdr does on every notify.
+  const redraw = () => drawn(view.render(cx));
+  // Reads the snapshot and registry again, as a watched change or the fallback timer does, then draws.
+  const reload = async () => {
+    view.last = 0; view.refresh(cx);
+    await Promise.all(pending);
+    return redraw();
+  };
+  return { view, registry, reload, cardsFrom, items, ids: items.map((x) => x.id), click, drafts, opened, redraw,
     text: (id) => items.find((x) => x.id === id)?.text };
 }
 
@@ -220,4 +234,199 @@ test("an open decision with a topic is drawn once, in its card, with keyed draft
   assert.equal(b.text("open-maple-button-labels-0"), "needs-decision default Choose clear sample labels");
   b.click("opt-open-maple-button-labels-0-B");
   assert.deepEqual(b.drafts, ["[Board answer] maple-button-labels [key=default]: B (Nouns)"]);
+});
+
+// Fictional registry names; the first two are the fixture's own projects.
+const MANY_PROJECTS = ["maple-workshop", "orchard-atlas", "birch-ledger", "cedar-signal", "dune-harbor", "elm-compass",
+  "fjord-notes", "garnet-relay", "heron-studio", "iris-gateway", "juniper-forge", "kelp-metrics", "linden-pages",
+  "meadow-queue", "nettle-vault"];
+
+test("the Projects list is a scroll area that holds every project", async () => {
+  const b = await board({ projects: MANY_PROJECTS });
+  assert.deepEqual(b.ids.filter((id) => id.startsWith("ptag-")), MANY_PROJECTS.map((name) => `ptag-${name}`));
+  const list = b.items.find((x) => x.id === "project-list");
+  assert.ok(list, "no project-list drawn");
+  const used = list.calls.map((c) => c[0]);
+  // Lab-proven in Herdr 0.1.15: overflow_y_scrollbar() wraps the element and drops its max_h, so the list
+  // grew to its content, was cut off at the cap, and had nothing to scroll. The plain scroll area keeps the cap.
+  assert.ok(used.includes("max_h") && used.includes("overflow_y_scroll"), `project-list calls: ${used}`);
+  assert.ok(!used.includes("overflow_y_scrollbar"), "overflow_y_scrollbar() would drop the list's max_h");
+});
+
+// A localStorage that keeps what is written, shared by Boards that are given the same one.
+function memoryStore() {
+  const data = new Map();
+  return { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => { data.set(key, String(value)); } };
+}
+
+// FNV-1a 32-bit over UTF-16 units (offset basis 2166136261, prime 16777619), as published.
+function fnv1a(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619) >>> 0;
+  return h;
+}
+
+// The palette in the order the color picker lists it, read from an open project row.
+function paletteOf(b) {
+  const name = b.view.projects[0].name;
+  b.view.open.add(name);
+  const prefix = `color-${name}-`;
+  const palette = b.redraw().filter((x) => x.id.startsWith(prefix) && !x.id.endsWith("-auto")).map((x) => x.id.slice(prefix.length));
+  b.view.open.delete(name);
+  return palette;
+}
+
+// The color of each project's tag, by project name.
+const tagColors = (items) => Object.fromEntries(items.filter((x) => x.id.startsWith("ptag-"))
+  .map((x) => [x.id.slice(5), x.calls.find((c) => c[0] === "bg")[1]]));
+
+test("a project keeps its tag color when other projects are added or removed", async () => {
+  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"] });
+  const before = tagColors(b.items);
+  // aspen-docs sorts before every project, which used to move each one's place in the color list.
+  const same = (colors, names) => names.every((name) => colors[name] === before[name]);
+  b.view.projects.unshift({ name: "aspen-docs", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  assert.ok(same(tagColors(b.redraw()), Object.keys(before)), "adding a project changed another one's color");
+  b.view.projects = b.view.projects.filter((p) => p.name !== "cedar-signal");
+  assert.ok(same(tagColors(b.redraw()), ["birch-ledger", "maple-workshop", "orchard-atlas"]), "removing a project changed another one's color");
+});
+
+test("a fresh Board sharing the store keeps every saved project color", async () => {
+  const store = memoryStore();
+  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  b.view.projects.unshift({ name: "aspen-docs", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  const before = tagColors(b.redraw());
+  const again = tagColors((await board({ projects: ["aspen-docs", "maple-workshop"], store })).items);
+  assert.deepEqual(again, { "aspen-docs": before["aspen-docs"], "maple-workshop": before["maple-workshop"] });
+});
+
+test("the first 14 projects get distinct palette colors in name order, and the 15th one from its name", async () => {
+  const b = await board({ projects: MANY_PROJECTS, store: memoryStore() });
+  const palette = paletteOf(b);
+  const colors = tagColors(b.items);
+  const sorted = [...MANY_PROJECTS].sort();
+  assert.deepEqual(sorted.slice(0, 14).map((name) => colors[name]), palette);
+  // Every hue is held, so the last name falls back to FNV-1a over its name.
+  const last = sorted[14];
+  assert.equal(colors[last], palette[fnv1a(last) % palette.length]);
+  b.view.projects.push({ name: "osier-trail", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  const after = tagColors(b.redraw());
+  assert.equal(after["osier-trail"], palette[fnv1a("osier-trail") % palette.length]);
+  for (const name of MANY_PROJECTS) assert.equal(after[name], colors[name], name);
+});
+
+test("a picked color holds its hue against new projects, and Auto returns to the saved color", async () => {
+  const b = await board({ store: memoryStore() });
+  const palette = paletteOf(b);
+  assert.deepEqual(tagColors(b.items), { "maple-workshop": palette[0], "orchard-atlas": palette[1] });
+  b.view.pickColor("maple-workshop", palette[2], { notify() {} });
+  b.view.projects.push({ name: "aspen-docs", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  assert.deepEqual(tagColors(b.redraw()), { "aspen-docs": palette[3], "maple-workshop": palette[2], "orchard-atlas": palette[1] });
+  b.view.pickColor("maple-workshop", null, { notify() {} });
+  assert.equal(tagColors(b.redraw())["maple-workshop"], palette[0]);
+});
+
+test("a removed project frees its hue for the next new project, and no other color changes", async () => {
+  const store = memoryStore();
+  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  const palette = paletteOf(b);
+  const before = tagColors(b.items);
+  assert.deepEqual(before, { "birch-ledger": palette[0], "cedar-signal": palette[1], "maple-workshop": palette[2], "orchard-atlas": palette[3] });
+  b.registry.projects = ["birch-ledger", "maple-workshop", "orchard-atlas"];
+  await b.reload();
+  b.registry.projects = ["birch-ledger", "maple-workshop", "orchard-atlas", "zinnia-board"];
+  const after = tagColors(await b.reload());
+  // cedar-signal's hue is the lowest free one, so the new project takes it even though it sorts last.
+  assert.deepEqual(after, { "birch-ledger": palette[0], "maple-workshop": palette[2], "orchard-atlas": palette[3], "zinnia-board": palette[1] });
+  const again = tagColors((await board({ projects: ["birch-ledger", "maple-workshop", "orchard-atlas", "zinnia-board"], store })).items);
+  assert.deepEqual(again, after);
+});
+
+test("a project removed from the registry keeps its hue while its cards remain", async () => {
+  const store = memoryStore();
+  const b = await board({ projects: ["maple-workshop", "orchard-atlas", "birch-ledger"], store });
+  const palette = paletteOf(b);
+  // maple-workshop still has cards in the snapshot.
+  b.registry.projects = ["orchard-atlas", "birch-ledger"];
+  await b.reload();
+  b.registry.projects = ["orchard-atlas", "birch-ledger", "aspen-docs"];
+  await b.reload();
+  const colors = JSON.parse(store.getItem("autoProjectColors"));
+  assert.equal(colors["maple-workshop"], palette[1]);
+  assert.equal(colors["aspen-docs"], palette[3]);
+});
+
+test("an empty or failed registry read, or no read yet, frees no hue", async () => {
+  const store = memoryStore();
+  const b = await board({ projects: ["birch-ledger", "maple-workshop", "orchard-atlas"], store });
+  const saved = store.getItem("autoProjectColors");
+  b.registry.projects = [];
+  await b.reload();
+  assert.equal(store.getItem("autoProjectColors"), saved);
+  b.registry.fails = true;
+  await b.reload();
+  assert.ok(b.view.error);
+  assert.equal(store.getItem("autoProjectColors"), saved);
+  // A Board whose first read fails has nothing on screen and must not touch the saved colors.
+  const fresh = await board({ projects: ["maple-workshop"], store, registryFails: true });
+  assert.ok(fresh.view.error);
+  assert.equal(store.getItem("autoProjectColors"), saved);
+});
+
+test("two Board copies sharing the store never overwrite each other's colors", async () => {
+  const store = memoryStore();
+  const a = await board({ store });
+  const b = await board({ store });
+  const palette = paletteOf(a);
+  // Copy A sees zeta-tools first; copy B, which loaded before that, then sees alpha-notes and zeta-tools together.
+  a.view.projects.push({ name: "zeta-tools", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  assert.equal(tagColors(a.redraw())["zeta-tools"], palette[2]);
+  b.view.projects.push({ name: "alpha-notes", mode: "no-mistakes", yolo: false, desc: "Fictional project." },
+    { name: "zeta-tools", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  const fromB = tagColors(b.redraw());
+  assert.equal(fromB["zeta-tools"], palette[2]);
+  assert.equal(fromB["alpha-notes"], palette[3]);
+  a.view.projects.push({ name: "alpha-notes", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  assert.deepEqual(tagColors(a.redraw()), fromB);
+  assert.deepEqual(JSON.parse(store.getItem("autoProjectColors")),
+    { "maple-workshop": palette[0], "orchard-atlas": palette[1], "zeta-tools": palette[2], "alpha-notes": palette[3] });
+});
+
+// Herdr 0.1.15's localStorage.getItem returns undefined, not null, for an unset key (seen in a live Herdr window).
+test("on a fresh store whose unset keys read as undefined, the first projects still get distinct saved colors", async () => {
+  const data = new Map();
+  const store = { getItem: (key) => data.get(key), setItem: (key, value) => { data.set(key, String(value)); } };
+  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  const palette = paletteOf(b);
+  const expected = { "birch-ledger": palette[0], "cedar-signal": palette[1], "maple-workshop": palette[2], "orchard-atlas": palette[3] };
+  assert.deepEqual(tagColors(b.items), expected);
+  assert.deepEqual(JSON.parse(data.get("autoProjectColors")), expected);
+});
+
+test("a store that cannot be read or written still draws, with colors from the names", async () => {
+  const broken = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("denied"); } };
+  const b = await board({ store: broken });
+  const palette = paletteOf(b);
+  const expected = Object.fromEntries(["maple-workshop", "orchard-atlas"].map((name) => [name, palette[fnv1a(name) % palette.length]]));
+  assert.deepEqual(tagColors(b.items), expected);
+  assert.deepEqual(tagColors(b.redraw()), expected);
+});
+
+test("a project's tag color is one of the palette colors, the same on its cards, and a picked color wins", async () => {
+  const b = await board({ projects: MANY_PROJECTS });
+  // The picker lists the palette only for an open project row.
+  b.view.open.add("maple-workshop");
+  const swatches = b.redraw().filter((x) => x.id.startsWith("color-maple-workshop-") && !x.id.endsWith("-auto"))
+    .map((x) => x.id.slice("color-maple-workshop-".length));
+  assert.equal(swatches.length, 14);
+  const colors = tagColors(b.redraw());
+  for (const [name, color] of Object.entries(colors)) assert.ok(swatches.includes(color), `${name}: ${color}`);
+  // Cards use the project's color.
+  const cardTag = b.items.find((x) => x.id === "tag-maple-icon-set");
+  assert.equal(cardTag.calls.find((c) => c[0] === "bg")[1], colors["maple-workshop"]);
+  // Picking a color wins over the automatic one, and Auto returns to it.
+  b.view.pickColor("maple-workshop", "#123456", { notify() {} });
+  assert.equal(tagColors(b.redraw())["maple-workshop"], "#123456");
+  b.view.pickColor("maple-workshop", null, { notify() {} });
+  assert.equal(tagColors(b.redraw())["maple-workshop"], colors["maple-workshop"]);
 });

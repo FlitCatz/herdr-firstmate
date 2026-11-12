@@ -96,15 +96,23 @@ const base = (path) => (path ?? "").split("/").filter(Boolean).pop() ?? "";
 // The backlog writes "-" for an item with no project; such items are firstmate's own work.
 const projectOf = (...paths) => paths.map(base).find((p) => p && p !== "-") ?? "";
 // A project keeps one color on every card, so the eye can group cards without reading.
-// Mid-tone hues that all carry white text. Projects get them in name order, so no two
-// share a color until there are more projects than hues; a color picked on the project row wins.
+// Mid-tone hues that all carry white text. A project gets the first hue no other project holds
+// when it is first seen and keeps it, so adding or removing other projects never changes it; the
+// hue is freed once the project has left both the registry and the cards. Projects get distinct
+// colors while free hues remain. With none free, a project takes a color from its name and keeps
+// it even after a hue is freed; a color picked on the project row wins but leaves the project's
+// automatic hue reserved for Auto. In those cases two projects can share a color.
 const PROJECT_COLORS = [
   "#2f7fc1", "#2e9d5b", "#c0563a", "#8a4fbf", "#b8860b", "#16958f", "#c23d7a",
   "#4f5fc7", "#6b8e23", "#a0522d", "#0f7ea8", "#9c3fa3", "#58708a", "#b03a3a",
 ];
 const PROJECT_COLORS_KEY = "projectColors";
-function autoColors(names) {
-  return new Map([...new Set(names)].sort().map((n, i) => [n, PROJECT_COLORS[i % PROJECT_COLORS.length]]));
+const AUTO_COLORS_KEY = "autoProjectColors";
+// Once every hue is held, or the store is unusable: FNV-1a over the name's UTF-16 units, spread over the palette.
+function autoColor(name) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193);
+  return PROJECT_COLORS[(h >>> 0) % PROJECT_COLORS.length];
 }
 // Three-letter tags: one word takes its first three letters, two words take
 // two letters and an initial (mail-server -> MAS), more words take initials (TPO). A clash
@@ -480,6 +488,9 @@ export default class FmBoard extends View {
     this.backgroundListing = [];
     this.colorChoice = {};
     try { this.colorChoice = JSON.parse(localStorage.getItem(PROJECT_COLORS_KEY) ?? "{}") ?? {}; } catch {}
+    /** @type {Record<string, string> | null} */
+    this.autoChoice = null;
+    try { this.autoChoice = JSON.parse(localStorage.getItem(AUTO_COLORS_KEY) ?? "{}") ?? {}; } catch {}
     this.adding = Boolean(ui.adding); this.confirm = ui.confirm ?? null; this.mode = MODES[0].id;
     this.source = InputState.new({ placeholder: "Repository URL (git@github.com:org/repo.git)" });
     this.name = InputState.new({ placeholder: "Name (optional)" });
@@ -516,7 +527,36 @@ export default class FmBoard extends View {
 
   colorOf(name, t) {
     if (name === "firstmate" && !this.colorChoice[name]) return readableOnWhite(t.dim);
-    return this.colorChoice[name] ?? this.autoColor?.get(name) ?? PROJECT_COLORS[0];
+    return this.colorChoice[name] ?? this.autoChoice?.[name] ?? autoColor(name);
+  }
+
+  // Every project name the Board shows, from the registry and the cards.
+  projectNames() {
+    return [...this.projects.map((p) => p.name), ...(this.cards ?? []).map((c) => c.project).filter(Boolean)];
+  }
+
+  // Gives new names a saved color and, when live lists the projects of a good read, frees the colors
+  // of every other name. Every Board copy shares the store, so the saved entries are read again and
+  // win over this copy's; this copy's own are used only while the store holds none.
+  updateColors(names, live) {
+    if (!this.autoChoice) return;
+    const isNew = (map) => (n) => n !== "firstmate" && !map[n];
+    const gone = (map) => (live ? Object.keys(map).filter((n) => !live.has(n)) : []);
+    if (!names.some(isNew(this.autoChoice)) && !gone(this.autoChoice).length) return;
+    let next, picks;
+    try {
+      const saved = localStorage.getItem(AUTO_COLORS_KEY), savedPicks = localStorage.getItem(PROJECT_COLORS_KEY);
+      // Herdr's getItem gives undefined, not null, for an unset key.
+      next = saved == null ? { ...this.autoChoice } : JSON.parse(saved) ?? {};
+      picks = savedPicks == null ? this.colorChoice : JSON.parse(savedPicks) ?? {};
+    } catch { return; }
+    for (const name of gone(next)) delete next[name];
+    for (const name of [...new Set(names.filter(isNew(next)))].sort()) {
+      const picked = Object.entries(picks).filter(([n]) => n !== name).map(([, c]) => c);
+      const held = new Set([...Object.values(next), ...picked]);
+      next[name] = PROJECT_COLORS.find((c) => !held.has(c)) ?? autoColor(name);
+    }
+    try { localStorage.setItem(AUTO_COLORS_KEY, JSON.stringify(next)); this.autoChoice = next; } catch {}
   }
 
   pickColor(name, color, cx) {
@@ -579,6 +619,8 @@ export default class FmBoard extends View {
         this.projects = parseRegistry(await readTextFile(`${home()}/data/projects.md`));
         await this.loadInbox();
         this.error = null;
+        // An empty registry is more likely a bad read than every project removed, so it frees nothing.
+        if (this.projects.length) this.updateColors([], new Set(this.projectNames()));
       } catch (e) {
         this.error = String(e?.message ?? e); // keep the last good board on screen
       }
@@ -784,7 +826,9 @@ export default class FmBoard extends View {
       }));
     const el = this.frame(v_flex().flex_none().gap(8), t).child(header);
     if (collapsed) return el;
-    const list = v_flex().id("project-list").gap(8).max_h(260).overflow_y_scrollbar();
+    // Plain overflow_y_scroll, not the scrollbar wrapper: the wrapper drops max_h, so the list
+    // never got a height to scroll within.
+    const list = v_flex().id("project-list").gap(8).max_h(260).min_h(0).flex_shrink(1).overflow_y_scroll();
     if (this.adding) list.child(this.addForm(t));
     list.children(this.projects.map((p) => this.projectRow(p, t)));
     if (this.requests.length) list.child(v_flex().gap(4).pt(6).border_t(1).border_color(t.border)
@@ -1506,9 +1550,9 @@ export default class FmBoard extends View {
 
   render(_cx) {
     this.readFontScale(this.size?.width);
-    const names = [...this.projects.map((p) => p.name), ...(this.cards ?? []).map((c) => c.project).filter(Boolean)];
+    const names = this.projectNames();
     this.tags = abbreviations(["firstmate", ...names]);
-    this.autoColor = autoColors(names);
+    this.updateColors(names);
     const t = theme();
     if (!home()) return v_flex().id("home-required").size_full().bg(t.canvas).p(16)
       .child(v_flex().gap(8).p(16).rounded(8).bg(t.surface).border(1).border_color(t.border)

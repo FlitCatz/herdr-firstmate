@@ -14,7 +14,7 @@ When the panel is shown it takes two thirds of the row and the active-tab pane o
 The tab bar sits on the chrome background and shows tabs plus Board, Files, and Changes panel buttons.
 
 The board shows project rows above the Kanban section, which holds a search field with a find icon above the task columns, a footer with update and watcher status, and command controls below.
-Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a three-letter abbreviation and a color of its own: a project gets the first palette color no other project holds when it is first seen and keeps it when others are added or removed, so up to 14 projects get distinct colors; once all 14 are held, a new project takes a color derived from its name, which can match another project's.
+Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a three-letter abbreviation and a color of its own: a project gets the first palette color no other project holds when it is first seen and keeps it when others are added or removed, and its color is freed once a successful read finds it in neither the registry nor any card, so up to 14 projects on the Board get distinct colors; beyond 14, or when local storage cannot be used, a project takes a color derived from its name, which can match another project's.
 Each Board copy's text follows Herdr's terminal font size and grows with that copy's width.
 
 ## How it behaves

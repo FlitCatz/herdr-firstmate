@@ -60,7 +60,9 @@ function drawn(tree) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} } } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false } = {}) {
+  // The registry the Board reads; tests change it, then reload.
+  const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
@@ -77,7 +79,8 @@ async function board({ projects, store = { getItem: () => null, setItem() {} } }
     readTextFile: async (file) => {
       if (file === snapshotFile) return readFile(file, "utf8");
       if (file === `${HOME}/data/projects.md`) {
-        return (projects ?? ["maple-workshop", "orchard-atlas"]).map((name) => `- ${name} - Fictional project.\n`).join("");
+        if (registry.fails) throw new Error("registry unreadable");
+        return registry.projects.map((name) => `- ${name} - Fictional project.\n`).join("");
       }
       throw new Error(`no such file: ${file}`);
     },
@@ -89,7 +92,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} } }
   const view = new FmBoard();
   view.init({}, cx);
   await Promise.all(pending);
-  assert.equal(view.error, null);
+  if (!registryFails) assert.equal(view.error, null);
   const drafts = [], opened = [];
   view.insertCardText = (text) => drafts.push(text);
   view.openView = (project, source) => opened.push({ project, ...source });
@@ -101,7 +104,13 @@ async function board({ projects, store = { getItem: () => null, setItem() {} } }
   };
   // Draws again after the test changed the Board, as Herdr does on every notify.
   const redraw = () => drawn(view.render(cx));
-  return { view, cardsFrom, items, ids: items.map((x) => x.id), click, drafts, opened, redraw,
+  // Reads the snapshot and registry again, as a watched change or the fallback timer does, then draws.
+  const reload = async () => {
+    view.last = 0; view.refresh(cx);
+    await Promise.all(pending);
+    return redraw();
+  };
+  return { view, registry, reload, cardsFrom, items, ids: items.map((x) => x.id), click, drafts, opened, redraw,
     text: (id) => items.find((x) => x.id === id)?.text };
 }
 
@@ -315,6 +324,72 @@ test("a picked color holds its hue against new projects, and Auto returns to the
   assert.deepEqual(tagColors(b.redraw()), { "aspen-docs": palette[3], "maple-workshop": palette[2], "orchard-atlas": palette[1] });
   b.view.pickColor("maple-workshop", null, { notify() {} });
   assert.equal(tagColors(b.redraw())["maple-workshop"], palette[0]);
+});
+
+test("a removed project frees its hue for the next new project, and no other color changes", async () => {
+  const store = memoryStore();
+  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  const palette = paletteOf(b);
+  const before = tagColors(b.items);
+  assert.deepEqual(before, { "birch-ledger": palette[0], "cedar-signal": palette[1], "maple-workshop": palette[2], "orchard-atlas": palette[3] });
+  b.registry.projects = ["birch-ledger", "maple-workshop", "orchard-atlas"];
+  await b.reload();
+  b.registry.projects = ["birch-ledger", "maple-workshop", "orchard-atlas", "zinnia-board"];
+  const after = tagColors(await b.reload());
+  // cedar-signal's hue is the lowest free one, so the new project takes it even though it sorts last.
+  assert.deepEqual(after, { "birch-ledger": palette[0], "maple-workshop": palette[2], "orchard-atlas": palette[3], "zinnia-board": palette[1] });
+  const again = tagColors((await board({ projects: ["birch-ledger", "maple-workshop", "orchard-atlas", "zinnia-board"], store })).items);
+  assert.deepEqual(again, after);
+});
+
+test("a project removed from the registry keeps its hue while its cards remain", async () => {
+  const store = memoryStore();
+  const b = await board({ projects: ["maple-workshop", "orchard-atlas", "birch-ledger"], store });
+  const palette = paletteOf(b);
+  // maple-workshop still has cards in the snapshot.
+  b.registry.projects = ["orchard-atlas", "birch-ledger"];
+  await b.reload();
+  b.registry.projects = ["orchard-atlas", "birch-ledger", "aspen-docs"];
+  await b.reload();
+  const colors = JSON.parse(store.getItem("autoProjectColors"));
+  assert.equal(colors["maple-workshop"], palette[1]);
+  assert.equal(colors["aspen-docs"], palette[3]);
+});
+
+test("an empty or failed registry read, or no read yet, frees no hue", async () => {
+  const store = memoryStore();
+  const b = await board({ projects: ["birch-ledger", "maple-workshop", "orchard-atlas"], store });
+  const saved = store.getItem("autoProjectColors");
+  b.registry.projects = [];
+  await b.reload();
+  assert.equal(store.getItem("autoProjectColors"), saved);
+  b.registry.fails = true;
+  await b.reload();
+  assert.ok(b.view.error);
+  assert.equal(store.getItem("autoProjectColors"), saved);
+  // A Board whose first read fails has nothing on screen and must not touch the saved colors.
+  const fresh = await board({ projects: ["maple-workshop"], store, registryFails: true });
+  assert.ok(fresh.view.error);
+  assert.equal(store.getItem("autoProjectColors"), saved);
+});
+
+test("two Board copies sharing the store never overwrite each other's colors", async () => {
+  const store = memoryStore();
+  const a = await board({ store });
+  const b = await board({ store });
+  const palette = paletteOf(a);
+  // Copy A sees zeta-tools first; copy B, which loaded before that, then sees alpha-notes and zeta-tools together.
+  a.view.projects.push({ name: "zeta-tools", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  assert.equal(tagColors(a.redraw())["zeta-tools"], palette[2]);
+  b.view.projects.push({ name: "alpha-notes", mode: "no-mistakes", yolo: false, desc: "Fictional project." },
+    { name: "zeta-tools", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  const fromB = tagColors(b.redraw());
+  assert.equal(fromB["zeta-tools"], palette[2]);
+  assert.equal(fromB["alpha-notes"], palette[3]);
+  a.view.projects.push({ name: "alpha-notes", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  assert.deepEqual(tagColors(a.redraw()), fromB);
+  assert.deepEqual(JSON.parse(store.getItem("autoProjectColors")),
+    { "maple-workshop": palette[0], "orchard-atlas": palette[1], "zeta-tools": palette[2], "alpha-notes": palette[3] });
 });
 
 test("a store that cannot be read or written still draws, with colors from the names", async () => {

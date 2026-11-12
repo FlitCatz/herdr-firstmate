@@ -97,8 +97,9 @@ const base = (path) => (path ?? "").split("/").filter(Boolean).pop() ?? "";
 const projectOf = (...paths) => paths.map(base).find((p) => p && p !== "-") ?? "";
 // A project keeps one color on every card, so the eye can group cards without reading.
 // Mid-tone hues that all carry white text. A project gets the first hue no other project holds
-// when it is first seen and keeps it, so adding or removing other projects never changes it; a
-// color picked on the project row wins.
+// when it is first seen and keeps it, so adding or removing other projects never changes it; the
+// hue is freed once the project has left both the registry and the cards. A color picked on the
+// project row wins.
 const PROJECT_COLORS = [
   "#2f7fc1", "#2e9d5b", "#c0563a", "#8a4fbf", "#b8860b", "#16958f", "#c23d7a",
   "#4f5fc7", "#6b8e23", "#a0522d", "#0f7ea8", "#9c3fa3", "#58708a", "#b03a3a",
@@ -527,14 +528,28 @@ export default class FmBoard extends View {
     return this.colorChoice[name] ?? this.autoChoice?.[name] ?? autoColor(name);
   }
 
-  // Saved entries stay even when a project is not listed, so an empty or failed read never reshuffles colors.
-  assignColors(names) {
+  // Every project name the Board shows, from the registry and the cards.
+  projectNames() {
+    return [...this.projects.map((p) => p.name), ...(this.cards ?? []).map((c) => c.project).filter(Boolean)];
+  }
+
+  // Gives new names a saved color and, when live lists the projects of a good read, frees the colors
+  // of every other name. Every Board copy shares the store, so the saved entries are read again and
+  // win over this copy's; this copy's own are used only while the store holds none.
+  updateColors(names, live) {
     if (!this.autoChoice) return;
-    const fresh = [...new Set(names)].filter((n) => n !== "firstmate" && !this.autoChoice[n]).sort();
-    if (!fresh.length) return;
-    const next = { ...this.autoChoice };
-    for (const name of fresh) {
-      const picked = Object.entries(this.colorChoice).filter(([n]) => n !== name).map(([, c]) => c);
+    const isNew = (map) => (n) => n !== "firstmate" && !map[n];
+    const gone = (map) => (live ? Object.keys(map).filter((n) => !live.has(n)) : []);
+    if (!names.some(isNew(this.autoChoice)) && !gone(this.autoChoice).length) return;
+    let next, picks;
+    try {
+      const saved = localStorage.getItem(AUTO_COLORS_KEY), savedPicks = localStorage.getItem(PROJECT_COLORS_KEY);
+      next = saved === null ? { ...this.autoChoice } : JSON.parse(saved) ?? {};
+      picks = savedPicks === null ? this.colorChoice : JSON.parse(savedPicks) ?? {};
+    } catch { return; }
+    for (const name of gone(next)) delete next[name];
+    for (const name of [...new Set(names.filter(isNew(next)))].sort()) {
+      const picked = Object.entries(picks).filter(([n]) => n !== name).map(([, c]) => c);
       const held = new Set([...Object.values(next), ...picked]);
       next[name] = PROJECT_COLORS.find((c) => !held.has(c)) ?? autoColor(name);
     }
@@ -601,6 +616,8 @@ export default class FmBoard extends View {
         this.projects = parseRegistry(await readTextFile(`${home()}/data/projects.md`));
         await this.loadInbox();
         this.error = null;
+        // An empty registry is more likely a bad read than every project removed, so it frees nothing.
+        if (this.projects.length) this.updateColors([], new Set(this.projectNames()));
       } catch (e) {
         this.error = String(e?.message ?? e); // keep the last good board on screen
       }
@@ -1530,9 +1547,9 @@ export default class FmBoard extends View {
 
   render(_cx) {
     this.readFontScale(this.size?.width);
-    const names = [...this.projects.map((p) => p.name), ...(this.cards ?? []).map((c) => c.project).filter(Boolean)];
+    const names = this.projectNames();
     this.tags = abbreviations(["firstmate", ...names]);
-    this.assignColors(names);
+    this.updateColors(names);
     const t = theme();
     if (!home()) return v_flex().id("home-required").size_full().bg(t.canvas).p(16)
       .child(v_flex().gap(8).p(16).rounded(8).bg(t.surface).border(1).border_color(t.border)

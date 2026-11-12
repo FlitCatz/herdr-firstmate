@@ -546,8 +546,9 @@ export default class FmBoard extends View {
     let next, picks;
     try {
       const saved = localStorage.getItem(AUTO_COLORS_KEY), savedPicks = localStorage.getItem(PROJECT_COLORS_KEY);
-      next = saved === null ? { ...this.autoChoice } : JSON.parse(saved) ?? {};
-      picks = savedPicks === null ? this.colorChoice : JSON.parse(savedPicks) ?? {};
+      // Herdr's getItem gives undefined, not null, for an unset key.
+      next = saved == null ? { ...this.autoChoice } : JSON.parse(saved) ?? {};
+      picks = savedPicks == null ? this.colorChoice : JSON.parse(savedPicks) ?? {};
     } catch { return; }
     for (const name of gone(next)) delete next[name];
     for (const name of [...new Set(names.filter(isNew(next)))].sort()) {

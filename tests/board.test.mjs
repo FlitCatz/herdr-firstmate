@@ -392,6 +392,17 @@ test("two Board copies sharing the store never overwrite each other's colors", a
     { "maple-workshop": palette[0], "orchard-atlas": palette[1], "zeta-tools": palette[2], "alpha-notes": palette[3] });
 });
 
+// Herdr 0.1.15's localStorage.getItem returns undefined, not null, for an unset key (seen in a live Herdr window).
+test("on a fresh store whose unset keys read as undefined, the first projects still get distinct saved colors", async () => {
+  const data = new Map();
+  const store = { getItem: (key) => data.get(key), setItem: (key, value) => { data.set(key, String(value)); } };
+  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  const palette = paletteOf(b);
+  const expected = { "birch-ledger": palette[0], "cedar-signal": palette[1], "maple-workshop": palette[2], "orchard-atlas": palette[3] };
+  assert.deepEqual(tagColors(b.items), expected);
+  assert.deepEqual(JSON.parse(data.get("autoProjectColors")), expected);
+});
+
 test("a store that cannot be read or written still draws, with colors from the names", async () => {
   const broken = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("denied"); } };
   const b = await board({ store: broken });

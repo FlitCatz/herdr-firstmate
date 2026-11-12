@@ -60,7 +60,7 @@ function drawn(tree) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} } } = {}) {
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
@@ -73,7 +73,7 @@ async function board({ projects } = {}) {
     FolderViewer: class { constructor() { this.root = null; } },
     props: () => ({ home: HOME, snapshot_file: snapshotFile, collapsed: [], ui: {} }),
     theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: store,
     readTextFile: async (file) => {
       if (file === snapshotFile) return readFile(file, "utf8");
       if (file === `${HOME}/data/projects.md`) {
@@ -244,6 +244,29 @@ test("the Projects list is a scroll area that holds every project", async () => 
   assert.ok(!used.includes("overflow_y_scrollbar"), "overflow_y_scrollbar() would drop the list's max_h");
 });
 
+// A localStorage that keeps what is written, shared by Boards that are given the same one.
+function memoryStore() {
+  const data = new Map();
+  return { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => { data.set(key, String(value)); } };
+}
+
+// FNV-1a 32-bit over UTF-16 units (offset basis 2166136261, prime 16777619), as published.
+function fnv1a(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619) >>> 0;
+  return h;
+}
+
+// The palette in the order the color picker lists it, read from an open project row.
+function paletteOf(b) {
+  const name = b.view.projects[0].name;
+  b.view.open.add(name);
+  const prefix = `color-${name}-`;
+  const palette = b.redraw().filter((x) => x.id.startsWith(prefix) && !x.id.endsWith("-auto")).map((x) => x.id.slice(prefix.length));
+  b.view.open.delete(name);
+  return palette;
+}
+
 // The color of each project's tag, by project name.
 const tagColors = (items) => Object.fromEntries(items.filter((x) => x.id.startsWith("ptag-"))
   .map((x) => [x.id.slice(5), x.calls.find((c) => c[0] === "bg")[1]]));
@@ -257,9 +280,50 @@ test("a project keeps its tag color when other projects are added or removed", a
   assert.ok(same(tagColors(b.redraw()), Object.keys(before)), "adding a project changed another one's color");
   b.view.projects = b.view.projects.filter((p) => p.name !== "cedar-signal");
   assert.ok(same(tagColors(b.redraw()), ["birch-ledger", "maple-workshop", "orchard-atlas"]), "removing a project changed another one's color");
-  // The color depends on the name only, so a fresh Board gives the same one.
-  const again = tagColors((await board({ projects: ["aspen-docs", "maple-workshop"] })).items);
-  assert.equal(again["maple-workshop"], before["maple-workshop"]);
+});
+
+test("a fresh Board sharing the store keeps every saved project color", async () => {
+  const store = memoryStore();
+  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  b.view.projects.unshift({ name: "aspen-docs", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  const before = tagColors(b.redraw());
+  const again = tagColors((await board({ projects: ["aspen-docs", "maple-workshop"], store })).items);
+  assert.deepEqual(again, { "aspen-docs": before["aspen-docs"], "maple-workshop": before["maple-workshop"] });
+});
+
+test("the first 14 projects get distinct palette colors in name order, and the 15th one from its name", async () => {
+  const b = await board({ projects: MANY_PROJECTS, store: memoryStore() });
+  const palette = paletteOf(b);
+  const colors = tagColors(b.items);
+  const sorted = [...MANY_PROJECTS].sort();
+  assert.deepEqual(sorted.slice(0, 14).map((name) => colors[name]), palette);
+  // Every hue is held, so the last name falls back to FNV-1a over its name.
+  const last = sorted[14];
+  assert.equal(colors[last], palette[fnv1a(last) % palette.length]);
+  b.view.projects.push({ name: "osier-trail", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  const after = tagColors(b.redraw());
+  assert.equal(after["osier-trail"], palette[fnv1a("osier-trail") % palette.length]);
+  for (const name of MANY_PROJECTS) assert.equal(after[name], colors[name], name);
+});
+
+test("a picked color holds its hue against new projects, and Auto returns to the saved color", async () => {
+  const b = await board({ store: memoryStore() });
+  const palette = paletteOf(b);
+  assert.deepEqual(tagColors(b.items), { "maple-workshop": palette[0], "orchard-atlas": palette[1] });
+  b.view.pickColor("maple-workshop", palette[2], { notify() {} });
+  b.view.projects.push({ name: "aspen-docs", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  assert.deepEqual(tagColors(b.redraw()), { "aspen-docs": palette[3], "maple-workshop": palette[2], "orchard-atlas": palette[1] });
+  b.view.pickColor("maple-workshop", null, { notify() {} });
+  assert.equal(tagColors(b.redraw())["maple-workshop"], palette[0]);
+});
+
+test("a store that cannot be read or written still draws, with colors from the names", async () => {
+  const broken = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("denied"); } };
+  const b = await board({ store: broken });
+  const palette = paletteOf(b);
+  const expected = Object.fromEntries(["maple-workshop", "orchard-atlas"].map((name) => [name, palette[fnv1a(name) % palette.length]]));
+  assert.deepEqual(tagColors(b.items), expected);
+  assert.deepEqual(tagColors(b.redraw()), expected);
 });
 
 test("a project's tag color is one of the palette colors, the same on its cards, and a picked color wins", async () => {

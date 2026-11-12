@@ -96,15 +96,16 @@ const base = (path) => (path ?? "").split("/").filter(Boolean).pop() ?? "";
 // The backlog writes "-" for an item with no project; such items are firstmate's own work.
 const projectOf = (...paths) => paths.map(base).find((p) => p && p !== "-") ?? "";
 // A project keeps one color on every card, so the eye can group cards without reading.
-// Mid-tone hues that all carry white text. A project's color comes from its own name alone, so
-// adding or removing other projects never changes it; two projects can share a hue, and a color
-// picked on the project row wins.
+// Mid-tone hues that all carry white text. A project gets the first hue no other project holds
+// when it is first seen and keeps it, so adding or removing other projects never changes it; a
+// color picked on the project row wins.
 const PROJECT_COLORS = [
   "#2f7fc1", "#2e9d5b", "#c0563a", "#8a4fbf", "#b8860b", "#16958f", "#c23d7a",
   "#4f5fc7", "#6b8e23", "#a0522d", "#0f7ea8", "#9c3fa3", "#58708a", "#b03a3a",
 ];
 const PROJECT_COLORS_KEY = "projectColors";
-// FNV-1a over the name's UTF-16 units, spread over the palette.
+const AUTO_COLORS_KEY = "autoProjectColors";
+// Once every hue is held, or the store is unusable: FNV-1a over the name's UTF-16 units, spread over the palette.
 function autoColor(name) {
   let h = 0x811c9dc5;
   for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193);
@@ -484,6 +485,9 @@ export default class FmBoard extends View {
     this.backgroundListing = [];
     this.colorChoice = {};
     try { this.colorChoice = JSON.parse(localStorage.getItem(PROJECT_COLORS_KEY) ?? "{}") ?? {}; } catch {}
+    /** @type {Record<string, string> | null} */
+    this.autoChoice = null;
+    try { this.autoChoice = JSON.parse(localStorage.getItem(AUTO_COLORS_KEY) ?? "{}") ?? {}; } catch {}
     this.adding = Boolean(ui.adding); this.confirm = ui.confirm ?? null; this.mode = MODES[0].id;
     this.source = InputState.new({ placeholder: "Repository URL (git@github.com:org/repo.git)" });
     this.name = InputState.new({ placeholder: "Name (optional)" });
@@ -520,7 +524,21 @@ export default class FmBoard extends View {
 
   colorOf(name, t) {
     if (name === "firstmate" && !this.colorChoice[name]) return readableOnWhite(t.dim);
-    return this.colorChoice[name] ?? autoColor(name);
+    return this.colorChoice[name] ?? this.autoChoice?.[name] ?? autoColor(name);
+  }
+
+  // Saved entries stay even when a project is not listed, so an empty or failed read never reshuffles colors.
+  assignColors(names) {
+    if (!this.autoChoice) return;
+    const fresh = [...new Set(names)].filter((n) => n !== "firstmate" && !this.autoChoice[n]).sort();
+    if (!fresh.length) return;
+    const next = { ...this.autoChoice };
+    for (const name of fresh) {
+      const picked = Object.entries(this.colorChoice).filter(([n]) => n !== name).map(([, c]) => c);
+      const held = new Set([...Object.values(next), ...picked]);
+      next[name] = PROJECT_COLORS.find((c) => !held.has(c)) ?? autoColor(name);
+    }
+    try { localStorage.setItem(AUTO_COLORS_KEY, JSON.stringify(next)); this.autoChoice = next; } catch {}
   }
 
   pickColor(name, color, cx) {
@@ -1514,6 +1532,7 @@ export default class FmBoard extends View {
     this.readFontScale(this.size?.width);
     const names = [...this.projects.map((p) => p.name), ...(this.cards ?? []).map((c) => c.project).filter(Boolean)];
     this.tags = abbreviations(["firstmate", ...names]);
+    this.assignColors(names);
     const t = theme();
     if (!home()) return v_flex().id("home-required").size_full().bg(t.canvas).p(16)
       .child(v_flex().gap(8).p(16).rounded(8).bg(t.surface).border(1).border_color(t.border)

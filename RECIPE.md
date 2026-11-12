@@ -14,7 +14,7 @@ When the panel is shown it takes two thirds of the row and the active-tab pane o
 The tab bar sits on the chrome background and shows tabs plus Board, Files, and Changes panel buttons.
 
 The board shows project rows above the Kanban section, which holds a search field with a find icon above the task columns, a footer with update and watcher status, and command controls below.
-Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a three-letter abbreviation and a color taken from the project's name alone, so a project keeps its color when others are added or removed and two projects can share one.
+Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a three-letter abbreviation and a color of its own: a project gets the first palette color no other project holds when it is first seen and keeps it when others are added or removed, so up to 14 projects get distinct colors; once all 14 are held, a new project takes a color derived from its name, which can match another project's.
 Each Board copy's text follows Herdr's terminal font size and grows with that copy's width.
 
 ## How it behaves
@@ -84,7 +84,7 @@ The command lines are only read to find these jobs; the board does not log or sa
 The Projects list shows up to about 260px of rows and scrolls with the mouse wheel beyond that, so every project is reachable.
 Project rows can be expanded to show details, a project filter, color choices that replace the automatic color, a folder button, and a removal request.
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
-Folded sections and cards, collapsed columns, and project color choices are remembered locally.
+Folded sections and cards, collapsed columns, and project colors, automatic and chosen, are remembered locally.
 Command buttons submit Bearings, Ahoy, Stow, Quiet, Quiet off, AFK, or Update commands to the verified Firstmate terminal; the Scout and Task fields also submit requests there.
 On each insertion or send, the board asks `home/bin/fm-inbox.sh ready` to inspect the session lock and uses its PID only when the lock is held by a live harness.
 It matches that PID to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.

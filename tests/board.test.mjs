@@ -60,14 +60,14 @@ function drawn(tree) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }) } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
   const cx = { notify() {}, stop_propagation() {}, spawn(fn) { pending.push(fn(cx)); }, timer: { every() {}, after() {} } };
-  const input = () => ({ on() {}, value: () => "", set_value() {} });
+  const input = () => { let text = ""; return { on() {}, value: () => text, set_value(v) { text = v; } }; };
   const theme = new Proxy({}, { get: () => "#808080" });
   const scope = {
     View: class {}, div: element, svg: element, v_flex: element, h_flex: element, Input: { new: element },
@@ -84,8 +84,8 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
       }
       throw new Error(`no such file: ${file}`);
     },
-    // No helper program exists here; the Board treats every one as failed.
-    exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+    // By default no helper program exists here, and the Board treats every one as failed.
+    exec,
     watchFolder: async () => {}, pickFolder: async () => null,
   };
   const { FmBoard, cardsFrom } = vm.runInNewContext(`${source}\n({ FmBoard, cardsFrom })`, scope);
@@ -429,4 +429,84 @@ test("a project's tag color is one of the palette colors, the same on its cards,
   assert.equal(tagColors(b.redraw())["maple-workshop"], "#123456");
   b.view.pickColor("maple-workshop", null, { notify() {} });
   assert.equal(tagColors(b.redraw())["maple-workshop"], colors["maple-workshop"]);
+});
+
+// The Commands section's Memo button. A call list records every program the Board ran.
+function programs({ note = { code: 0, stdout: "", stderr: "" } } = {}) {
+  const calls = [];
+  const exec = async (file, args = []) => {
+    calls.push([file, ...args]);
+    if (file === "hc") return { code: 1, stdout: "", stderr: "" };
+    const script = args.find((a) => a.includes("/bin/fm-inbox.sh"));
+    const sub = args[args.indexOf(script) + 1];
+    if (sub === "note") return note;
+    return { code: 1, stdout: "", stderr: "" };
+  };
+  const notes = () => calls.filter((c) => c.some((a) => a.endsWith("/bin/fm-inbox.sh")) && c.includes("note"));
+  return { calls, exec, notes, hcCalls: () => calls.filter((c) => c[0] === "hc") };
+}
+
+test("Memo saves an inbox note and never touches the firstmate terminal", async () => {
+  const p = programs();
+  const b = await board({ exec: p.exec });
+  b.view.ask.set_value("check the sync idea later");
+  b.view.askProject = "maple-workshop";
+  b.click("ask-memo");
+  await b.reload();
+  const [note] = p.notes();
+  assert.ok(note, "no note was saved");
+  assert.equal(note.at(-1), "[Board memo] project=maple-workshop: check the sync idea later - file this in the backlog only; do not start work");
+  assert.equal(note[1], `FM_HOME=${HOME}`);
+  assert.ok(note.includes("--json") && note.includes("--request-id"));
+  assert.match(note[note.indexOf("--request-id") + 1], /^board-\d+$/);
+  // It neither looked for the terminal nor typed into one. The reload's own `hc get` reads only a card's status.
+  assert.deepEqual([...new Set(p.hcCalls().map((c) => c[1]))].filter((verb) => verb !== "get"), []);
+  assert.ok(!p.calls.some((c) => ["osascript", "pbcopy"].includes(c[0])));
+  assert.equal(b.view.notice, "Memo saved");
+  assert.equal(b.view.ask.value(), "");
+  assert.equal(b.view.askProject, null);
+});
+
+test("Memo without a chosen project says firstmate picks, and saved-not-announced still counts as saved", async () => {
+  const p = programs({ note: { code: 3, stdout: "", stderr: "" } });
+  const b = await board({ exec: p.exec });
+  b.view.ask.set_value("a thought");
+  b.click("ask-memo");
+  await b.reload();
+  assert.match(p.notes()[0].at(-1), /^\[Board memo\] project=\(firstmate picks\): a thought - /);
+  assert.equal(b.view.notice, "Memo saved");
+  assert.equal(b.view.ask.value(), "");
+});
+
+test("Memo with an empty field shows a notice and sends nothing", async () => {
+  const p = programs();
+  const b = await board({ exec: p.exec });
+  b.view.ask.set_value("   ");
+  b.click("ask-memo");
+  await b.reload();
+  assert.equal(p.notes().length, 0);
+  assert.equal(b.view.notice, "Type the note to save");
+});
+
+test("a Memo that fails to save keeps the text and the project, and shows the error", async () => {
+  const p = programs({ note: { code: 1, stdout: "", stderr: "inbox unwritable\n" } });
+  const b = await board({ exec: p.exec });
+  b.view.ask.set_value("keep me");
+  b.view.askProject = "orchard-atlas";
+  b.click("ask-memo");
+  await b.reload();
+  assert.equal(b.view.notice, "Request failed: inbox unwritable");
+  assert.equal(b.view.ask.value(), "keep me");
+  assert.equal(b.view.askProject, "orchard-atlas");
+});
+
+test("Scout and Task still go through the firstmate terminal path, not a Memo note", async () => {
+  const p = programs();
+  const b = await board({ exec: p.exec });
+  b.view.ask.set_value("look into it");
+  b.click("ask-task");
+  await b.reload();
+  // With no terminal to find, Task falls back to a Board request, not a memo.
+  assert.match(p.notes()[0].at(-1), /^\[Board request\] New task: project=\(firstmate picks\) - look into it$/);
+  assert.ok(!p.notes().some((n) => n.at(-1).includes("[Board memo]")));
 });

@@ -96,15 +96,19 @@ const base = (path) => (path ?? "").split("/").filter(Boolean).pop() ?? "";
 // The backlog writes "-" for an item with no project; such items are firstmate's own work.
 const projectOf = (...paths) => paths.map(base).find((p) => p && p !== "-") ?? "";
 // A project keeps one color on every card, so the eye can group cards without reading.
-// Mid-tone hues that all carry white text. Projects get them in name order, so no two
-// share a color until there are more projects than hues; a color picked on the project row wins.
+// Mid-tone hues that all carry white text. A project's color comes from its own name alone, so
+// adding or removing other projects never changes it; two projects can share a hue, and a color
+// picked on the project row wins.
 const PROJECT_COLORS = [
   "#2f7fc1", "#2e9d5b", "#c0563a", "#8a4fbf", "#b8860b", "#16958f", "#c23d7a",
   "#4f5fc7", "#6b8e23", "#a0522d", "#0f7ea8", "#9c3fa3", "#58708a", "#b03a3a",
 ];
 const PROJECT_COLORS_KEY = "projectColors";
-function autoColors(names) {
-  return new Map([...new Set(names)].sort().map((n, i) => [n, PROJECT_COLORS[i % PROJECT_COLORS.length]]));
+// FNV-1a over the name's UTF-16 units, spread over the palette.
+function autoColor(name) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193);
+  return PROJECT_COLORS[(h >>> 0) % PROJECT_COLORS.length];
 }
 // Three-letter tags: one word takes its first three letters, two words take
 // two letters and an initial (mail-server -> MAS), more words take initials (TPO). A clash
@@ -516,7 +520,7 @@ export default class FmBoard extends View {
 
   colorOf(name, t) {
     if (name === "firstmate" && !this.colorChoice[name]) return readableOnWhite(t.dim);
-    return this.colorChoice[name] ?? this.autoColor?.get(name) ?? PROJECT_COLORS[0];
+    return this.colorChoice[name] ?? autoColor(name);
   }
 
   pickColor(name, color, cx) {
@@ -784,7 +788,9 @@ export default class FmBoard extends View {
       }));
     const el = this.frame(v_flex().flex_none().gap(8), t).child(header);
     if (collapsed) return el;
-    const list = v_flex().id("project-list").gap(8).max_h(260).overflow_y_scrollbar();
+    // Plain overflow_y_scroll, not the scrollbar wrapper: the wrapper drops max_h, so the list
+    // never got a height to scroll within.
+    const list = v_flex().id("project-list").gap(8).max_h(260).min_h(0).flex_shrink(1).overflow_y_scroll();
     if (this.adding) list.child(this.addForm(t));
     list.children(this.projects.map((p) => this.projectRow(p, t)));
     if (this.requests.length) list.child(v_flex().gap(4).pt(6).border_t(1).border_color(t.border)
@@ -1508,7 +1514,6 @@ export default class FmBoard extends View {
     this.readFontScale(this.size?.width);
     const names = [...this.projects.map((p) => p.name), ...(this.cards ?? []).map((c) => c.project).filter(Boolean)];
     this.tags = abbreviations(["firstmate", ...names]);
-    this.autoColor = autoColors(names);
     const t = theme();
     if (!home()) return v_flex().id("home-required").size_full().bg(t.canvas).p(16)
       .child(v_flex().gap(8).p(16).rounded(8).bg(t.surface).border(1).border_color(t.border)

@@ -22,13 +22,14 @@ const RECORD_KEYS = ["blocked_by", "blocked_by_ids", "blocked_reason", "body_exc
   "hold_until", "id", "kind", "links", "local_note", "merged", "order", "pr_url", "priority", "raw", "repo", "report_path",
   "reported", "requires_child_metadata", "since", "state", "structured", "title", "unresolved_blocker_ids"];
 
-// A stand-in for a gpui-kit element: it keeps the id, click handler, and children it is given.
+// A stand-in for a gpui-kit element: it keeps the id, click handler, children, and styling calls it is given.
 function element() {
-  const node = { id: null, click: null, kids: [] };
+  const node = { id: null, click: null, kids: [], calls: [] };
   const self = new Proxy(node, {
     get(target, name) {
       if (name === "node") return target;
       return (...args) => {
+        if (!["child", "children", "when", "id", "on_click"].includes(name)) target.calls.push([name, ...args]);
         if (name === "id") target.id = args[0];
         else if (name === "on_click") target.click = args[0];
         else if (name === "child") target.kids.push(args[0]);
@@ -47,8 +48,8 @@ function drawn(tree) {
   const walk = (kid) => {
     if (kid === null || kid === undefined) return "";
     if (typeof kid !== "object") return String(kid);
-    const { id, click, kids } = kid.node;
-    const entry = id === null ? null : { id, click, text: "" };
+    const { id, click, kids, calls } = kid.node;
+    const entry = id === null ? null : { id, click, calls, text: "" };
     if (entry) out.push(entry);
     const text = kids.map(walk).filter(Boolean).join(" ");
     if (entry) entry.text = text;
@@ -59,7 +60,7 @@ function drawn(tree) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board() {
+async function board({ projects } = {}) {
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
@@ -75,7 +76,9 @@ async function board() {
     localStorage: { getItem: () => null, setItem() {} },
     readTextFile: async (file) => {
       if (file === snapshotFile) return readFile(file, "utf8");
-      if (file === `${HOME}/data/projects.md`) return "- maple-workshop - Fictional project.\n- orchard-atlas - Fictional project.\n";
+      if (file === `${HOME}/data/projects.md`) {
+        return (projects ?? ["maple-workshop", "orchard-atlas"]).map((name) => `- ${name} - Fictional project.\n`).join("");
+      }
       throw new Error(`no such file: ${file}`);
     },
     // No helper program exists here; the Board treats every one as failed.
@@ -96,7 +99,9 @@ async function board() {
     assert.ok(item?.click, `nothing to click at ${id}`);
     item.click({}, cx);
   };
-  return { view, cardsFrom, items, ids: items.map((x) => x.id), click, drafts, opened,
+  // Draws again after the test changed the Board, as Herdr does on every notify.
+  const redraw = () => drawn(view.render(cx));
+  return { view, cardsFrom, items, ids: items.map((x) => x.id), click, drafts, opened, redraw,
     text: (id) => items.find((x) => x.id === id)?.text };
 }
 
@@ -220,4 +225,58 @@ test("an open decision with a topic is drawn once, in its card, with keyed draft
   assert.equal(b.text("open-maple-button-labels-0"), "needs-decision default Choose clear sample labels");
   b.click("opt-open-maple-button-labels-0-B");
   assert.deepEqual(b.drafts, ["[Board answer] maple-button-labels [key=default]: B (Nouns)"]);
+});
+
+// Fictional registry names; the first two are the fixture's own projects.
+const MANY_PROJECTS = ["maple-workshop", "orchard-atlas", "birch-ledger", "cedar-signal", "dune-harbor", "elm-compass",
+  "fjord-notes", "garnet-relay", "heron-studio", "iris-gateway", "juniper-forge", "kelp-metrics", "linden-pages",
+  "meadow-queue", "nettle-vault"];
+
+test("the Projects list is a scroll area that holds every project", async () => {
+  const b = await board({ projects: MANY_PROJECTS });
+  assert.deepEqual(b.ids.filter((id) => id.startsWith("ptag-")), MANY_PROJECTS.map((name) => `ptag-${name}`));
+  const list = b.items.find((x) => x.id === "project-list");
+  assert.ok(list, "no project-list drawn");
+  const used = list.calls.map((c) => c[0]);
+  // Lab-proven in Herdr 0.1.15: overflow_y_scrollbar() wraps the element and drops its max_h, so the list
+  // grew to its content, was cut off at the cap, and had nothing to scroll. The plain scroll area keeps the cap.
+  assert.ok(used.includes("max_h") && used.includes("overflow_y_scroll"), `project-list calls: ${used}`);
+  assert.ok(!used.includes("overflow_y_scrollbar"), "overflow_y_scrollbar() would drop the list's max_h");
+});
+
+// The color of each project's tag, by project name.
+const tagColors = (items) => Object.fromEntries(items.filter((x) => x.id.startsWith("ptag-"))
+  .map((x) => [x.id.slice(5), x.calls.find((c) => c[0] === "bg")[1]]));
+
+test("a project keeps its tag color when other projects are added or removed", async () => {
+  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"] });
+  const before = tagColors(b.items);
+  // aspen-docs sorts before every project, which used to move each one's place in the color list.
+  const same = (colors, names) => names.every((name) => colors[name] === before[name]);
+  b.view.projects.unshift({ name: "aspen-docs", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
+  assert.ok(same(tagColors(b.redraw()), Object.keys(before)), "adding a project changed another one's color");
+  b.view.projects = b.view.projects.filter((p) => p.name !== "cedar-signal");
+  assert.ok(same(tagColors(b.redraw()), ["birch-ledger", "maple-workshop", "orchard-atlas"]), "removing a project changed another one's color");
+  // The color depends on the name only, so a fresh Board gives the same one.
+  const again = tagColors((await board({ projects: ["aspen-docs", "maple-workshop"] })).items);
+  assert.equal(again["maple-workshop"], before["maple-workshop"]);
+});
+
+test("a project's tag color is one of the palette colors, the same on its cards, and a picked color wins", async () => {
+  const b = await board({ projects: MANY_PROJECTS });
+  // The picker lists the palette only for an open project row.
+  b.view.open.add("maple-workshop");
+  const swatches = b.redraw().filter((x) => x.id.startsWith("color-maple-workshop-") && !x.id.endsWith("-auto"))
+    .map((x) => x.id.slice("color-maple-workshop-".length));
+  assert.equal(swatches.length, 14);
+  const colors = tagColors(b.redraw());
+  for (const [name, color] of Object.entries(colors)) assert.ok(swatches.includes(color), `${name}: ${color}`);
+  // Cards use the project's color.
+  const cardTag = b.items.find((x) => x.id === "tag-maple-icon-set");
+  assert.equal(cardTag.calls.find((c) => c[0] === "bg")[1], colors["maple-workshop"]);
+  // Picking a color wins over the automatic one, and Auto returns to it.
+  b.view.pickColor("maple-workshop", "#123456", { notify() {} });
+  assert.equal(tagColors(b.redraw())["maple-workshop"], "#123456");
+  b.view.pickColor("maple-workshop", null, { notify() {} });
+  assert.equal(tagColors(b.redraw())["maple-workshop"], colors["maple-workshop"]);
 });

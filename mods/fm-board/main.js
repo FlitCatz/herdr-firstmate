@@ -98,8 +98,10 @@ const projectOf = (...paths) => paths.map(base).find((p) => p && p !== "-") ?? "
 // A project keeps one color on every card, so the eye can group cards without reading.
 // Mid-tone hues that all carry white text. A project gets the first hue no other project holds
 // when it is first seen and keeps it, so adding or removing other projects never changes it; the
-// hue is freed once the project has left both the registry and the cards. A color picked on the
-// project row wins.
+// hue is freed once the project has left both the registry and the cards. Projects get distinct
+// colors while free hues remain. With none free, a project takes a color from its name and keeps
+// it even after a hue is freed; a color picked on the project row wins but leaves the project's
+// automatic hue reserved for Auto. In those cases two projects can share a color.
 const PROJECT_COLORS = [
   "#2f7fc1", "#2e9d5b", "#c0563a", "#8a4fbf", "#b8860b", "#16958f", "#c23d7a",
   "#4f5fc7", "#6b8e23", "#a0522d", "#0f7ea8", "#9c3fa3", "#58708a", "#b03a3a",

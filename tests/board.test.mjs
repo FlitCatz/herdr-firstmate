@@ -432,29 +432,43 @@ test("a project's tag color is one of the palette colors, the same on its cards,
 });
 
 // The Commands section's Memo button. A call list records every program the Board ran.
-function programs({ note = { code: 0, stdout: "", stderr: "" } } = {}) {
+// With `terminal`, firstmate is alive in one Herdr terminal the Board can find, as when it is stopped on a limit.
+const FIRSTMATE_TERMINAL = "w1:p1", FIRSTMATE_PID = 4242;
+function programs({ note = { code: 0, stdout: "", stderr: "" }, terminal = false } = {}) {
   const calls = [];
+  const ok = (value) => ({ code: 0, stdout: JSON.stringify(value), stderr: "" });
   const exec = async (file, args = []) => {
     calls.push([file, ...args]);
-    if (file === "hc") return { code: 1, stdout: "", stderr: "" };
+    if (file === "hc") {
+      if (!terminal) return { code: 1, stdout: "", stderr: "" };
+      if (args[0] === "ls") return ok({ terminals: [{ address: FIRSTMATE_TERMINAL, state: "live" }] });
+      if (args[0] === "get" && args[1] === FIRSTMATE_TERMINAL) {
+        return ok({ state: "live", pid: 100, foreground: { pid: FIRSTMATE_PID } });
+      }
+      if (args[0] === "send" && args[1] === FIRSTMATE_TERMINAL) return ok({});
+      return { code: 1, stdout: "", stderr: "" };
+    }
     const script = args.find((a) => a.includes("/bin/fm-inbox.sh"));
     const sub = args[args.indexOf(script) + 1];
     if (sub === "note") return note;
+    if (sub === "ready" && terminal) return ok({ lock: { state: "held", live_harness: true, pid: FIRSTMATE_PID } });
     return { code: 1, stdout: "", stderr: "" };
   };
   const notes = () => calls.filter((c) => c.some((a) => a.endsWith("/bin/fm-inbox.sh")) && c.includes("note"));
-  return { calls, exec, notes, hcCalls: () => calls.filter((c) => c[0] === "hc") };
+  const hcCalls = () => calls.filter((c) => c[0] === "hc");
+  return { calls, exec, notes, hcCalls, sends: () => hcCalls().filter((c) => c[1] === "send") };
 }
 
-test("Memo saves an inbox note and never touches the firstmate terminal", async () => {
-  const p = programs();
+test("Memo saves an inbox note and never touches the firstmate terminal, even a live one", async () => {
+  const p = programs({ terminal: true });
   const b = await board({ exec: p.exec });
   b.view.ask.set_value("check the sync idea later");
   b.view.askProject = "maple-workshop";
   b.click("ask-memo");
   await b.reload();
+  assert.equal(p.notes().length, 1);
+  assert.deepEqual(p.sends(), []);
   const [note] = p.notes();
-  assert.ok(note, "no note was saved");
   assert.equal(note.at(-1), "[Board memo] project=maple-workshop: check the sync idea later - file this in the backlog only; do not start work");
   assert.equal(note[1], `FM_HOME=${HOME}`);
   assert.ok(note.includes("--json") && note.includes("--request-id"));
@@ -501,6 +515,16 @@ test("a Memo that fails to save keeps the text and the project, and shows the er
 });
 
 test("Scout and Task still go through the firstmate terminal path, not a Memo note", async () => {
+  const live = programs({ terminal: true });
+  const typed = await board({ exec: live.exec });
+  typed.view.ask.set_value("look into it");
+  typed.click("ask-task");
+  await typed.reload();
+  assert.deepEqual(live.sends().map((c) => c.slice(1)),
+    [["send", FIRSTMATE_TERMINAL, "[Board task] project=(firstmate picks): look into it", "--json"]]);
+  assert.equal(live.notes().length, 0);
+  assert.equal(typed.view.notice, "Task request typed into firstmate");
+
   const p = programs();
   const b = await board({ exec: p.exec });
   b.view.ask.set_value("look into it");

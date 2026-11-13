@@ -349,8 +349,9 @@ function prioritizeWaitingClause(text) {
   if (!text) return "";
   const match = WAITING_CLAUSE.exec(text);
   if (!match) return text;
-  const separator = /^until\b/i.test(match[0]) ? /\s*;\s*/g : /\s*(?:;\s*|,\s+)/g;
-  const boundary = [...text.slice(0, match.index).matchAll(separator)].at(-1);
+  const head = text.slice(0, match.index);
+  const separator = /^until\b/i.test(match[0]) && /,\s*$/.test(head) ? /\s*;\s*/g : /\s*(?:;\s*|,\s+)/g;
+  const boundary = [...head.matchAll(separator)].at(-1);
   if (!boundary) return text;
   return `${text.slice(boundary.index + boundary[0].length)}; ${text.slice(0, boundary.index)}`;
 }

@@ -568,6 +568,7 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
     makeTask("nested-clause", "paused", "", "paused [at=1]: processed 1,234 rows; tests green, awaiting review"),
     makeTask("retry-until", "paused", "", "paused [at=1]: build ok; retry once CI passes, until 13:40"),
     makeTask("unlisted-until", "paused", "", "paused [at=1]: build ok; CI passes, until 13:40"),
+    makeTask("comma-then-until", "paused", "", "paused [at=1]: Step 1 committed, CI drive until 13:40 for FlitCatz/x#52"),
     makeTask("plain-working", "unknown", "harness state unavailable", "working on build"),
     makeTask("done-no-pr", "unknown", "harness state unavailable", "done [at=1]: report written to data/x.md"),
     makeTask("harness-idle", "paused", "idle", "working [at=1]: building"),
@@ -607,6 +608,7 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
   // A deadline after a comma stays with the condition it bounds.
   assert.equal(b.text("waiting-retry-until"), "Waiting for: retry once CI passes, until 13:40; build ok");
   assert.equal(b.text("waiting-unlisted-until"), "Waiting for: CI passes, until 13:40; build ok");
+  assert.equal(b.text("waiting-comma-then-until"), "Waiting for: CI drive until 13:40 for FlitCatz/x#52; Step 1 committed");
   assert.ok(b.text("card-plain-working").includes("working on build"));
 
   // Paused-column cards without a worker "paused" line are not waiting on anything they declared.

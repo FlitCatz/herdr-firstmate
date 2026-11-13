@@ -341,7 +341,7 @@ function cleanPausedReason(text) {
   return out;
 }
 
-const WAITING_CLAUSE = /\b(?:awaiting|waiting\s+for|waits\s+on|until\s+(?:\d{2}-\d{2}\s+)?\d{2}:\d{2}|resume\s+(?:when|on|at))\b|대기|기다/i;
+const WAITING_CLAUSE = /\b(?:awaiting|waiting\s+for|waits\s+on|until\s+(?:\d{2}-\d{2}\s+)?\d{2}:\d{2}|resume\s+(?:when|on|at|once)|retry)\b|대기|기다|재개/i;
 
 // Rotates the text at the separator before the first waiting/until/resume clause so single-line truncation keeps what is waited on visible.
 /** @param {string} text @returns {string} */
@@ -349,7 +349,8 @@ function prioritizeWaitingClause(text) {
   if (!text) return "";
   const match = WAITING_CLAUSE.exec(text);
   if (!match) return text;
-  const boundary = [...text.slice(0, match.index).matchAll(/\s*(?:;\s*|,\s+)/g)].at(-1);
+  const separator = /^until\b/i.test(match[0]) ? /\s*;\s*/g : /\s*(?:;\s*|,\s+)/g;
+  const boundary = [...text.slice(0, match.index).matchAll(separator)].at(-1);
   if (!boundary) return text;
   return `${text.slice(boundary.index + boundary[0].length)}; ${text.slice(0, boundary.index)}`;
 }

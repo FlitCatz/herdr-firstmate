@@ -1053,4 +1053,3 @@ test("an inspector node for a blocker that is not on the board gets a neutral ta
   assert.equal(b.text("dep-tag-X1"), b.text("tag-X1"));
   assert.notEqual(b.text("dep-tag-ghost-task"), b.text("tag-X1"));
 });
-

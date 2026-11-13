@@ -24,7 +24,7 @@ const RECORD_KEYS = ["blocked_by", "blocked_by_ids", "blocked_reason", "body_exc
 
 // A stand-in for a gpui-kit element: it keeps the id, click handler, children, and styling calls it is given.
 function element() {
-  const node = { id: null, click: null, kids: [], calls: [] };
+  const node = { id: null, click: null, hover: null, keyDown: null, kids: [], calls: [] };
   const self = new Proxy(node, {
     get(target, name) {
       if (name === "node") return target;
@@ -32,6 +32,8 @@ function element() {
         if (!["child", "children", "when", "id", "on_click"].includes(name)) target.calls.push([name, ...args]);
         if (name === "id") target.id = args[0];
         else if (name === "on_click") target.click = args[0];
+        else if (name === "on_hover") target.hover = args[0];
+        else if (name === "on_key_down") target.keyDown = args[0];
         else if (name === "child") target.kids.push(args[0]);
         else if (name === "children") target.kids.push(...args[0]);
         else if (name === "when" && args[0]) args[1](self);
@@ -48,8 +50,8 @@ function drawn(tree) {
   const walk = (kid) => {
     if (kid === null || kid === undefined) return "";
     if (typeof kid !== "object") return String(kid);
-    const { id, click, kids, calls } = kid.node;
-    const entry = id === null ? null : { id, click, calls, text: "" };
+    const { id, click, hover, keyDown, kids, calls } = kid.node;
+    const entry = id === null ? null : { id, click, hover, keyDown, calls, text: "" };
     if (entry) out.push(entry);
     const text = kids.map(walk).filter(Boolean).join(" ");
     if (entry) entry.text = text;
@@ -60,20 +62,26 @@ function drawn(tree) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {} } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
-  const cx = { notify() {}, stop_propagation() {}, spawn(fn) { pending.push(fn(cx)); }, timer: { every() {}, after() {} } };
+  const scrolled = [];
+  const focused = [];
+  const cx = {
+    notify() {}, stop_propagation() {}, spawn(fn) { pending.push(fn(cx)); }, timer: { every() {}, after() {} },
+    focus_handle() { const handle = { focus() { focused.push(handle); }, is_focused: () => focused.at(-1) === handle, release: () => true }; return handle; },
+  };
   const input = () => { let text = ""; return { on() {}, value: () => text, set_value(v) { text = v; } }; };
   const theme = new Proxy({}, { get: () => "#808080" });
   const scope = {
     View: class {}, div: element, svg: element, v_flex: element, h_flex: element, Input: { new: element },
     h_resizable: element, resizable_panel: element, InputState: { new: input },
-    FolderViewer: class { constructor() { this.root = null; } },
-    props: () => ({ home: HOME, snapshot_file: snapshotFile, collapsed: [], ui: {} }),
+    ScrollHandle: { new: () => { const handle = { scroll_to_item(idx) { scrolled.push({ handle, idx }); } }; return handle; } },
+    FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
+    props: () => ({ home: HOME, snapshot_file: snapshotFile, collapsed: [], ui }),
     theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
     localStorage: store,
     readTextFile: async (file) => {
@@ -88,30 +96,70 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     exec,
     watchFolder: async () => {}, pickFolder: async () => null,
   };
-  const { FmBoard, cardsFrom } = vm.runInNewContext(`${source}\n({ FmBoard, cardsFrom })`, scope);
+  const { FmBoard, cardsFrom, dependencyGraph, chainHighlight, waitingLabel, blocksLabel } = vm.runInNewContext(
+    `${source}\n({ FmBoard, cardsFrom, dependencyGraph, chainHighlight, waitingLabel, blocksLabel })`,
+    scope,
+  );
   const view = new FmBoard();
   view.init({}, cx);
   await Promise.all(pending);
   if (!registryFails) assert.equal(view.error, null);
   const drafts = [], opened = [];
   view.insertCardText = (text) => drafts.push(text);
-  view.openView = (project, source) => opened.push({ project, ...source });
-  const items = drawn(view.render(cx));
+  view.openView = (project, source, cx) => { view.clearChainSelection(cx); opened.push({ project, ...source }); };
+  let items = drawn(view.render(cx));
   const click = (id) => {
     const item = items.find((x) => x.id === id);
     assert.ok(item?.click, `nothing to click at ${id}`);
     item.click({}, cx);
+    items = drawn(view.render(cx));
+    return items;
+  };
+  const hover = (id, hovered = true) => {
+    const item = items.find((x) => x.id === id);
+    assert.ok(item?.hover, `nothing to hover at ${id}`);
+    item.hover(hovered, cx);
+    items = drawn(view.render(cx));
+    return items;
+  };
+  const keyDown = (id, key) => {
+    const item = items.find((x) => x.id === id);
+    assert.ok(item?.keyDown, `no keyDown at ${id}`);
+    item.keyDown({ key }, cx);
+    items = drawn(view.render(cx));
+    return items;
   };
   // Draws again after the test changed the Board, as Herdr does on every notify.
-  const redraw = () => drawn(view.render(cx));
+  const redraw = () => {
+    items = drawn(view.render(cx));
+    return items;
+  };
   // Reads the snapshot and registry again, as a watched change or the fallback timer does, then draws.
   const reload = async () => {
     view.last = 0; view.refresh(cx);
     await Promise.all(pending);
     return redraw();
   };
-  return { view, registry, reload, cardsFrom, items, ids: items.map((x) => x.id), click, drafts, opened, redraw,
-    text: (id) => items.find((x) => x.id === id)?.text };
+  return {
+    view, registry, reload, cardsFrom, dependencyGraph, chainHighlight, waitingLabel, blocksLabel,
+    get items() { return items; },
+    get ids() { return items.map((x) => x.id); },
+    click, hover, keyDown, scrolled, focused, drafts, opened, redraw,
+    text: (id) => items.find((x) => x.id === id)?.text,
+    // Every scroll so far, as its index when it went through the handle the drawn element with
+    // this id tracks, so a scroll on any other handle (which moves nothing there) shows up.
+    scrollsOn: (id) => {
+      const handle = items.find((x) => x.id === id)?.calls.find((c) => c[0] === "track_scroll")?.[1];
+      assert.ok(handle, `${id} tracks no scroll handle`);
+      return scrolled.map((s) => (s.handle === handle ? s.idx : `other handle at ${s.idx}`));
+    },
+    // Whether the keyboard was last moved onto the focus handle the drawn element with this id tracks.
+    focusedOn: (id) => {
+      const handle = items.find((x) => x.id === id)?.calls.find((c) => c[0] === "track_focus")?.[1];
+      assert.ok(handle, `${id} tracks no focus handle`);
+      return focused.at(-1) === handle;
+    },
+  };
 }
 
 // Arrays the Board builds belong to its own context; these copy them so they compare as plain arrays.
@@ -617,4 +665,391 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
   assert.ok(!b.text("card-done-no-pr").includes("Waiting for:"));
   assert.equal(b.items.find((x) => x.id === "waiting-harness-idle"), undefined);
   assert.ok(b.text("card-harness-idle").includes("idle"));
+});
+
+test("dependencyGraph derives reverse dependencies, transitive downstream counts, levels, and components", async () => {
+  const { cardsFrom, dependencyGraph, waitingLabel, blocksLabel } = await board();
+  const records = [
+    { id: "K2", state: "in_flight", repo: "maple-workshop", title: "maple-workshop K2 Step 1 core", structured: true, unresolved_blocker_ids: [] },
+    { id: "K3", state: "queued", hold_kind: "external", repo: "maple-workshop", title: "maple-workshop K3 Step 2 wire", structured: true, unresolved_blocker_ids: ["K2"] },
+    { id: "K4", state: "queued", repo: "maple-workshop", title: "maple-workshop K4 Step 3 verifier", structured: true, unresolved_blocker_ids: ["K3"] },
+    { id: "K6", state: "queued", repo: "maple-workshop", title: "maple-workshop K6 Step 4 audit", structured: true, unresolved_blocker_ids: ["K4"] },
+    { id: "K7", state: "queued", repo: "maple-workshop", title: "maple-workshop K7 Step 5 rollout", structured: true, unresolved_blocker_ids: ["K6"] },
+    { id: "solo", state: "queued", repo: "orchard-atlas", title: "orchard-atlas standalone task", structured: true, unresolved_blocker_ids: [] },
+  ];
+  const cards = cardsFrom({ backlog: { records } });
+  const graph = dependencyGraph(cards);
+  const byId = new Map(cards.map((c) => [c.id, c]));
+
+  assert.deepEqual(Array.from(byId.get("K2").blockingIds), ["K3"]);
+  assert.deepEqual(Array.from(byId.get("K2").blocks), ["K3", "K4", "K6", "K7"]);
+  assert.equal(byId.get("K2").blocksCount, 4);
+  assert.equal(blocksLabel(byId.get("K2")), "★ Blocks 4 →");
+
+  assert.deepEqual(Array.from(byId.get("K4").upstreamIds), ["K3", "K2"]);
+  assert.deepEqual(Array.from(byId.get("K4").blocks), ["K6", "K7"]);
+  assert.equal(byId.get("K4").blocksCount, 2);
+  assert.equal(waitingLabel(byId.get("K4")), "Waiting on K3 Step 2 wire");
+  assert.equal(waitingLabel(byId.get("K4"), "← Waits on"), "← Waits on K3 Step 2 wire");
+  assert.equal(blocksLabel(byId.get("K4")), "★ Blocks 2 →");
+
+  assert.equal(byId.get("K7").blocksCount, 0);
+  assert.deepEqual(Array.from(byId.get("K7").upstreamIds), ["K6", "K4", "K3", "K2"]);
+
+  // Topological levels L0..L4 for K2..K7, and 1 connected component (solo is not in any component).
+  assert.equal(graph.components.length, 1);
+  assert.deepEqual(Array.from(graph.components[0].levels, (lg) => Array.from(lg.ids)), [["K2"], ["K3"], ["K4"], ["K6"], ["K7"]]);
+  assert.equal(graph.components[0].depth, 5);
+  assert.equal(graph.components[0].summaryLabel, "K2 → K7");
+  assert.equal(graph.componentById.has("solo"), false);
+});
+
+test("dependencyGraph handles parallel branches, cross-project joins, and cycles safely", async () => {
+  const { dependencyGraph } = await board();
+  const cards = [
+    { id: "M1", title: "M1 API", project: "maple-workshop", column: "working", waitingIds: [] },
+    { id: "O1", title: "O1 Schema", project: "orchard-atlas", column: "paused", waitingIds: [] },
+    { id: "O2", title: "O2 Sync Join", project: "orchard-atlas", column: "held", waitingIds: ["M1", "O1"] },
+    { id: "O3A", title: "O3A Desktop", project: "orchard-atlas", column: "queued", waitingIds: ["O2"] },
+    { id: "O3B", title: "O3B Mobile", project: "maple-workshop", column: "queued", waitingIds: ["O2"] },
+    // Cycle: C1 -> C2 -> C3 -> C1
+    { id: "C1", title: "Cycle 1", project: "maple-workshop", column: "queued", waitingIds: ["C3"] },
+    { id: "C2", title: "Cycle 2", project: "maple-workshop", column: "queued", waitingIds: ["C1"] },
+    { id: "C3", title: "Cycle 3", project: "maple-workshop", column: "queued", waitingIds: ["C2"] },
+  ];
+  const graph = dependencyGraph(cards);
+  const o2 = graph.nodes.get("O2");
+  assert.deepEqual(Array.from(o2.crossProjectBlockers), ["M1"]);
+  assert.deepEqual(Array.from(graph.nodes.get("M1").blockingIds), ["O2"]);
+
+  // M1 and O1 join at O2, which fans out to O3A and O3B.
+  const joinComp = graph.componentById.get("O2");
+  assert.deepEqual(Array.from(joinComp.levels, (lg) => Array.from(lg.ids)), [["M1", "O1"], ["O2"], ["O3A", "O3B"]]);
+  assert.equal(joinComp.hasCycle, false);
+  assert.equal(joinComp.joins.length, 1);
+  assert.equal(joinComp.joins[0].id, "O2");
+  assert.deepEqual(Array.from(joinComp.joins[0].blockers), ["M1", "O1"]);
+  assert.equal(joinComp.levels[1].hasCrossProject, true);
+  assert.deepEqual(Array.from(joinComp.levels[1].crossProjectEdges, (e) => `${e.fromProject} → ${e.toProject}`), ["maple-workshop → orchard-atlas"]);
+  // O3B (maple-workshop) waits on O2 (orchard-atlas): a second cross-project edge one level down.
+  assert.equal(joinComp.crossProjectEdges.length, 2);
+  assert.equal(joinComp.levels[2].hasBranch, true);
+
+  // The cycle C1 -> C2 -> C3 -> C1 ends in finite levels, each task drawn exactly once.
+  const cycleComp = graph.componentById.get("C1");
+  assert.equal(cycleComp.hasCycle, true);
+  assert.deepEqual(Array.from(cycleComp.levels).flatMap((lg) => Array.from(lg.ids)).sort(), ["C1", "C2", "C3"]);
+});
+
+test("card dependency badges render in every column, not only Queued", async () => {
+  const b = await board();
+  // In the default fixture, orchard-label-polish (in Held) waits on orchard-map-labels (in Queued).
+  assert.equal(b.view.cards.find((c) => c.id === "orchard-map-labels").column, "queued");
+  assert.equal(b.text("blocks-orchard-map-labels"), "★ Blocks 1 →");
+  assert.equal(b.view.cards.find((c) => c.id === "orchard-label-polish").column, "held");
+  assert.equal(b.text("waits-orchard-label-polish"), "← Waits on Add map labels");
+
+  // Across Working, Held, Paused, Review, and Queued columns:
+  const makeTask = (id, state, detail = "", prUrl = null, lastEvent = "") => ({
+    id, kind: "ship", project: `${HOME}/projects/maple-workshop`, branch: `fm/${id}`, harness: "codex", backend: "hc",
+    mode: "no-mistakes", yolo: false, spawn_gen: "s1", remote: "origin", secondmate_projects: [],
+    paths: { home: HOME, meta: "", status_log: "", worktree: { path: "", present: false }, report: { path: "", present: false } },
+    current_state: { state, source: "pane", detail, raw: detail, observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+    endpoint: { target: null, exists: false, agent_alive: "not_checked", status: "absent", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+    pr: { url: prUrl, source: prUrl ? "status_event" : "absent", head: null },
+    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: lastEvent },
+    actions: { watch: "", steer: "", return_channel_note: null },
+    backlog: { id, state: "in_flight", kind: "ship", repo: "maple-workshop", title: id },
+  });
+  const records = [
+    { id: "W1", state: "in_flight", repo: "maple-workshop", title: "Working Blocker", structured: true, unresolved_blocker_ids: [] },
+    { id: "P1", state: "in_flight", repo: "maple-workshop", title: "Paused Step", structured: true, unresolved_blocker_ids: ["W1"] },
+    { id: "R1", state: "in_flight", repo: "maple-workshop", title: "Review Step", structured: true, pr_url: "https://github.com/FlitCatz/maple-workshop/pull/10", unresolved_blocker_ids: ["P1"] },
+    { id: "H1", state: "queued", hold_kind: "captain", hold_bucket: "live", hold_reason: "Confirm rollout | A: Yes | B: No", repo: "maple-workshop", title: "Held Step", structured: true, unresolved_blocker_ids: ["R1"] },
+    { id: "Q1", state: "queued", repo: "maple-workshop", title: "Queued Leaf", structured: true, unresolved_blocker_ids: ["H1"] },
+  ];
+  const tasks = [
+    makeTask("W1", "working", "building"),
+    makeTask("P1", "paused", "ci running"),
+    makeTask("R1", "unknown", "checks green: PR ready", "https://github.com/FlitCatz/maple-workshop/pull/10", "done [at=1]: PR ready"),
+  ];
+  const multi = await board({
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records } },
+  });
+  assert.equal(multi.view.cards.find((c) => c.id === "W1").column, "working");
+  assert.equal(multi.text("blocks-W1"), "★ Blocks 4 →");
+
+  assert.equal(multi.view.cards.find((c) => c.id === "P1").column, "paused");
+  assert.equal(multi.text("waits-P1"), "← Waits on Working Blocker");
+  assert.equal(multi.text("blocks-P1"), "★ Blocks 3 →");
+
+  assert.equal(multi.view.cards.find((c) => c.id === "R1").column, "review");
+  assert.equal(multi.text("waits-R1"), "← Waits on Paused Step");
+  assert.equal(multi.text("blocks-R1"), "★ Blocks 2 →");
+
+  assert.equal(multi.view.cards.find((c) => c.id === "H1").column, "held");
+  assert.equal(multi.text("waits-H1"), "← Waits on Review Step");
+  assert.equal(multi.text("blocks-H1"), "★ Blocks 1 →");
+
+  assert.equal(multi.view.cards.find((c) => c.id === "Q1").column, "queued");
+  assert.equal(multi.text("waits-Q1"), "← Waits on Held Step");
+
+  // A queued card's waiting row still expands and hides the order it waits on, without opening the inspector.
+  assert.equal(multi.text("wait-Q1"), "▸ Waiting on Held Step");
+  assert.ok(!multi.text("card-Q1").includes("this task"));
+  multi.click("wait-Q1");
+  assert.equal(multi.text("wait-Q1"), "▾ Waiting on Held Step");
+  assert.ok(multi.text("card-Q1").includes("this task"));
+  assert.equal(multi.view.inspectorOpen, false);
+  multi.click("wait-Q1");
+  assert.ok(!multi.text("card-Q1").includes("this task"));
+  // Only queued cards have the waiting row.
+  assert.ok(!multi.ids.includes("wait-H1"));
+});
+
+test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlights upstream/selected/downstream, dims unrelated cards only while selected, and clears on Escape or Close", async () => {
+  const records = [
+    { id: "K2", state: "in_flight", repo: "maple-workshop", title: "K2 Root Blocker", structured: true, unresolved_blocker_ids: [] },
+    { id: "K3", state: "queued", hold_kind: "captain", hold_bucket: "blocked", hold_reason: "Wait for K2 | A: Proceed | B: Hold", repo: "maple-workshop", title: "K3 Held Step", structured: true, unresolved_blocker_ids: ["K2"] },
+    { id: "K4", state: "queued", repo: "orchard-atlas", title: "K4 Cross-Project Join", structured: true, unresolved_blocker_ids: ["K3"] },
+    { id: "K6", state: "queued", repo: "orchard-atlas", title: "K6 Downstream Leaf", structured: true, unresolved_blocker_ids: ["K4"] },
+    { id: "U1", state: "queued", repo: "maple-workshop", title: "U1 Unrelated Task", structured: true, unresolved_blocker_ids: [] },
+  ];
+  const tasks = [
+    {
+      id: "K2", kind: "ship", project: `${HOME}/projects/maple-workshop`, branch: "fm/K2", harness: "codex", backend: "hc",
+      mode: "no-mistakes", yolo: false, spawn_gen: "s1", remote: "origin", secondmate_projects: [],
+      paths: { home: HOME, meta: "", status_log: "", worktree: { path: "", present: false }, report: { path: "", present: false } },
+      current_state: { state: "working", source: "pane", detail: "building", raw: "building", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+      endpoint: { target: null, exists: false, agent_alive: "not_checked", status: "absent", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+      pr: { url: null, source: "absent", head: null },
+      hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: "working [at=1]: building" },
+      actions: { watch: "", steer: "", return_channel_note: null },
+      backlog: { id: "K2", state: "in_flight", kind: "ship", repo: "maple-workshop", title: "K2 Root Blocker" },
+    },
+  ];
+  const b = await board({
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records } },
+  });
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+
+  // Hovering a chain card highlights upstream, selected, and downstream without dimming unrelated cards.
+  b.hover("card-K3", true);
+  assert.equal(b.text("hl-K2"), "Upstream");
+  assert.equal(b.text("hl-K3"), "Selected");
+  assert.equal(b.text("hl-K4"), "Downstream");
+  assert.equal(b.text("hl-K6"), "Downstream");
+  assert.equal(b.view.highlight.dimmedIds.size, 0);
+  const u1HoverCalls = b.items.find((x) => x.id === "card-U1").calls;
+  assert.ok(!u1HoverCalls.some((c) => c[0] === "opacity" && c[1] === 0.35), "hover alone must not dim unrelated cards");
+  b.hover("card-K3", false);
+  assert.ok(!b.ids.includes("hl-K3"));
+
+  // Clicking a badge opens the Dependency Inspector in the wide split and dims unrelated cards.
+  // Escape travels the keyboard's focus path, so picking a chain moves the keyboard onto the Board.
+  assert.ok(!b.focusedOn("root"));
+  b.click("blocks-K3");
+  assert.ok(b.focusedOn("root"), "a badge click moves the keyboard onto the Board");
+  assert.ok(b.ids.includes("inspector-wrap"));
+  assert.ok(b.ids.includes("dep-inspector"));
+  assert.ok(!b.ids.includes("dep-inspector-compact"));
+  assert.equal(b.text("hl-K2"), "Upstream");
+  assert.equal(b.text("hl-K3"), "Selected");
+  assert.equal(b.text("hl-K4"), "Downstream");
+  assert.ok(b.view.highlight.dimmedIds.has("U1"));
+  const u1SelectedCalls = b.items.find((x) => x.id === "card-U1").calls;
+  assert.ok(u1SelectedCalls.some((c) => c[0] === "opacity" && c[1] === 0.35), "selected chain must dim unrelated cards");
+
+  // Clicking a node in the Dependency Inspector focuses and scrolls to that card, showing its
+  // folded card and collapsed column open without changing the saved folds.
+  b.view.folded.add("card:K4");
+  b.view.collapsed.add("queued");
+  b.redraw();
+  assert.ok(!b.ids.includes("tag-K4"));
+  assert.ok(!b.ids.includes("list-queued"));
+  b.focused.length = 0;
+  b.click("dep-node-K4");
+  assert.ok(b.focusedOn("root"), "an inspector node click moves the keyboard onto the Board");
+  assert.equal(b.view.selectedCardId, "K4");
+  assert.ok(b.ids.includes("tag-K4"));
+  assert.ok(b.ids.includes("list-queued"));
+  assert.ok(b.view.folded.has("card:K4"));
+  assert.ok(b.view.collapsed.has("queued"));
+  // Queued draws K4, K6, U1 in backlog order, so K4 is the column list's first item.
+  assert.deepEqual(b.scrollsOn("list-queued"), [0]);
+  assert.equal(b.text("hl-K2"), "Upstream");
+  assert.equal(b.text("hl-K3"), "Upstream");
+  assert.equal(b.text("hl-K4"), "Selected");
+  assert.equal(b.text("hl-K6"), "Downstream");
+
+  // A later, unrelated fold click saves only that fold; folding K4 again drops the temporary reveal.
+  b.click("fold-card:K6");
+  assert.ok(b.view.folded.has("card:K6"));
+  assert.ok(b.view.folded.has("card:K4"));
+  assert.ok(b.ids.includes("tag-K4"));
+  b.click("fold-card:K4");
+  assert.ok(!b.ids.includes("tag-K4"));
+  assert.ok(b.view.folded.has("card:K4"));
+  b.click("fold-card:K6");
+
+  // On a narrow board (< STACK_BELOW_PX = 720), the compact chain card is pinned at the top of board instead of the split.
+  b.view.size = { width: 520, height: 800 };
+  b.view.splitWasOpen = false;
+  b.view.rightSplitWidth = 0;
+  b.redraw();
+  assert.ok(b.ids.includes("dep-inspector-compact"));
+  assert.ok(!b.ids.includes("inspector-wrap"));
+  assert.ok(b.ids.indexOf("dep-inspector-compact") < b.ids.indexOf("col-held"));
+  // The compact card sits above the scrolling board, not inside it, so it stays pinned and a
+  // node click scrolls the board to the position of the card's column among the drawn columns.
+  assert.ok(b.ids.indexOf("dep-inspector-compact") < b.ids.indexOf("board"));
+  // A long chain scrolls inside the compact card instead of pushing the board out of a short pane.
+  const levelCalls = b.items.find((x) => x.id === "dep-inspector-levels").calls;
+  const cap = levelCalls.find((c) => c[0] === "max_h")?.[1];
+  assert.ok(cap > 0 && cap < b.view.size.height, `compact chain height cap ${cap}`);
+  assert.ok(levelCalls.some((c) => c[0] === "overflow_y_scroll"));
+  b.scrolled.length = 0;
+  b.click("dep-node-K6");
+  assert.equal(b.text("hl-K6"), "Selected");
+  assert.ok(b.ids.includes("dep-inspector-compact"));
+  const drawnColumns = b.ids.filter((id) => id.startsWith("col-"));
+  assert.equal(drawnColumns.indexOf("col-queued"), 1);
+  assert.deepEqual(b.scrollsOn("board"), [drawnColumns.indexOf("col-queued")]);
+
+  // Escape clears the selection and closes the inspector; the keyboard is on root, where its handler sits.
+  assert.ok(b.focusedOn("root"));
+  b.keyDown("root", "escape");
+  assert.equal(b.view.selectedCardId, null);
+  assert.equal(b.view.inspectorOpen, false);
+  assert.ok(!b.ids.includes("dep-inspector-compact"));
+  assert.equal(b.view.highlight.dimmedIds.size, 0);
+
+  // Toolbar toggle opens and Close button closes it.
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  b.focused.length = 0;
+  b.click("dep-inspector-toggle");
+  assert.ok(b.focusedOn("root"), "the toolbar toggle moves the keyboard onto the Board");
+  assert.equal(b.view.inspectorOpen, true);
+  assert.ok(b.ids.includes("dep-inspector"));
+  b.click("dep-inspector-close");
+  assert.equal(b.view.inspectorOpen, false);
+  assert.equal(b.view.selectedCardId, null);
+  assert.ok(!b.ids.includes("dep-inspector"));
+
+  // A node whose card the active search hides clears the search, so the card is drawn and scrolled to.
+  b.view.query = "K3 Held";
+  b.redraw();
+  assert.ok(!b.ids.includes("card-K6"));
+  b.click("blocks-K3");
+  b.scrolled.length = 0;
+  b.click("dep-node-K6");
+  assert.equal(b.view.query, "");
+  assert.ok(b.ids.includes("card-K6"));
+  assert.equal(b.text("hl-K6"), "Selected");
+  // K6 is the second card drawn in Queued (K4, K6, U1).
+  assert.deepEqual(b.scrollsOn("list-queued"), [1]);
+
+  // Opening a Files · Changes viewer takes the inspector's split slot, so it ends the chain
+  // selection: nothing stays dimmed, the toolbar offers to open the inspector, and closing the
+  // viewer does not bring the inspector back.
+  assert.ok(b.view.highlight.dimmedIds.has("U1"));
+  const viewer = b.view.viewer;
+  viewer.target = (path) => { viewer.root = path; };
+  viewer.render = () => null;
+  Object.getPrototypeOf(b.view).openView.call(b.view, "maple-workshop", { path: `${HOME}/projects/maple-workshop`, title: "local copy" }, { notify() {} });
+  b.redraw();
+  assert.equal(b.view.selectedCardId, null);
+  assert.equal(b.view.highlight.dimmedIds.size, 0);
+  assert.ok(!b.ids.includes("hl-K6"));
+  assert.ok(b.items.find((x) => x.id === "dep-inspector-toggle").calls.some((c) => c[0] === "tooltip" && c[1] === "Open Dependency Inspector"));
+  viewer.root = null;
+  b.redraw();
+  assert.ok(!b.ids.includes("dep-inspector"));
+  assert.ok(!b.ids.includes("inspector-wrap"));
+});
+
+test("the Inspector toggle shows the no-chains message on wide and narrow boards alike", async () => {
+  const records = [
+    { id: "S1", state: "queued", repo: "maple-workshop", title: "S1 Standalone", structured: true, unresolved_blocker_ids: [] },
+  ];
+  const b = await board({ snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  const message = "No active task dependencies in the current backlog snapshot.";
+  for (const width of [1280, 520]) {
+    b.view.size = { width, height: 800 };
+    b.view.splitWasOpen = false;
+    b.view.rightSplitWidth = 0;
+    b.redraw();
+    b.click("dep-inspector-toggle");
+    const panel = width < 720 ? "dep-inspector-compact" : "dep-inspector";
+    assert.ok(b.text(panel)?.includes(message), `${panel} at ${width}px`);
+    b.click("dep-inspector-close");
+    assert.ok(!b.ids.includes(panel));
+  }
+});
+
+test("the inspector opens in the split only when the Board half beside it stays unstacked", async () => {
+  const records = [
+    { id: "A1", state: "queued", repo: "maple-workshop", title: "A1 Root", structured: true, unresolved_blocker_ids: [] },
+    { id: "A2", state: "queued", repo: "maple-workshop", title: "A2 Waits", structured: true, unresolved_blocker_ids: ["A1"] },
+  ];
+  const b = await board({ snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  const STACK_BELOW = 720; // the README's narrow-board threshold
+  // The width the split's right panel opens at, read from the drawn panel that holds the inspector
+  // in the opening frame (this stand-in never measures the two halves, as Herdr would next).
+  const panelWidth = () => {
+    b.view.splitWasOpen = false;
+    const find = (kid) => {
+      if (!kid || typeof kid !== "object") return null;
+      if (kid.node.kids.some((k) => k?.node?.id === "inspector-wrap")) return kid.node;
+      for (const k of kid.node.kids) { const hit = find(k); if (hit) return hit; }
+      return null;
+    };
+    return find(b.view.render({ notify() {} }))?.calls.find((c) => c[0] === "size")?.[1];
+  };
+  // 767px is where the split once drew ~40px-wide unstacked columns beside the inspector.
+  for (const width of [767, 900, 1000, 1080, 1100, 1280, 1600]) {
+    b.view.size = { width, height: 800 };
+    b.view.splitWasOpen = false;
+    b.view.rightSplitWidth = 0;
+    b.redraw();
+    b.click("dep-inspector-toggle");
+    if (b.ids.includes("inspector-wrap")) {
+      assert.ok(!b.ids.includes("dep-inspector-compact"));
+      assert.ok(width - panelWidth() >= STACK_BELOW, `split at ${width}px leaves the Board ${width - panelWidth()}px`);
+    } else {
+      assert.ok(b.ids.includes("dep-inspector-compact"), `no inspector drawn at ${width}px`);
+      assert.ok(!b.items.find((x) => x.id === "board").calls.some((c) => c[0] === "track_scroll"), `compact board at ${width}px keeps its columns side by side`);
+    }
+    if (width === 767) assert.ok(b.ids.includes("dep-inspector-compact"), "767px uses the compact card");
+    if (width >= 1280) assert.ok(b.ids.includes("inspector-wrap"), `${width}px uses the split`);
+    b.click("dep-inspector-close");
+  }
+
+  // Dragging the divider keeps the split; the Board half stacks once it measures below the threshold.
+  b.view.size = { width: 1280, height: 800 };
+  b.view.splitWasOpen = false;
+  b.view.rightSplitWidth = 0;
+  b.redraw();
+  b.click("dep-inspector-toggle");
+  b.view.size = { width: 600, height: 800 };
+  b.view.rightSplitWidth = 680;
+  b.redraw();
+  assert.ok(b.ids.includes("inspector-wrap"));
+  assert.ok(!b.ids.includes("dep-inspector-compact"));
+  assert.ok(b.items.find((x) => x.id === "board").calls.some((c) => c[0] === "track_scroll"), "the dragged-narrow Board half stacks");
+});
+
+test("an inspector node for a blocker that is not on the board gets a neutral tag", async () => {
+  const records = [
+    { id: "X1", state: "queued", repo: "maple-workshop", title: "X1 Waits on ghost", structured: true, unresolved_blocker_ids: ["ghost-task"] },
+  ];
+  const b = await board({ snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  b.click("waits-X1");
+  assert.equal(b.text("dep-tag-ghost-task"), "unknown");
+  assert.equal(b.text("dep-tag-X1"), b.text("tag-X1"));
+  assert.notEqual(b.text("dep-tag-ghost-task"), b.text("tag-X1"));
 });

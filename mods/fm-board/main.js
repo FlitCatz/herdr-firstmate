@@ -18,6 +18,9 @@ const DESIGN_FONT_PX = 14;
 const LARGEST_TEXT_PX = 12;
 const GROW_FULL_PX = 1600;
 const REFRESH_FALLBACK_MS = 30000;
+const REFRESH_TIMEOUT_MS = 15000;
+const FM_EXEC_TIMEOUT_MS = 10000;
+const CORE_STATUS_TIMEOUT_MS = 3000;
 const MIN_GAP_MS = 2000;
 // Shown worker cards repeat the last lines of their worker's screen, read this often.
 const TAIL_REFRESH_MS = 4000;
@@ -728,6 +731,8 @@ export default class FmBoard extends View {
     const ui = props()?.ui ?? {};
     this.cards = null; this.projects = []; this.requests = []; this.ready = null;
     this.error = null; this.notice = ""; this.generated = ""; this.loading = false; this.last = 0;
+    /** @type {{ timer: import("gpui-kit").Task | null } | null} */
+    this.activeRefresh = null;
     this.size = null; this.collapsed = new Set(props()?.collapsed ?? this.loadSet(COLLAPSED_KEY));
     this.folded = new Set(ui.folded ?? this.loadSet(FOLDED_KEY));
     this.open = new Set(ui.open ?? []); this.filter = ui.filter ?? null;
@@ -884,40 +889,70 @@ export default class FmBoard extends View {
   }
 
   // Goes through env so a test home never reaches the real inbox.
-  fm(script, args) {
+  fm(script, args, opts) {
     const root = home();
-    return exec("/usr/bin/env", [`FM_HOME=${root}`, `${root}/bin/${script}`, ...args], { cwd: root });
+    return exec("/usr/bin/env", [`FM_HOME=${root}`, `${root}/bin/${script}`, ...args], { cwd: root, timeout: FM_EXEC_TIMEOUT_MS, ...opts });
   }
 
-  refresh(cx) {
-    if (this.loading || Date.now() - this.last < MIN_GAP_MS) return;
+  refresh(cx, { force = false } = {}) {
+    if (this.loading || (!force && Date.now() - this.last < MIN_GAP_MS)) return;
     this.loading = true;
+    /** @type {{ timer: import("gpui-kit").Task | null }} */
+    const run = { timer: null };
+    this.activeRefresh = run;
+    const isCurrent = () => this.activeRefresh === run;
+    // Overall deadline so a hung promise (e.g. a child holding stdout open) cannot wedge loading.
+    run.timer = cx.timer.after(REFRESH_TIMEOUT_MS, (cx) => {
+      if (!isCurrent()) return;
+      this.activeRefresh = null;
+      this.loading = false;
+      this.last = Date.now();
+      this.error = "refresh timed out";
+      cx.notify();
+    });
+    cx.notify();
     cx.spawn(async (cx) => {
       try {
         const snapshot = await this.loadSnapshot();
+        if (!isCurrent()) return;
         if (snapshot.schema !== "fm-fleet-snapshot.v1") throw new Error(`unknown schema ${snapshot.schema}`);
-        await this.readCoreStatus(snapshot);
-        this.cards = cardsFrom(snapshot);
-        this.generated = snapshot.generated ?? "";
-        this.projects = parseRegistry(await readTextFile(`${home()}/data/projects.md`));
-        await this.loadInbox();
+        await this.readCoreStatus(snapshot, isCurrent);
+        if (!isCurrent()) return;
+        const cards = cardsFrom(snapshot);
+        const generated = snapshot.generated ?? "";
+        const projects = parseRegistry(await readTextFile(`${home()}/data/projects.md`));
+        if (!isCurrent()) return;
+        const inbox = await this.loadInbox(isCurrent);
+        if (!isCurrent()) return;
+        this.cards = cards;
+        this.generated = generated;
+        this.projects = projects;
+        if (inbox.requests !== undefined) this.requests = inbox.requests;
+        this.ready = inbox.ready;
+        this.beat = inbox.beat;
+        this.watchers = inbox.watchers;
         this.error = null;
         // An empty registry is more likely a bad read than every project removed, so it frees nothing.
         if (this.projects.length) this.updateColors([], new Set(this.projectNames()));
       } catch (e) {
+        if (!isCurrent()) return;
         this.error = String(e?.message ?? e); // keep the last good board on screen
       }
+      if (!isCurrent()) return;
+      run.timer?.cancel?.();
+      this.activeRefresh = null;
       this.loading = false; this.last = Date.now();
       cx.notify();
     });
   }
 
-  async readCoreStatus(snapshot) {
+  async readCoreStatus(snapshot, isCurrent = () => true) {
     for (const task of snapshot.tasks ?? []) {
+      if (!isCurrent()) return;
       if (task.backend !== "hc" || task.current_state?.state !== "unknown") continue;
       const address = hcAddress(task);
       if (!address) continue;
-      const r = await exec("hc", ["get", address, "--json"]);
+      const r = await exec("hc", ["get", address, "--json"], { timeout: CORE_STATUS_TIMEOUT_MS });
       if (r.code !== 0) continue;
       const terminal = JSON.parse(r.stdout);
       // An address can be reused, so the terminal must still carry this task's label.
@@ -933,16 +968,21 @@ export default class FmBoard extends View {
     return JSON.parse(r.stdout);
   }
 
-  async loadInbox() {
+  async loadInbox(isCurrent = () => true) {
     const receipts = await this.fm("fm-inbox.sh", ["receipts", "--all-pending"]);
+    if (!isCurrent()) return null;
     const ready = await this.fm("fm-inbox.sh", ["ready"]);
+    if (!isCurrent()) return null;
+    let requests;
     if (receipts.code === 0) {
       const { pending = [] } = JSON.parse(receipts.stdout);
-      this.requests = pending.filter((n) => n.request_id?.startsWith("board-"));
+      requests = pending.filter((n) => n.request_id?.startsWith("board-"));
     }
-    this.ready = ready.code === 0 ? JSON.parse(ready.stdout).can_receive : null;
-    this.beat = ready.code === 0 ? JSON.parse(ready.stdout).wake_consumer?.beacon_age_seconds ?? null : null;
-    await this.loadWatchers();
+    const readyData = ready.code === 0 ? JSON.parse(ready.stdout) : null;
+    const isReady = readyData ? readyData.can_receive : null;
+    const beat = readyData ? readyData.wake_consumer?.beacon_age_seconds ?? null : null;
+    const watchers = await this.loadWatchers();
+    return { requests, ready: isReady, beat, watchers };
   }
 
   // Firstmate's supervision processes, read from the home's own runtime records:
@@ -960,11 +1000,11 @@ export default class FmBoard extends View {
       const pid = (await readTextFile(`${home()}/state/.watch.lock/pid`)).trim();
       if (/^\d+$/.test(pid)) roles.push({ role: "Watcher", pid });
     } catch {}
-    if (!roles.length) { this.watchers = []; return; }
-    const r = await exec("ps", ["-o", "pid=,etime=", "-p", roles.map((x) => x.pid).join(",")]);
+    if (!roles.length) return [];
+    const r = await exec("ps", ["-o", "pid=,etime=", "-p", roles.map((x) => x.pid).join(",")], { timeout: PROCESS_LIST_TIMEOUT_MS });
     const alive = new Map((r.stdout ?? "").trim().split("\n").filter(Boolean)
       .map((l) => l.trim().split(/\s+/)).map(([pid, etime]) => [pid, etime]));
-    this.watchers = roles.map((x) => ({ ...x, up: alive.get(x.pid) ?? null }));
+    return roles.map((x) => ({ ...x, up: alive.get(x.pid) ?? null }));
   }
 
   send(text, cx, after, sent = "Request sent") {
@@ -2147,10 +2187,16 @@ export default class FmBoard extends View {
   footer(t) {
     const text = (value) => div().min_w(0).text_size(this.fs(11)).text_color(t.dim).truncate().child(value);
     const right = h_flex().flex_none().gap(6).items_center().min_w(0);
-    if (this.error) right.child(text(this.error)).child(this.badge("Update failed", t.ansi1));
+    if (this.error && !this.loading) right.child(text(this.error)).child(this.badge("Update failed", t.ansi1));
     else if (!this.cards) right.child(text("Loading"));
     else {
-      right.child(text([this.notice, `Updated ${koreaTime(this.generated)}`].filter(Boolean).join(" · ")));
+      if (this.notice) right.child(text(`${this.notice} ·`));
+      const updated = div().id("refresh").min_w(0).text_size(this.fs(11)).text_color(t.dim).truncate()
+        .child(this.loading ? "Refreshing…" : `Updated ${koreaTime(this.generated)}`)
+        .when(!this.loading, (e) => e.cursor_pointer().hover((s) => s.opacity(0.75))
+          .tooltip("Click to refresh now")
+          .on_click((_e, cx) => this.refresh(cx, { force: true })));
+      right.child(updated);
       if (this.ready !== null) right.child(this.ready ? this.badge("Receiving", t.ansi2) : this.badge("Not receiving", t.working));
     }
     return h_flex().flex_none().gap(10).items_center().justify_between().min_w(0)

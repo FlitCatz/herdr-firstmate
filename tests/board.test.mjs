@@ -68,12 +68,14 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
+  const scrolled = [];
   const cx = { notify() {}, stop_propagation() {}, spawn(fn) { pending.push(fn(cx)); }, timer: { every() {}, after() {} } };
   const input = () => { let text = ""; return { on() {}, value: () => text, set_value(v) { text = v; } }; };
   const theme = new Proxy({}, { get: () => "#808080" });
   const scope = {
     View: class {}, div: element, svg: element, v_flex: element, h_flex: element, Input: { new: element },
     h_resizable: element, resizable_panel: element, InputState: { new: input },
+    ScrollHandle: { new: () => ({ scroll_to_item(idx) { scrolled.push(idx); } }) },
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
     props: () => ({ home: HOME, snapshot_file: snapshotFile, collapsed: [], ui }),
     theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
@@ -138,7 +140,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     view, registry, reload, cardsFrom, dependencyGraph, chainHighlight, waitingLabel, blocksLabel,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
-    click, hover, keyDown, drafts, opened, redraw,
+    click, hover, keyDown, scrolled, drafts, opened, redraw,
     text: (id) => items.find((x) => x.id === id)?.text,
   };
 }
@@ -852,6 +854,8 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.ok(b.ids.includes("list-queued"));
   assert.ok(b.view.folded.has("card:K4"));
   assert.ok(b.view.collapsed.has("queued"));
+  // Queued draws K4, K6, U1 in backlog order, so K4 is the column list's first item.
+  assert.deepEqual(Array.from(b.scrolled), [0]);
   assert.equal(b.text("hl-K2"), "Upstream");
   assert.equal(b.text("hl-K3"), "Upstream");
   assert.equal(b.text("hl-K4"), "Selected");
@@ -875,16 +879,21 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.ok(b.ids.includes("dep-inspector-compact"));
   assert.ok(!b.ids.includes("inspector-wrap"));
   assert.ok(b.ids.indexOf("dep-inspector-compact") < b.ids.indexOf("col-held"));
-  // The compact card sits above the scrolling board, not inside it, so it stays pinned.
+  // The compact card sits above the scrolling board, not inside it, so it stays pinned and a
+  // node click scrolls the board to the position of the card's column among the drawn columns.
   assert.ok(b.ids.indexOf("dep-inspector-compact") < b.ids.indexOf("board"));
   // A long chain scrolls inside the compact card instead of pushing the board out of a short pane.
   const levelCalls = b.items.find((x) => x.id === "dep-inspector-levels").calls;
   const cap = levelCalls.find((c) => c[0] === "max_h")?.[1];
   assert.ok(cap > 0 && cap < b.view.size.height, `compact chain height cap ${cap}`);
   assert.ok(levelCalls.some((c) => c[0] === "overflow_y_scroll"));
+  b.scrolled.length = 0;
   b.click("dep-node-K6");
   assert.equal(b.text("hl-K6"), "Selected");
   assert.ok(b.ids.includes("dep-inspector-compact"));
+  const drawnColumns = b.ids.filter((id) => id.startsWith("col-"));
+  assert.equal(drawnColumns.indexOf("col-queued"), 1);
+  assert.deepEqual(Array.from(b.scrolled), [drawnColumns.indexOf("col-queued")]);
 
   // Escape clears the selection and closes the inspector.
   b.keyDown("root", "escape");
@@ -904,15 +913,18 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.equal(b.view.selectedCardId, null);
   assert.ok(!b.ids.includes("dep-inspector"));
 
-  // A node whose card the active search hides clears the search, so the card is drawn.
+  // A node whose card the active search hides clears the search, so the card is drawn and scrolled to.
   b.view.query = "K3 Held";
   b.redraw();
   assert.ok(!b.ids.includes("card-K6"));
   b.click("blocks-K3");
+  b.scrolled.length = 0;
   b.click("dep-node-K6");
   assert.equal(b.view.query, "");
   assert.ok(b.ids.includes("card-K6"));
   assert.equal(b.text("hl-K6"), "Selected");
+  // K6 is the second card drawn in Queued (K4, K6, U1).
+  assert.deepEqual(Array.from(b.scrolled), [1]);
 
   // Opening a Files · Changes viewer takes the inspector's split slot, so it ends the chain
   // selection: nothing stays dimmed, the toolbar offers to open the inspector, and closing the

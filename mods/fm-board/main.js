@@ -6,7 +6,7 @@
 // props: { home, snapshot_file?, collapsed?, ui? }. home is the firstmate
 // installation and operational home; the other props support preview fixtures.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel, ScrollHandle } from "gpui-base";
 import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals } from "herdr";
 import { FolderViewer } from "./viewer.js";
 
@@ -740,6 +740,9 @@ export default class FmBoard extends View {
     this.revealed = new Set();
     this.rightSplitWidth = 0;
     this.splitWasOpen = false;
+    // One handle per scroll area: the stacked board, and each column's card list.
+    this.boardScroll = ScrollHandle.new();
+    this.colScrolls = new Map(COLUMNS.map((c) => [c.id, ScrollHandle.new()]));
     this.pasting = false;
     // Worker screen tails by terminal address. Display only: never logged or written anywhere.
     /** @type {Map<string, string[]>} */
@@ -1582,8 +1585,25 @@ export default class FmBoard extends View {
       if (this.query && !searchText(card).includes(this.query.toLowerCase())) this.clearSearch(cx);
       this.revealed = new Set([`card:${id}`, card.column]);
       if (card.decision?.topic) this.revealed.add(`group:${card.decision.topic}`);
+      this.scrollToCard(card);
     }
     cx.notify();
+  }
+
+  // Brings a card's column on screen in the stacked board, or its entry (a card, a topic group,
+  // or a Held group) in its column's list; the handles reveal a direct child by index.
+  scrollToCard(card) {
+    if ((this.size?.width ?? Infinity) < STACK_BELOW_PX) {
+      const colIdx = this.shownColumns().findIndex((col) => col.id === card.column);
+      if (colIdx >= 0) this.boardScroll.scroll_to_item(colIdx);
+      return;
+    }
+    const handle = this.colScrolls.get(card.column);
+    const secs = this.sections(card.column);
+    const idx = secs.length === 1 && !secs[0].title
+      ? this.entries(secs[0].cards).findIndex((x) => (x.topic ? x.cards : [x.card]).some((m) => m.id === card.id))
+      : secs.findIndex((s) => s.cards.some((m) => m.id === card.id));
+    if (handle && idx >= 0) handle.scroll_to_item(idx);
   }
 
   /** @param {any} node @param {any} comp @param {Record<string, `#${string}`>} t @param {boolean} [compact] */
@@ -2083,7 +2103,7 @@ export default class FmBoard extends View {
         .child(this.holdHeading(s, t))
         .children(this.items(s.cards, t)));
     }
-    return el.child(stacked ? list : list.flex_1().min_h(0).overflow_y_scrollbar());
+    return el.child(stacked ? list : list.flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.colScrolls.get(col.id)));
   }
 
   // The same tag on project rows and cards; hovering shows the full project name.
@@ -2165,7 +2185,7 @@ export default class FmBoard extends View {
     const matches = this.query ? this.matchIds() : [];
     this.currentMatch = matches.length ? matches[this.matchAt % matches.length] : null;
     const board = (stacked
-      ? v_flex().id("board").overflow_y_scrollbar()
+      ? v_flex().id("board").overflow_y_scrollbar().track_scroll(this.boardScroll)
       : h_flex().id("board")).flex_1().min_h(0).gap(8);
     board.children(this.shownColumns().map((c) => this.column(c, t, stacked)));
     const root = v_flex().id("root").size_full().bg(t.canvas).px(8).pt(2.5).pb(3).gap(6)

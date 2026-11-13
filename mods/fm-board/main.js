@@ -6,7 +6,7 @@
 // props: { home, snapshot_file?, collapsed?, ui? }. home is the firstmate
 // installation and operational home; the other props support preview fixtures.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel, ScrollHandle } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel } from "gpui-base";
 import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals } from "herdr";
 import { FolderViewer } from "./viewer.js";
 
@@ -41,6 +41,7 @@ const DONE_LIMIT = 20;
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
 // The most of the Board's height the compact inspector's chain takes before it scrolls.
 const COMPACT_INSPECTOR_SHARE = 0.35;
+const NO_CHAINS_TEXT = "No active task dependencies in the current backlog snapshot.";
 const COLLAPSED_KEY = "collapsed";
 const FOLDED_KEY = "folded";
 const PROJECTS = "projects";
@@ -432,7 +433,7 @@ function waitingLabel(c, lead = "Waiting on") {
 
 // "★ Blocks N →" on a card that other tasks wait on.
 function blocksLabel(c) {
-  return `★ Blocks ${c.blocksCount ?? c.blocks?.length ?? 0} →`;
+  return `★ Blocks ${c.blocksCount} →`;
 }
 
 // Derives reverse dependencies (blockingIds, transitive downstream blocks, and count),
@@ -503,10 +504,6 @@ function dependencyGraph(cards) {
   /** @param {string} id @param {Set<string>} [visiting] @returns {number} */
   const computeLevel = (id, visiting = new Set()) => {
     if (levels.has(id)) return levels.get(id) ?? 0;
-    if (visiting.has(id)) {
-      cycleNodes.add(id);
-      return 0;
-    }
     visiting.add(id);
     const ups = byId.get(id)?.waitingIds ?? [];
     let maxUp = -1;
@@ -743,8 +740,6 @@ export default class FmBoard extends View {
     this.revealed = new Set();
     this.rightSplitWidth = 0;
     this.splitWasOpen = false;
-    this.boardScroll = typeof ScrollHandle !== "undefined" ? ScrollHandle.new() : null;
-    this.colScrolls = new Map(COLUMNS.map((c) => [c.id, typeof ScrollHandle !== "undefined" ? ScrollHandle.new() : null]));
     this.pasting = false;
     // Worker screen tails by terminal address. Display only: never logged or written anywhere.
     /** @type {Map<string, string[]>} */
@@ -1371,7 +1366,7 @@ export default class FmBoard extends View {
         .child(`${shown ? "▾" : "▸"} ${waitingLabel(c)}`));
       if (shown) el.child(this.chain(c, t));
     }
-    if (hasDeps || role === "upstream" || role === "selected" || role === "downstream") {
+    if (hasDeps) {
       const depRow = h_flex().id(`deps-${c.id}`).gap(4).items_center().flex_wrap().min_w(0);
       if ((c.waitingOn?.length ?? 0) > 0) {
         const selected = this.selectedCardId === c.id;
@@ -1587,32 +1582,8 @@ export default class FmBoard extends View {
       if (this.query && !searchText(card).includes(this.query.toLowerCase())) this.clearSearch(cx);
       this.revealed = new Set([`card:${id}`, card.column]);
       if (card.decision?.topic) this.revealed.add(`group:${card.decision.topic}`);
-      this.scrollToCard(card);
     }
     cx.notify();
-  }
-
-  scrollToCard(card) {
-    const id = card.id;
-    const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
-    try {
-      if (stacked) {
-        const colIdx = this.shownColumns().findIndex((col) => col.id === card.column);
-        if (colIdx >= 0 && this.boardScroll) this.boardScroll.scroll_to_item(colIdx);
-        return;
-      }
-      const handle = this.colScrolls?.get(card.column);
-      if (!handle) return;
-      const secs = this.sections(card.column);
-      if (secs.length === 1 && !secs[0].title) {
-        const entries = this.entries(secs[0].cards);
-        const itemIdx = entries.findIndex((x) => (x.topic ? x.cards.some((m) => m.id === id) : x.card.id === id));
-        if (itemIdx >= 0) handle.scroll_to_item(itemIdx);
-      } else {
-        const secIdx = secs.findIndex((s) => s.cards.some((m) => m.id === id));
-        if (secIdx >= 0) handle.scroll_to_item(secIdx);
-      }
-    } catch {}
   }
 
   /** @param {any} node @param {any} comp @param {Record<string, `#${string}`>} t @param {boolean} [compact] */
@@ -1693,7 +1664,7 @@ export default class FmBoard extends View {
       .child(header);
     if (!activeComp) {
       return panel.child(div().p(12).text_size(this.fs(11.5)).text_color(t.muted)
-        .child("No active task dependencies in the current backlog snapshot."));
+        .child(NO_CHAINS_TEXT));
     }
     if (components.length > 1) {
       panel.child(h_flex().id("dep-chain-tabs").gap(4).items_center().flex_wrap()
@@ -1764,16 +1735,17 @@ export default class FmBoard extends View {
     return panel.child(dagList);
   }
 
-  /** @param {any} comp @param {Record<string, `#${string}`>} t */
+  /** @param {any | null} comp @param {Record<string, `#${string}`>} t */
   renderCompactInspector(comp, t) {
     const components = this.graph?.components ?? [];
     const box = v_flex().id("dep-inspector-compact").flex_none().gap(6).p(8).rounded(8).bg(t.surface).border(1).border_color(t.accent)
       .child(h_flex().gap(6).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground)
-          .child(`Dependency Inspector · ${comp.summaryLabel} (depth ${comp.depth})`))
-        .when(comp.hasCycle, (el) => el.child(div().id("dep-cycle-badge").flex_none().px(4).py(0.5).rounded(4).bg(t.ansi1 + "24")
+          .child(comp ? `Dependency Inspector · ${comp.summaryLabel} (depth ${comp.depth})` : "Dependency Inspector"))
+        .when(Boolean(comp?.hasCycle), (el) => el.child(div().id("dep-cycle-badge").flex_none().px(4).py(0.5).rounded(4).bg(t.ansi1 + "24")
           .text_size(this.fs(9.5)).font_semibold().text_color(t.ansi1).child("Cycle")))
         .child(this.button("dep-inspector-close", "Close", t, (cx) => this.clearChainSelection(cx))));
+    if (!comp) return box.child(div().text_size(this.fs(11)).text_color(t.muted).child(NO_CHAINS_TEXT));
     if (components.length > 1) {
       box.child(h_flex().id("dep-chain-tabs").gap(4).items_center().flex_wrap()
         .children(components.map((cComp) => {
@@ -2111,8 +2083,7 @@ export default class FmBoard extends View {
         .child(this.holdHeading(s, t))
         .children(this.items(s.cards, t)));
     }
-    const handle = this.colScrolls?.get(col.id);
-    return el.child(stacked ? list : list.flex_1().min_h(0).when(Boolean(handle), (e) => e.track_scroll(handle)).overflow_y_scrollbar());
+    return el.child(stacked ? list : list.flex_1().min_h(0).overflow_y_scrollbar());
   }
 
   // The same tag on project rows and cards; hovering shows the full project name.
@@ -2194,7 +2165,7 @@ export default class FmBoard extends View {
     const matches = this.query ? this.matchIds() : [];
     this.currentMatch = matches.length ? matches[this.matchAt % matches.length] : null;
     const board = (stacked
-      ? v_flex().id("board").when(Boolean(this.boardScroll), (e) => e.track_scroll(this.boardScroll)).overflow_y_scrollbar()
+      ? v_flex().id("board").overflow_y_scrollbar()
       : h_flex().id("board")).flex_1().min_h(0).gap(8);
     board.children(this.shownColumns().map((c) => this.column(c, t, stacked)));
     const root = v_flex().id("root").size_full().bg(t.canvas).px(8).pt(2.5).pb(3).gap(6)
@@ -2210,7 +2181,7 @@ export default class FmBoard extends View {
     }
     root.child(this.frame(v_flex().flex_1().min_h(0).gap(6), t)
       .child(this.searchRow(t, matches))
-      .when(narrowMod && this.inspectorOpen && Boolean(activeComp), (e) => e.child(this.renderCompactInspector(activeComp, t)))
+      .when(narrowMod && this.inspectorOpen, (e) => e.child(this.renderCompactInspector(activeComp, t)))
       .child(board).child(this.footer(t)))
       .child(this.commandSection(t));
     if (this.viewer.root) {

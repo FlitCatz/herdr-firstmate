@@ -277,8 +277,9 @@ function inferred(task, record) {
 
 // The worker's last status line without its state prefix and timestamp.
 function lastEventDetail(task) {
-  const m = /^[a-z-]+\s*(?:\[[^\]]*\]\s*)*(?::\s*(.*))?$/.exec(task?.hints?.last_event_text ?? "");
-  return m ? (m[1] ?? "") : "";
+  const text = task?.hints?.last_event_text ?? "";
+  const m = /^[a-z-]+\s*(?:\[[^\]]*\]\s*)*(?::\s*(.*))?$/s.exec(text);
+  return m ? (m[1] ?? "") : text;
 }
 
 // Firstmate's state detail is " · "-separated machine text, such as
@@ -288,6 +289,7 @@ function lastEventDetail(task) {
 // shows only when nothing is left.
 const ULID = /\b[0-9A-HJKMNP-TV-Z]{26}\b/g;
 const RUN_IDS = new RegExp(`;?\\s*(?:last reported )?run ids?:[\\s,]*(?:${ULID.source}[\\s,]*)*`, "g");
+const RUN_REF = new RegExp(`\\b(?:earlier\\s+)?run:\\s*${ULID.source}`, "g");
 function readableDetail(task) {
   const raw = task?.current_state?.detail;
   if (!raw) return "";
@@ -311,7 +313,8 @@ function readableDetail(task) {
   return rest || lastEventDetail(task);
 }
 
-// Strips machine noise from a paused reason and turns "until <UTC>" into local "until HH:MM".
+// Strips machine noise from a paused reason, turns "until <UTC>" into local "until HH:MM" (with
+// "MM-DD" before it on another day), and shortens a PR link to "owner/repo#N".
 /** @param {string} text @returns {string} */
 function cleanPausedReason(text) {
   if (!text) return "";
@@ -319,16 +322,17 @@ function cleanPausedReason(text) {
     .replace(/\[(?:at|key)=[^\]]*\]/g, "")
     .replace(/\b(?:at|key|pr)=\S+/g, "")
     .replace(RUN_IDS, "; ")
+    .replace(RUN_REF, "")
     .replace(ULID, "")
-    .replace(/\b(?:earlier\s+)?run:\s*\S+/gi, "")
     .replace(/(?:[;,]\s*)?\bdetails=\S+/g, "")
     .replace(/\buntil\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?Z)\b/gi, (m, iso) => {
       const ms = Date.parse(iso);
       if (Number.isNaN(ms)) return m;
-      const d = new Date(ms);
-      return `until ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      const d = new Date(ms), pad = (n) => String(n).padStart(2, "0");
+      const day = d.toDateString() === new Date().toDateString() ? "" : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} `;
+      return `until ${day}${pad(d.getHours())}:${pad(d.getMinutes())}`;
     })
-    .replace(/(?:PR\s+)?https:\/\/\S+?\/pull\/(\d+)/g, "PR #$1");
+    .replace(/https:\/\/[^/\s]+\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/g, "$1#$2");
   out = out
     .replace(/\s*;\s*(?:;\s*)+/g, "; ")
     .replace(/\s*,\s*(?:,\s*)+/g, ", ")
@@ -463,7 +467,7 @@ function cardsFrom(snapshot) {
     detail: listed ? "" : detail,
     // Firstmate's own wording, kept so the search still finds it.
     sourceDetail: task?.current_state?.detail ?? "",
-    pr: task?.pr?.url ?? record?.pr_url ?? detailPr(task?.current_state?.detail) ?? detailPr(task?.hints?.last_event_text),
+    pr: task?.pr?.url ?? record?.pr_url ?? detailPr(task?.current_state?.detail),
     prWaiting: prWaiting(record, task),
     // Only hc runs workers in Herdr terminals, so only those can be opened from here.
     terminal: task?.backend === "hc" ? hcAddress(task) : null,

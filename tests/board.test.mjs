@@ -535,12 +535,12 @@ test("Scout and Task still go through the firstmate terminal path, not a Memo no
   assert.ok(!p.notes().some((n) => n.at(-1).includes("[Board memo]")));
 });
 
-const localHHMM = (iso) => {
-  const d = new Date(Date.parse(iso));
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-};
-
-test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-work, Korean, and nothing when missing", async () => {
+// Asia/Seoul is UTC+9 all year, so an instant at 03:50Z reads 12:50 there on the same date.
+test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-work, Korean, and nothing when missing", async (t) => {
+  const tz = process.env.TZ;
+  process.env.TZ = "Asia/Seoul";
+  t.after(() => { if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz; });
+  const seoulToday = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
   const makeTask = (id, state, detail, lastEvent, prUrl = null) => ({
     id, kind: "ship", project: `${HOME}/projects/orchard-atlas`, branch: `fm/${id}`, harness: "codex", backend: "hc",
     mode: "no-mistakes", yolo: false, spawn_gen: "s1", remote: "origin", secondmate_projects: [],
@@ -555,29 +555,35 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
   const makeRecord = (id) => ({ id, state: "in_flight", kind: "ship", repo: "orchard-atlas", title: id, structured: true });
   const tasks = [
     makeTask("ci-wait", "paused", "ci running",
-      "paused [at=1794541315]: no-mistakes CI drive until 2026-11-13T03:50Z for https://github.com/FlitCatz/orchard-atlas/pull/52; resume on gate or CI-ready outcome"),
+      `paused [at=1794541315]: no-mistakes CI drive until ${seoulToday}T03:50Z for https://github.com/FlitCatz/orchard-atlas/pull/52; resume on gate or CI-ready outcome`),
     makeTask("other-work", "unknown", "harness state unavailable",
       "paused [at=1794539820]: Step 1 committed; awaiting maple-workshop release URL; details=/fictional/firstmate/data/maple-wire-eval/step2-preparation.md"),
     makeTask("korean-wait", "unknown", "harness state unavailable",
-      "paused [at=1794541444] [key=final-local-ci]: 커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until 2026-11-13T04:40Z"),
+      "paused [at=1794541444] [key=final-local-ci]: 커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until 2020-01-02T04:40Z"),
     makeTask("missing-wait", "paused", "", "paused [at=1794541444]: "),
+    makeTask("run-words", "paused", "", "paused [at=1]: validating run: 01M79GKB5X3AKE32E4AKZB9RKP resume when green; the nightly run: results due at 06:00"),
+    makeTask("multi-line", "paused", "", "paused [at=1]: line1\nline2"),
+    makeTask("plain-working", "unknown", "harness state unavailable", "working on build"),
   ];
   const b = await board({
-    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records: tasks.map((t) => makeRecord(t.id)) } },
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records: tasks.map((x) => makeRecord(x.id)) } },
   });
 
   const ciRow = b.items.find((x) => x.id === "waiting-ci-wait");
-  const ciExpected = `no-mistakes CI drive until ${localHHMM("2026-11-13T03:50Z")} for PR #52; resume on gate or CI-ready outcome`;
+  const ciExpected = "no-mistakes CI drive until 12:50 for FlitCatz/orchard-atlas#52; resume on gate or CI-ready outcome";
   assert.equal(ciRow?.text, `Waiting for: ${ciExpected}`);
   assert.deepEqual(ciRow?.calls.find((c) => c[0] === "tooltip"), ["tooltip", ciExpected]);
-  assert.equal(b.text("pr-ci-wait"), "FlitCatz/orchard-atlas/pull/52");
+  // A PR named only in the wait reason is what the worker waits on, not the card's own PR.
+  assert.equal(b.items.find((x) => x.id === "pr-ci-wait"), undefined);
 
   const otherExpected = "Step 1 committed; awaiting maple-workshop release URL";
   assert.equal(b.text("waiting-other-work"), `Waiting for: ${otherExpected}`);
-  assert.ok(!b.text("waiting-other-work").includes("details="));
 
-  const koExpected = `커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until ${localHHMM("2026-11-13T04:40Z")}`;
-  assert.equal(b.text("waiting-korean-wait"), `Waiting for: ${koExpected}`);
+  assert.equal(b.text("waiting-korean-wait"), "Waiting for: 커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until 01-02 13:40");
 
   assert.equal(b.items.find((x) => x.id === "waiting-missing-wait"), undefined);
+
+  assert.equal(b.text("waiting-run-words"), "Waiting for: validating resume when green; the nightly run: results due at 06:00");
+  assert.equal(b.text("waiting-multi-line"), "Waiting for: line1\nline2");
+  assert.ok(b.text("card-plain-working").includes("working on build"));
 });

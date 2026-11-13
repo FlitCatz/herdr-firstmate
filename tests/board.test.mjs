@@ -75,7 +75,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   const scope = {
     View: class {}, div: element, svg: element, v_flex: element, h_flex: element, Input: { new: element },
     h_resizable: element, resizable_panel: element, InputState: { new: input },
-    ScrollHandle: { new: () => ({ scroll_to_item(idx) { scrolled.push(idx); } }) },
+    ScrollHandle: { new: () => { const handle = { scroll_to_item(idx) { scrolled.push({ handle, idx }); } }; return handle; } },
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
     props: () => ({ home: HOME, snapshot_file: snapshotFile, collapsed: [], ui }),
     theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
@@ -142,6 +142,13 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     get ids() { return items.map((x) => x.id); },
     click, hover, keyDown, scrolled, drafts, opened, redraw,
     text: (id) => items.find((x) => x.id === id)?.text,
+    // Every scroll so far, as its index when it went through the handle the drawn element with
+    // this id tracks, so a scroll on any other handle (which moves nothing there) shows up.
+    scrollsOn: (id) => {
+      const handle = items.find((x) => x.id === id)?.calls.find((c) => c[0] === "track_scroll")?.[1];
+      assert.ok(handle, `${id} tracks no scroll handle`);
+      return scrolled.map((s) => (s.handle === handle ? s.idx : `other handle at ${s.idx}`));
+    },
   };
 }
 
@@ -855,7 +862,7 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.ok(b.view.folded.has("card:K4"));
   assert.ok(b.view.collapsed.has("queued"));
   // Queued draws K4, K6, U1 in backlog order, so K4 is the column list's first item.
-  assert.deepEqual(Array.from(b.scrolled), [0]);
+  assert.deepEqual(b.scrollsOn("list-queued"), [0]);
   assert.equal(b.text("hl-K2"), "Upstream");
   assert.equal(b.text("hl-K3"), "Upstream");
   assert.equal(b.text("hl-K4"), "Selected");
@@ -893,7 +900,7 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.ok(b.ids.includes("dep-inspector-compact"));
   const drawnColumns = b.ids.filter((id) => id.startsWith("col-"));
   assert.equal(drawnColumns.indexOf("col-queued"), 1);
-  assert.deepEqual(Array.from(b.scrolled), [drawnColumns.indexOf("col-queued")]);
+  assert.deepEqual(b.scrollsOn("board"), [drawnColumns.indexOf("col-queued")]);
 
   // Escape clears the selection and closes the inspector.
   b.keyDown("root", "escape");
@@ -924,7 +931,7 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.ok(b.ids.includes("card-K6"));
   assert.equal(b.text("hl-K6"), "Selected");
   // K6 is the second card drawn in Queued (K4, K6, U1).
-  assert.deepEqual(Array.from(b.scrolled), [1]);
+  assert.deepEqual(b.scrollsOn("list-queued"), [1]);
 
   // Opening a Files · Changes viewer takes the inspector's split slot, so it ends the chain
   // selection: nothing stays dimmed, the toolbar offers to open the inspector, and closing the

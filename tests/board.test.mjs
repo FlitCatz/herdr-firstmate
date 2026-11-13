@@ -69,7 +69,11 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
   const scrolled = [];
-  const cx = { notify() {}, stop_propagation() {}, spawn(fn) { pending.push(fn(cx)); }, timer: { every() {}, after() {} } };
+  const focused = [];
+  const cx = {
+    notify() {}, stop_propagation() {}, spawn(fn) { pending.push(fn(cx)); }, timer: { every() {}, after() {} },
+    focus_handle() { const handle = { focus() { focused.push(handle); }, is_focused: () => focused.at(-1) === handle, release: () => true }; return handle; },
+  };
   const input = () => { let text = ""; return { on() {}, value: () => text, set_value(v) { text = v; } }; };
   const theme = new Proxy({}, { get: () => "#808080" });
   const scope = {
@@ -140,7 +144,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     view, registry, reload, cardsFrom, dependencyGraph, chainHighlight, waitingLabel, blocksLabel,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
-    click, hover, keyDown, scrolled, drafts, opened, redraw,
+    click, hover, keyDown, scrolled, focused, drafts, opened, redraw,
     text: (id) => items.find((x) => x.id === id)?.text,
     // Every scroll so far, as its index when it went through the handle the drawn element with
     // this id tracks, so a scroll on any other handle (which moves nothing there) shows up.
@@ -148,6 +152,12 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
       const handle = items.find((x) => x.id === id)?.calls.find((c) => c[0] === "track_scroll")?.[1];
       assert.ok(handle, `${id} tracks no scroll handle`);
       return scrolled.map((s) => (s.handle === handle ? s.idx : `other handle at ${s.idx}`));
+    },
+    // Whether the keyboard was last moved onto the focus handle the drawn element with this id tracks.
+    focusedOn: (id) => {
+      const handle = items.find((x) => x.id === id)?.calls.find((c) => c[0] === "track_focus")?.[1];
+      assert.ok(handle, `${id} tracks no focus handle`);
+      return focused.at(-1) === handle;
     },
   };
 }
@@ -837,7 +847,10 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.ok(!b.ids.includes("hl-K3"));
 
   // Clicking a badge opens the Dependency Inspector in the wide split and dims unrelated cards.
+  // Escape travels the keyboard's focus path, so picking a chain moves the keyboard onto the Board.
+  assert.ok(!b.focusedOn("root"));
   b.click("blocks-K3");
+  assert.ok(b.focusedOn("root"), "a badge click moves the keyboard onto the Board");
   assert.ok(b.ids.includes("inspector-wrap"));
   assert.ok(b.ids.includes("dep-inspector"));
   assert.ok(!b.ids.includes("dep-inspector-compact"));
@@ -855,7 +868,9 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   b.redraw();
   assert.ok(!b.ids.includes("tag-K4"));
   assert.ok(!b.ids.includes("list-queued"));
+  b.focused.length = 0;
   b.click("dep-node-K4");
+  assert.ok(b.focusedOn("root"), "an inspector node click moves the keyboard onto the Board");
   assert.equal(b.view.selectedCardId, "K4");
   assert.ok(b.ids.includes("tag-K4"));
   assert.ok(b.ids.includes("list-queued"));
@@ -902,7 +917,8 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.equal(drawnColumns.indexOf("col-queued"), 1);
   assert.deepEqual(b.scrollsOn("board"), [drawnColumns.indexOf("col-queued")]);
 
-  // Escape clears the selection and closes the inspector.
+  // Escape clears the selection and closes the inspector; the keyboard is on root, where its handler sits.
+  assert.ok(b.focusedOn("root"));
   b.keyDown("root", "escape");
   assert.equal(b.view.selectedCardId, null);
   assert.equal(b.view.inspectorOpen, false);
@@ -912,7 +928,9 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   // Toolbar toggle opens and Close button closes it.
   b.view.size = { width: 1280, height: 800 };
   b.redraw();
+  b.focused.length = 0;
   b.click("dep-inspector-toggle");
+  assert.ok(b.focusedOn("root"), "the toolbar toggle moves the keyboard onto the Board");
   assert.equal(b.view.inspectorOpen, true);
   assert.ok(b.ids.includes("dep-inspector"));
   b.click("dep-inspector-close");

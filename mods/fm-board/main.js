@@ -723,6 +723,8 @@ export default class FmBoard extends View {
 
   init(_props, cx) {
     this.fontScale = 1;
+    // The Board's own place on the keyboard's path, so Escape reaches it after a chain is picked.
+    this.keys = cx.focus_handle();
     const ui = props()?.ui ?? {};
     this.cards = null; this.projects = []; this.requests = []; this.ready = null;
     this.error = null; this.notice = ""; this.generated = ""; this.loading = false; this.last = 0;
@@ -1539,6 +1541,7 @@ export default class FmBoard extends View {
     }
     this.selectedCardId = id;
     this.inspectorOpen = true;
+    this.keys.focus();
     if (this.viewer.root) this.viewer.close(cx);
     else cx.notify();
   }
@@ -1558,6 +1561,7 @@ export default class FmBoard extends View {
       return;
     }
     this.inspectorOpen = true;
+    this.keys.focus();
     if (!this.selectedCardId || !this.graph?.componentById?.has(this.selectedCardId)) {
       const firstComp = this.graph?.components?.[0];
       this.selectedCardId = firstComp?.roots?.[0] ?? firstComp?.nodeIds?.[0] ?? null;
@@ -1579,6 +1583,7 @@ export default class FmBoard extends View {
   focusCardFromInspector(id, cx) {
     this.selectedCardId = id;
     this.inspectorOpen = true;
+    this.keys.focus();
     const card = (this.cards ?? []).find((c) => c.id === id);
     if (card) {
       if (this.filter && this.filter !== card.project) this.filter = null;
@@ -1678,9 +1683,6 @@ export default class FmBoard extends View {
         .child(`${activeComp.summaryLabel} · depth ${activeComp.depth}`)))
       .child(this.button("dep-inspector-close", "Close", t, (cx) => this.clearChainSelection(cx)));
     const panel = this.frame(v_flex().id("dep-inspector").size_full().min_h(0).gap(8), t)
-      .on_key_down((e, cx) => {
-        if (e.key === "escape") { this.clearChainSelection(cx); cx.stop_propagation(); }
-      })
       .child(header);
     if (!activeComp) {
       return panel.child(div().p(12).text_size(this.fs(11.5)).text_color(t.muted)
@@ -2190,6 +2192,7 @@ export default class FmBoard extends View {
     board.children(this.shownColumns().map((c) => this.column(c, t, stacked)));
     const root = v_flex().id("root").size_full().bg(t.canvas).px(8).pt(2.5).pb(3).gap(6)
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
+      .track_focus(this.keys)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.inspectorOpen) { this.clearChainSelection(cx); cx.stop_propagation(); }
       })

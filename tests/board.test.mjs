@@ -102,7 +102,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   if (!registryFails) assert.equal(view.error, null);
   const drafts = [], opened = [];
   view.insertCardText = (text) => drafts.push(text);
-  view.openView = (project, source) => { view.inspectorOpen = false; opened.push({ project, ...source }); };
+  view.openView = (project, source, cx) => { view.clearChainSelection(cx); opened.push({ project, ...source }); };
   let items = drawn(view.render(cx));
   const click = (id) => {
     const item = items.find((x) => x.id === id);
@@ -882,6 +882,11 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   // The compact card sits above the scrolling board, not inside it, so it stays pinned and a
   // node click scrolls the board to the position of the card's column among the drawn columns.
   assert.ok(b.ids.indexOf("dep-inspector-compact") < b.ids.indexOf("board"));
+  // A long chain scrolls inside the compact card instead of pushing the board out of a short pane.
+  const levelCalls = b.items.find((x) => x.id === "dep-inspector-levels").calls;
+  const cap = levelCalls.find((c) => c[0] === "max_h")?.[1];
+  assert.ok(cap > 0 && cap < b.view.size.height, `compact chain height cap ${cap}`);
+  assert.ok(levelCalls.some((c) => c[0] === "overflow_y_scroll"));
   b.scrolled.length = 0;
   b.click("dep-node-K6");
   const drawnColumns = b.ids.filter((id) => id.startsWith("col-"));
@@ -916,6 +921,24 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.equal(b.view.query, "");
   assert.ok(b.ids.includes("card-K6"));
   assert.deepEqual(Array.from(b.scrolled), [1]);
+
+  // Opening a Files · Changes viewer takes the inspector's split slot, so it ends the chain
+  // selection: nothing stays dimmed, the toolbar offers to open the inspector, and closing the
+  // viewer does not bring the inspector back.
+  assert.ok(b.view.highlight.dimmedIds.has("U1"));
+  const viewer = b.view.viewer;
+  viewer.target = (path) => { viewer.root = path; };
+  viewer.render = () => null;
+  Object.getPrototypeOf(b.view).openView.call(b.view, "maple-workshop", { path: `${HOME}/projects/maple-workshop`, title: "local copy" }, { notify() {} });
+  b.redraw();
+  assert.equal(b.view.selectedCardId, null);
+  assert.equal(b.view.highlight.dimmedIds.size, 0);
+  assert.ok(!b.ids.includes("hl-K6"));
+  assert.ok(b.items.find((x) => x.id === "dep-inspector-toggle").calls.some((c) => c[0] === "tooltip" && c[1] === "Open Dependency Inspector"));
+  viewer.root = null;
+  b.redraw();
+  assert.ok(!b.ids.includes("dep-inspector"));
+  assert.ok(!b.ids.includes("inspector-wrap"));
 });
 
 test("an inspector node for a blocker that is not on the board gets a neutral tag", async () => {

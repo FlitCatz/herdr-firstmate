@@ -39,6 +39,8 @@ const BACKGROUND_OPEN_LISTINGS = 2;
 const BACKGROUND_STALE_LISTING_MS = 60000;
 const DONE_LIMIT = 20;
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
+// The most of the Board's height the compact inspector's chain takes before it scrolls.
+const COMPACT_INSPECTOR_SHARE = 0.35;
 const COLLAPSED_KEY = "collapsed";
 const FOLDED_KEY = "folded";
 const PROJECTS = "projects";
@@ -1372,7 +1374,7 @@ export default class FmBoard extends View {
     if (hasDeps || role === "upstream" || role === "selected" || role === "downstream") {
       const depRow = h_flex().id(`deps-${c.id}`).gap(4).items_center().flex_wrap().min_w(0);
       if ((c.waitingOn?.length ?? 0) > 0) {
-        const selected = this.selectedCardId === c.id && this.inspectorOpen;
+        const selected = this.selectedCardId === c.id;
         depRow.child(div().id(`waits-${c.id}`).min_w(0).px(5).py(1).rounded(4).border(1)
           .border_color(selected ? t.accent : t.blocked).bg(t.blocked + "18")
           .text_size(this.fs(10.5)).font_semibold().text_color(t.blocked).truncate()
@@ -1382,7 +1384,7 @@ export default class FmBoard extends View {
           .child(waitingLabel(c, "← Waits on")));
       }
       if ((c.blocksCount ?? 0) > 0) {
-        const selected = this.selectedCardId === c.id && this.inspectorOpen;
+        const selected = this.selectedCardId === c.id;
         depRow.child(div().id(`blocks-${c.id}`).flex_none().px(5).py(1).rounded(4).border(1)
           .border_color(selected ? t.accent : t.ansi6).bg(t.ansi6 + "18")
           .text_size(this.fs(10.5)).font_semibold().text_color(t.ansi6)
@@ -1526,7 +1528,7 @@ export default class FmBoard extends View {
   }
 
   openView(project, source, cx) {
-    this.inspectorOpen = false;
+    this.clearChainSelection(cx);
     this.viewProject = project;
     this.viewer.target(source.path, source.title, cx);
   }
@@ -1759,17 +1761,7 @@ export default class FmBoard extends View {
           : v_flex().gap(4).children(lg.nodes.map((n) => this.renderDagNode(n, activeComp, t, false))));
       dagList.child(levelBox);
     });
-    panel.child(dagList);
-    const focusNode = this.selectedCardId ? this.graph?.nodes?.get(this.selectedCardId) : null;
-    if (focusNode) {
-      panel.child(h_flex().id("dep-inspector-focus").gap(6).p(6).rounded(6).bg(t.surface).border(1).border_color(t.border).items_center().justify_between()
-        .child(v_flex().flex_1().min_w(0).gap(2)
-          .child(div().truncate().text_size(this.fs(11)).font_semibold().text_color(t.foreground).child(`Selected: ${focusNode.id}`))
-          .child(div().truncate().text_size(this.fs(10.5)).text_color(t.muted)
-            .child(`Upstream: ${focusNode.upstreamIds?.length ?? 0} · Downstream: ${focusNode.blocksCount ?? 0}`)))
-        .child(this.askButton(`dep:${focusNode.id}`, [focusNode.id], focusNode.title ?? focusNode.id, t)));
-    }
-    return panel;
+    return panel.child(dagList);
   }
 
   /** @param {any} comp @param {Record<string, `#${string}`>} t */
@@ -1793,7 +1785,8 @@ export default class FmBoard extends View {
             .child(`${cComp.summaryLabel} (${cComp.nodeIds.length})`);
         })));
     }
-    const flow = v_flex().id("dep-inspector-levels").gap(4);
+    const flow = v_flex().id("dep-inspector-levels").gap(4)
+      .max_h(Math.round((this.size?.height ?? 600) * COMPACT_INSPECTOR_SHARE)).min_h(0).flex_shrink(1).overflow_y_scroll();
     comp.levels.forEach((lg, idx) => {
       if (idx > 0) flow.child(div().pl(6).text_size(this.fs(10)).text_color(t.dim).child("↓"));
       flow.child(h_flex().id(`dep-level-${lg.level}`).gap(6).items_start().min_w(0)
@@ -2046,12 +2039,11 @@ export default class FmBoard extends View {
   searchRow(t, matches) {
     const count = !this.query ? null : matches.length ? `${this.matchAt % matches.length + 1}/${matches.length}` : "No matches";
     const chainCount = this.graph?.components?.length ?? 0;
-    const inspectorActive = Boolean(this.inspectorOpen || this.selectedCardId);
     const toggleLabel = chainCount > 0 ? `Inspector (${chainCount})` : "Inspector";
     return h_flex().id("kanban-search").flex_none().gap(4).items_center()
       .on_key_down((e, cx) => {
         if (e.key === "escape" && (this.query || this.search.value())) { this.clearSearch(cx); cx.stop_propagation(); }
-        else if (e.key === "escape" && (this.selectedCardId || this.inspectorOpen)) { this.clearChainSelection(cx); cx.stop_propagation(); }
+        else if (e.key === "escape" && this.inspectorOpen) { this.clearChainSelection(cx); cx.stop_propagation(); }
       })
       .child(div().flex_1().min_w(0).child(this.field(this.search, t)))
       .child(div().id("search-find").flex_none().p(5).rounded(5).cursor_pointer().bg(t.raised)
@@ -2061,11 +2053,11 @@ export default class FmBoard extends View {
       .when(count !== null, (el) =>
         el.child(div().flex_none().text_size(this.fs(11)).text_color(matches.length ? t.muted : t.blocked).child(count)))
       .child(div().id("dep-inspector-toggle").flex_none().px(7).py(3.5).rounded(5).cursor_pointer()
-        .border(1).border_color(inspectorActive ? t.accent : t.border)
-        .bg(inspectorActive ? t.selected : t.raised)
-        .text_size(this.fs(11)).font_semibold().text_color(inspectorActive ? t.foreground : t.muted)
+        .border(1).border_color(this.inspectorOpen ? t.accent : t.border)
+        .bg(this.inspectorOpen ? t.selected : t.raised)
+        .text_size(this.fs(11)).font_semibold().text_color(this.inspectorOpen ? t.foreground : t.muted)
         .hover((s) => s.opacity(0.85))
-        .tooltip(inspectorActive ? "Close Dependency Inspector (Esc)" : "Open Dependency Inspector")
+        .tooltip(this.inspectorOpen ? "Close Dependency Inspector (Esc)" : "Open Dependency Inspector")
         .on_click((_e, cx) => this.toggleInspector(cx))
         .child(toggleLabel));
   }
@@ -2194,7 +2186,6 @@ export default class FmBoard extends View {
     this.graph = dependencyGraph(this.cards ?? []);
     this.highlight = chainHighlight(this.graph, this.selectedCardId, this.hoveredCardId);
     const activeComp = this.highlight?.selectedComponent ?? (this.inspectorOpen ? (this.highlight?.component ?? this.graph.components[0] ?? null) : null);
-    const wantInspector = Boolean(this.inspectorOpen || this.selectedCardId);
     // The cards drawn below record which worker screens are worth reading.
     this.shownTerminals = new Set();
     const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
@@ -2209,7 +2200,7 @@ export default class FmBoard extends View {
     const root = v_flex().id("root").size_full().bg(t.canvas).px(8).pt(2.5).pb(3).gap(6)
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
       .on_key_down((e, cx) => {
-        if (e.key === "escape" && (this.selectedCardId || this.inspectorOpen)) { this.clearChainSelection(cx); cx.stop_propagation(); }
+        if (e.key === "escape" && this.inspectorOpen) { this.clearChainSelection(cx); cx.stop_propagation(); }
       })
       .child(this.projectSection(t));
     if (this.filter) {
@@ -2219,7 +2210,7 @@ export default class FmBoard extends View {
     }
     root.child(this.frame(v_flex().flex_1().min_h(0).gap(6), t)
       .child(this.searchRow(t, matches))
-      .when(narrowMod && wantInspector && Boolean(activeComp), (e) => e.child(this.renderCompactInspector(activeComp, t)))
+      .when(narrowMod && this.inspectorOpen && Boolean(activeComp), (e) => e.child(this.renderCompactInspector(activeComp, t)))
       .child(board).child(this.footer(t)))
       .child(this.commandSection(t));
     if (this.viewer.root) {
@@ -2234,7 +2225,7 @@ export default class FmBoard extends View {
             .on_size_change((size, cx) => { this.rightSplitWidth = size.width; cx.notify(); })
             .child(this.viewer.render(t, (px) => this.fs(px), this.viewSources(this.viewProject)))));
     }
-    if (!narrowMod && wantInspector) {
+    if (!narrowMod && this.inspectorOpen) {
       this.splitWasOpen = true;
       return h_resizable("board-viewer-split").size_full().bg(t.canvas)
         .child(resizable_panel().size_range(280).child(root))

@@ -60,7 +60,7 @@ function drawn(tree) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }) } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
@@ -77,7 +77,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
     localStorage: store,
     readTextFile: async (file) => {
-      if (file === snapshotFile) return readFile(file, "utf8");
+      if (file === snapshotFile) return customSnapshot ? JSON.stringify(customSnapshot) : readFile(file, "utf8");
       if (file === `${HOME}/data/projects.md`) {
         if (registry.fails) throw new Error("registry unreadable");
         return registry.projects.map((name) => `- ${name} - Fictional project.\n`).join("");
@@ -533,4 +533,51 @@ test("Scout and Task still go through the firstmate terminal path, not a Memo no
   // With no terminal to find, Task falls back to a Board request, not a memo.
   assert.match(p.notes()[0].at(-1), /^\[Board request\] New task: project=\(firstmate picks\) - look into it$/);
   assert.ok(!p.notes().some((n) => n.at(-1).includes("[Board memo]")));
+});
+
+const localHHMM = (iso) => {
+  const d = new Date(Date.parse(iso));
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+
+test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-work, Korean, and nothing when missing", async () => {
+  const makeTask = (id, state, detail, lastEvent, prUrl = null) => ({
+    id, kind: "ship", project: `${HOME}/projects/orchard-atlas`, branch: `fm/${id}`, harness: "codex", backend: "hc",
+    mode: "no-mistakes", yolo: false, spawn_gen: "s1", remote: "origin", secondmate_projects: [],
+    paths: { home: HOME, meta: "", status_log: "", worktree: { path: "", present: false }, report: { path: "", present: false } },
+    current_state: { state, source: "pane", detail, raw: detail, observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+    endpoint: { target: null, exists: false, agent_alive: "not_checked", status: "absent", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+    pr: { url: prUrl, source: prUrl ? "status_event" : "absent", head: null },
+    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: lastEvent },
+    actions: { watch: "", steer: "", return_channel_note: null },
+    backlog: { id, state: "in_flight", kind: "ship", repo: "orchard-atlas", title: id },
+  });
+  const makeRecord = (id) => ({ id, state: "in_flight", kind: "ship", repo: "orchard-atlas", title: id, structured: true });
+  const tasks = [
+    makeTask("ci-wait", "paused", "ci running",
+      "paused [at=1794541315]: no-mistakes CI drive until 2026-11-13T03:50Z for https://github.com/FlitCatz/orchard-atlas/pull/52; resume on gate or CI-ready outcome"),
+    makeTask("other-work", "unknown", "harness state unavailable",
+      "paused [at=1794539820]: Step 1 committed; awaiting maple-workshop release URL; details=/fictional/firstmate/data/maple-wire-eval/step2-preparation.md"),
+    makeTask("korean-wait", "unknown", "harness state unavailable",
+      "paused [at=1794541444] [key=final-local-ci]: 커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until 2026-11-13T04:40Z"),
+    makeTask("missing-wait", "paused", "", "paused [at=1794541444]: "),
+  ];
+  const b = await board({
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records: tasks.map((t) => makeRecord(t.id)) } },
+  });
+
+  const ciRow = b.items.find((x) => x.id === "waiting-ci-wait");
+  const ciExpected = `no-mistakes CI drive until ${localHHMM("2026-11-13T03:50Z")} for PR #52; resume on gate or CI-ready outcome`;
+  assert.equal(ciRow?.text, `Waiting for: ${ciExpected}`);
+  assert.deepEqual(ciRow?.calls.find((c) => c[0] === "tooltip"), ["tooltip", ciExpected]);
+  assert.equal(b.text("pr-ci-wait"), "FlitCatz/orchard-atlas/pull/52");
+
+  const otherExpected = "Step 1 committed; awaiting maple-workshop release URL";
+  assert.equal(b.text("waiting-other-work"), `Waiting for: ${otherExpected}`);
+  assert.ok(!b.text("waiting-other-work").includes("details="));
+
+  const koExpected = `커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until ${localHHMM("2026-11-13T04:40Z")}`;
+  assert.equal(b.text("waiting-korean-wait"), `Waiting for: ${koExpected}`);
+
+  assert.equal(b.items.find((x) => x.id === "waiting-missing-wait"), undefined);
 });

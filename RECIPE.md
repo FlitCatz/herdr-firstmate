@@ -71,6 +71,7 @@ These lines are only drawn on the card; the board does not log or save them.
 
 A card with a live worker terminal shows `백그라운드 실행 중: <job>` on a tinted row with a working-color dot while that terminal still runs a job after its agent's turn ended, such as a build, a test run, a validation run, or a CI wait.
 A Paused card is also drawn in the Working column for as long as the job runs and returns to Paused when it ends; cards in other columns keep their column and only gain the row.
+Paused cards also show `Waiting for: <reason>` from the worker's latest `paused` status line (or Firstmate's declared wait), with machine noise stripped, `until <UTC>` shown in local time, and the full cleaned text in the tooltip, alongside any background-job row when both apply.
 A worker that Herdr reports as working gains nothing, because the commands it runs are part of its turn.
 The job comes from the processes under the worker's terminal, not from the worker's status text, so a worker that only reported a wait and stopped stays Paused.
 Every 5 seconds the board takes one process listing with `/bin/ps` for all such cards, drawn or not, and looks at the processes started under each terminal's own program.

@@ -45,7 +45,11 @@ Firstmate's validation detail reads as short text such as `Validating: running`,
 The search still matches Firstmate's original detail text.
 Clicking a card header folds it; its question-mark icon puts the task id and full title into the Firstmate chat input without pressing Enter.
 Topic-group headers have the same icon for all their task ids and the group question.
-Queued cards waiting on other tasks are dimmed, and clicking their waiting row expands the dependency chain.
+The board derives reverse dependencies (`blocks` and `blocksCount`), topological levels (with a cycle guard), cross-project joins, and connected chain components from `unresolved_blocker_ids` across all cards without changing the snapshot format.
+Cards in every column show `★ Blocks N →` when downstream tasks wait on them and `← Waits on …` when they wait on unfinished blockers; queued cards that still wait on other work are dimmed until highlighted.
+Hovering a card in a chain marks its upstream, selected, and downstream cards without dimming other work; clicking a dependency badge or the toolbar `Inspector` toggle selects the chain, dims unrelated cards, and opens the Dependency Inspector showing the whole connected chain (upstream, downstream, parallel branches, and cross-project joins) grouped by level (`L0`, `L1`, …).
+On wide boards (720px and above) the Dependency Inspector uses the right-hand `h_resizable` split slot; on narrow boards below 720px it pins a compact chain card at the top of the board.
+Clicking a node in the inspector highlights that task, unfolds its card or column if needed, and scrolls to its card; pressing `Esc` or clicking `Close` clears the selection and closes the inspector.
 Held decisions with the same explicit topic share a question and options; in the Held column a topic box is drawn inside each group that holds one of its cards.
 A card lists every decision its worker's status log still holds open, from the snapshot's `hints.open_decisions`, oldest first: the decision's verb (`needs-decision` or `blocked`) and key, its text up to 240 characters, and its options when the text has them.
 A detail line that would only repeat one of those decisions is left out.

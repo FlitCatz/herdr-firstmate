@@ -6,7 +6,7 @@
 // props: { home, snapshot_file?, collapsed?, ui? }. home is the firstmate
 // installation and operational home; the other props support preview fixtures.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel, ScrollHandle } from "gpui-base";
 import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals } from "herdr";
 import { FolderViewer } from "./viewer.js";
 
@@ -419,12 +419,249 @@ function prWaiting(record, task) {
   return !/\b(merged|closed)\b/i.test(task.current_state.detail ?? "");
 }
 
-// "Waiting on <title>", or "Waiting on 2 · <first title>"; the card's own project name is
+// "← Waits on <title>", or "← Waits on 2 · <first title>"; the card's own project name is
 // dropped from the front of the title because the card already shows it.
 function waitingLabel(c) {
   const strip = (title) => (c.project && title.startsWith(`${c.project} `) ? title.slice(c.project.length + 1) : title);
   const n = c.waitingOn.length;
-  return `Waiting on ${n > 1 ? `${n} · ` : ""}${strip(c.waitingOn[0])}`;
+  return `← Waits on ${n > 1 ? `${n} · ` : ""}${strip(c.waitingOn[0])}`;
+}
+
+// "★ Blocks N →" on a card that other tasks wait on.
+function blocksLabel(c) {
+  return `★ Blocks ${c.blocksCount ?? c.blocks?.length ?? 0} →`;
+}
+
+// Derives reverse dependencies (blockingIds, transitive downstream blocks, and count),
+// topological levels with a cycle guard, and connected chain components across all cards.
+function dependencyGraph(cards) {
+  /** @type {Map<string, any>} */
+  const byId = new Map();
+  for (const c of cards ?? []) {
+    if (!c?.id) continue;
+    const rawWait = c.waitingIds ?? c.unresolved_blocker_ids ?? [];
+    const waitingIds = [...new Set(rawWait.filter((id) => id && id !== c.id))];
+    byId.set(c.id, Object.assign(c, { waitingIds }));
+  }
+  for (const c of [...byId.values()]) {
+    for (const u of c.waitingIds) {
+      if (!byId.has(u)) {
+        byId.set(u, { id: u, title: u, project: "", column: "unknown", state: "unknown", priority: null, pr: null, prWaiting: false, waitingIds: [], waitingOn: [], missing: true });
+      }
+    }
+  }
+  /** @type {Map<string, string[]>} */
+  const blockingMap = new Map([...byId.keys()].map((id) => [id, []]));
+  for (const c of byId.values()) {
+    for (const u of c.waitingIds) {
+      const list = blockingMap.get(u);
+      if (list && !list.includes(c.id)) list.push(c.id);
+    }
+  }
+  for (const [id, c] of byId) {
+    c.waitingOn = (c.waitingIds ?? []).map((u) => byId.get(u)?.title ?? u);
+    c.blockingIds = blockingMap.get(id) ?? [];
+    c.blockingOn = c.blockingIds.map((d) => byId.get(d)?.title ?? d);
+  }
+  for (const [id, c] of byId) {
+    /** @type {string[]} */
+    const up = [];
+    const seenUp = new Set([id]);
+    const queueUp = [...c.waitingIds];
+    while (queueUp.length) {
+      const cur = queueUp.shift();
+      if (!cur || seenUp.has(cur)) continue;
+      seenUp.add(cur);
+      up.push(cur);
+      queueUp.push(...(byId.get(cur)?.waitingIds ?? []));
+    }
+    /** @type {string[]} */
+    const down = [];
+    const seenDown = new Set([id]);
+    const queueDown = [...c.blockingIds];
+    while (queueDown.length) {
+      const cur = queueDown.shift();
+      if (!cur || seenDown.has(cur)) continue;
+      seenDown.add(cur);
+      down.push(cur);
+      queueDown.push(...(byId.get(cur)?.blockingIds ?? []));
+    }
+    c.upstreamIds = up;
+    c.blocks = down;
+    c.blocksOn = down.map((d) => byId.get(d)?.title ?? d);
+    c.blocksCount = down.length;
+    c.crossProjectBlockers = c.waitingIds.filter((u) => {
+      const upProj = byId.get(u)?.project;
+      return Boolean(c.project && upProj && c.project !== upProj);
+    });
+    c.crossProjectDependents = c.blockingIds.filter((d) => {
+      const downProj = byId.get(d)?.project;
+      return Boolean(c.project && downProj && c.project !== downProj);
+    });
+  }
+  /** @type {Map<string, number>} */
+  const levels = new Map();
+  /** @type {Set<string>} */
+  const cycleNodes = new Set();
+  /** @param {string} id @param {Set<string>} [visiting] @returns {number} */
+  const computeLevel = (id, visiting = new Set()) => {
+    if (levels.has(id)) return levels.get(id) ?? 0;
+    if (visiting.has(id)) {
+      cycleNodes.add(id);
+      return 0;
+    }
+    visiting.add(id);
+    const ups = byId.get(id)?.waitingIds ?? [];
+    let maxUp = -1;
+    for (const u of ups) {
+      if (visiting.has(u)) {
+        cycleNodes.add(id);
+        cycleNodes.add(u);
+        continue;
+      }
+      maxUp = Math.max(maxUp, computeLevel(u, visiting));
+    }
+    visiting.delete(id);
+    const d = maxUp >= 0 ? 1 + maxUp : 0;
+    levels.set(id, d);
+    return d;
+  };
+  for (const id of byId.keys()) computeLevel(id);
+  for (const [id, c] of byId) {
+    c.level = levels.get(id) ?? 0;
+    c.componentId = null;
+  }
+  /** @type {Set<string>} */
+  const visitedComp = new Set();
+  /** @type {any[]} */
+  const rawComponents = [];
+  const orderIndex = new Map([...byId.keys()].map((id, i) => [id, i]));
+  for (const [id, c] of byId) {
+    if (visitedComp.has(id) || (!c.waitingIds.length && !c.blockingIds.length)) continue;
+    /** @type {string[]} */
+    const memberIds = [];
+    const queue = [id];
+    visitedComp.add(id);
+    while (queue.length) {
+      const cur = queue.shift();
+      if (!cur) continue;
+      memberIds.push(cur);
+      const node = byId.get(cur);
+      for (const next of [...(node?.waitingIds ?? []), ...(node?.blockingIds ?? [])]) {
+        if (!visitedComp.has(next) && byId.has(next)) {
+          visitedComp.add(next);
+          queue.push(next);
+        }
+      }
+    }
+    memberIds.sort((a, b) => (orderIndex.get(a) ?? 0) - (orderIndex.get(b) ?? 0));
+    const minLevel = Math.min(...memberIds.map((m) => levels.get(m) ?? 0));
+    /** @type {Map<number, string[]>} */
+    const byLevel = new Map();
+    for (const m of memberIds) {
+      const lv = (levels.get(m) ?? 0) - minLevel;
+      const node = byId.get(m);
+      if (node) node.level = lv;
+      if (!byLevel.has(lv)) byLevel.set(lv, []);
+      byLevel.get(lv)?.push(m);
+    }
+    const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b);
+    const levelGroups = sortedLevels.map((lv) => {
+      const ids = byLevel.get(lv) ?? [];
+      const nodes = ids.map((m) => byId.get(m)).filter(Boolean);
+      const crossProjectEdges = [];
+      const joinNodes = [];
+      for (const n of nodes) {
+        for (const u of n.waitingIds ?? []) {
+          const upNode = byId.get(u);
+          if (n.project && upNode?.project && n.project !== upNode.project) {
+            crossProjectEdges.push({ from: u, to: n.id, fromProject: upNode.project, toProject: n.project });
+          }
+        }
+        if ((n.waitingIds ?? []).length > 1) {
+          const blockerProjs = [...new Set(n.waitingIds.map((u) => byId.get(u)?.project).filter(Boolean))];
+          joinNodes.push({ id: n.id, blockers: n.waitingIds, crossProject: blockerProjs.length > 1 || (n.crossProjectBlockers?.length ?? 0) > 0 });
+        }
+      }
+      return {
+        level: lv,
+        ids,
+        nodes,
+        hasCrossProject: crossProjectEdges.length > 0,
+        hasJoin: joinNodes.length > 0,
+        hasBranch: ids.length > 1,
+        crossProjectEdges,
+        joinNodes,
+      };
+    });
+    const roots = levelGroups[0]?.ids ?? [memberIds[0]];
+    const projects = [...new Set(memberIds.map((m) => byId.get(m)?.project).filter(Boolean))];
+    const crossProjectEdges = levelGroups.flatMap((g) => g.crossProjectEdges);
+    const joins = levelGroups.flatMap((g) => g.joinNodes);
+    const branches = memberIds.filter((m) => (byId.get(m)?.blockingIds?.length ?? 0) > 1);
+    const hasCycle = memberIds.some((m) => cycleNodes.has(m));
+    rawComponents.push({
+      roots,
+      depth: levelGroups.length,
+      nodeIds: memberIds,
+      levels: levelGroups,
+      projects,
+      crossProjectEdges,
+      joins,
+      branches,
+      hasCycle,
+    });
+  }
+  rawComponents.sort((a, b) => b.nodeIds.length - a.nodeIds.length || b.depth - a.depth);
+  /** @type {Map<string, any>} */
+  const componentById = new Map();
+  const components = rawComponents.map((comp, idx) => {
+    const id = `chain-${idx + 1}`;
+    const rootId = comp.roots[0] ?? comp.nodeIds[0] ?? id;
+    const leafId = comp.levels.at(-1)?.ids[0] ?? comp.nodeIds.at(-1) ?? rootId;
+    const summaryLabel = rootId !== leafId ? `${rootId} → ${leafId}` : rootId;
+    const enriched = { id, index: idx + 1, summaryLabel, ...comp };
+    for (const m of comp.nodeIds) {
+      const node = byId.get(m);
+      if (node) node.componentId = id;
+      componentById.set(m, enriched);
+    }
+    return enriched;
+  });
+  return { nodes: byId, components, componentById, cycleNodes };
+}
+
+// Computes card highlight roles ("upstream", "selected", "downstream", "branch") for the active
+// focus card and dims unrelated cards only while a chain is selected.
+function chainHighlight(graph, selectedCardId = null, hoveredCardId = null) {
+  const focusId = hoveredCardId ?? selectedCardId;
+  const selectedComp = selectedCardId ? graph?.componentById?.get(selectedCardId) ?? null : null;
+  const focusNode = focusId ? graph?.nodes?.get(focusId) ?? null : null;
+  const focusComp = focusId ? graph?.componentById?.get(focusId) ?? null : null;
+  /** @type {Map<string, "upstream" | "selected" | "downstream" | "branch">} */
+  const roles = new Map();
+  if (focusNode && focusComp) {
+    roles.set(focusId, "selected");
+    for (const u of focusNode.upstreamIds ?? []) if (!roles.has(u)) roles.set(u, "upstream");
+    for (const d of focusNode.blocks ?? []) if (!roles.has(d)) roles.set(d, "downstream");
+    for (const m of focusComp.nodeIds ?? []) if (!roles.has(m)) roles.set(m, "branch");
+  }
+  /** @type {Set<string>} */
+  const dimmedIds = new Set();
+  if (selectedComp) {
+    const inComp = new Set(selectedComp.nodeIds);
+    for (const id of graph?.nodes?.keys() ?? []) {
+      if (!inComp.has(id)) dimmedIds.add(id);
+    }
+  }
+  return {
+    activeId: focusComp ? focusId : null,
+    selectedCardId: selectedComp ? selectedCardId : null,
+    component: focusComp ?? selectedComp,
+    selectedComponent: selectedComp,
+    roles,
+    dimmedIds,
+  };
 }
 
 // What the Kanban search matches, lowercased: the task id and the card's text (title,
@@ -443,7 +680,7 @@ function cardsFrom(snapshot) {
   const known = new Set(records.map((r) => r.id));
   const titles = new Map(records.map((r) => [r.id, r.title ?? r.id]));
   for (const t of snapshot.tasks ?? []) if (!known.has(t.id)) pairs.push({ record: null, task: t });
-  return pairs.map(({ record, task }) => {
+  const cards = pairs.map(({ record, task }) => {
     // Every decision the worker's status log still holds open, in the snapshot's order: newest last.
     const openDecisions = (task?.hints?.open_decisions ?? []).map((d) => {
       const summary = String(d?.summary ?? "");
@@ -491,6 +728,8 @@ function cardsFrom(snapshot) {
     worktree: task?.paths?.worktree?.present ? task.paths.worktree.path : null,
     };
   });
+  dependencyGraph(cards);
+  return cards;
 }
 
 export default class FmBoard extends View {
@@ -515,6 +754,18 @@ export default class FmBoard extends View {
     this.folded = new Set(ui.folded ?? this.loadSet(FOLDED_KEY));
     this.open = new Set(ui.open ?? []); this.filter = ui.filter ?? null;
     this.chainOpen = new Set(ui.chains ?? []);
+    /** @type {string | null} */
+    this.selectedCardId = ui.selectedCard ?? ui.inspect ?? null;
+    /** @type {string | null} */
+    this.hoveredCardId = null;
+    /** @type {boolean} */
+    this.inspectorOpen = Boolean(ui.inspector ?? ui.selectedCard ?? ui.inspect);
+    /** @type {string | null} */
+    this.scrolledToCardId = null;
+    this.rightSplitWidth = 0;
+    this.splitWasOpen = false;
+    this.boardScroll = typeof ScrollHandle !== "undefined" ? ScrollHandle.new() : null;
+    this.colScrolls = new Map(COLUMNS.map((c) => [c.id, typeof ScrollHandle !== "undefined" ? ScrollHandle.new() : null]));
     this.pasting = false;
     // Worker screen tails by terminal address. Display only: never logged or written anywhere.
     /** @type {Map<string, string[]>} */
@@ -1102,11 +1353,20 @@ export default class FmBoard extends View {
     const current = this.query && this.currentMatch === c.id;
     // A queued card that still waits on other work is dimmed and says what it waits on.
     const waiting = c.column === "queued" && c.waitingOn.length > 0;
+    const hasDeps = (c.waitingOn?.length ?? 0) > 0 || (c.blocksCount ?? 0) > 0;
+    const role = this.highlight?.roles?.get(c.id) ?? null;
+    const dimmed = Boolean(this.highlight?.dimmedIds?.has(c.id)) && !current;
+    const roleBorder = role === "selected" ? t.accent : role === "upstream" ? t.working : role === "downstream" ? t.ansi6 : null;
+    const borderWidth = current || roleBorder ? 2 : 1;
+    const borderColor = current ? t.accent : roleBorder ?? (role === "branch" ? t.muted : t.border);
     // A deferred hold shows its date when it has one.
     const until = c.column === "held" && c.holdGroup === "deferred" ? c.holdUntil : null;
     const badge = c.prWaiting ? div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.blocked).child("PR waiting") : null;
     const el = v_flex().id(`card-${c.id}`).gap(4).p(8).rounded(6).bg(t.background)
-      .border(current ? 2 : 1).border_color(current ? t.accent : t.border).when(waiting && !current, (e) => e.opacity(0.6))
+      .border(borderWidth).border_color(borderColor)
+      .when(dimmed, (e) => e.opacity(0.35))
+      .when(!dimmed && waiting && !current && !role, (e) => e.opacity(0.6))
+      .when(hasDeps, (e) => e.on_hover((hovered, cx) => this.hoverChainCard(c.id, hovered, cx)))
       .child(this.foldRow(foldId, t, folded, c.title, badge)
         .child(this.askButton(foldId, [c.id], c.title, t)));
     if (folded) return el;
@@ -1121,14 +1381,36 @@ export default class FmBoard extends View {
       // The year is left out: a deferral date is always ahead, and "until 12-01" fits a narrow card.
       .when(Boolean(until), (e) => e.child(div().id(`until-${c.id}`).flex_none().text_size(this.fs(11)).font_semibold()
         .text_color(t.muted).tooltip(`Deferred until ${until}`).child(`until ${String(until).replace(/^\d{4}-/, "")}`))));
-    if (waiting) {
-      const key = `chain:${c.id}`, shown = this.chainOpen.has(key);
-      el.child(div().id(`wait-${c.id}`).min_w(0).text_size(this.fs(11)).text_color(t.blocked).truncate()
-        .cursor_pointer().hover((st) => st.opacity(0.75))
-        .tooltip(shown ? "Hide the order" : "Show the order this task waits on")
-        .on_click((_e, cx) => { if (!this.chainOpen.delete(key)) this.chainOpen.add(key); cx.notify(); })
-        .child(`${shown ? "▾" : "▸"} ${waitingLabel(c)}`));
-      if (shown) el.child(this.chain(c, t));
+    if (hasDeps || role === "upstream" || role === "selected" || role === "downstream") {
+      const depRow = h_flex().id(`deps-${c.id}`).gap(4).items_center().flex_wrap().min_w(0);
+      if ((c.waitingOn?.length ?? 0) > 0) {
+        const selected = this.selectedCardId === c.id && this.inspectorOpen;
+        depRow.child(div().id(`wait-${c.id}`).min_w(0).px(5).py(1).rounded(4).border(1)
+          .border_color(selected ? t.accent : t.blocked).bg(t.blocked + "18")
+          .text_size(this.fs(10.5)).font_semibold().text_color(t.blocked).truncate()
+          .cursor_pointer().hover((st) => st.opacity(0.8))
+          .tooltip(`Inspect dependency chain · Waits on: ${c.waitingOn.join(", ")}`)
+          .on_click((_e, cx) => { cx.stop_propagation(); this.selectChainCard(c.id, cx); })
+          .child(waitingLabel(c)));
+      }
+      if ((c.blocksCount ?? 0) > 0) {
+        const selected = this.selectedCardId === c.id && this.inspectorOpen;
+        depRow.child(div().id(`blocks-${c.id}`).flex_none().px(5).py(1).rounded(4).border(1)
+          .border_color(selected ? t.accent : t.ansi6).bg(t.ansi6 + "18")
+          .text_size(this.fs(10.5)).font_semibold().text_color(t.ansi6)
+          .cursor_pointer().hover((st) => st.opacity(0.8))
+          .tooltip(`Inspect dependency chain · Blocks: ${(c.blocksOn ?? []).join(", ")}`)
+          .on_click((_e, cx) => { cx.stop_propagation(); this.selectChainCard(c.id, cx); })
+          .child(blocksLabel(c)));
+      }
+      if (role === "upstream" || role === "selected" || role === "downstream") {
+        const roleLabel = role === "upstream" ? "Upstream" : role === "selected" ? "Selected" : "Downstream";
+        const roleColor = role === "upstream" ? t.working : role === "selected" ? t.accent : t.ansi6;
+        depRow.child(div().id(`hl-${c.id}`).flex_none().px(5).py(1).rounded(4).bg(roleColor + "24")
+          .text_size(this.fs(10)).font_semibold().text_color(roleColor).child(roleLabel));
+      }
+      el.child(depRow);
+      if (this.chainOpen.has(`chain:${c.id}`)) el.child(this.chain(c, t));
     }
     // The same tint as the Live strip: the working color alone is too faint as text on a light theme.
     if (c.background) el.child(h_flex().id(`background-${c.id}`).gap(6).px(6).py(2).rounded(5).items_center().min_w(0)
@@ -1257,8 +1539,285 @@ export default class FmBoard extends View {
   }
 
   openView(project, source, cx) {
+    this.inspectorOpen = false;
     this.viewProject = project;
     this.viewer.target(source.path, source.title, cx);
+  }
+
+  /** @param {string} id @param {import("gpui-kit").Context} cx */
+  selectChainCard(id, cx) {
+    if (this.selectedCardId === id && this.inspectorOpen) {
+      this.clearChainSelection(cx);
+      return;
+    }
+    this.selectedCardId = id;
+    this.inspectorOpen = true;
+    if (this.viewer.root) this.viewer.close(cx);
+    else cx.notify();
+  }
+
+  /** @param {string} id @param {boolean} hovered @param {import("gpui-kit").Context} cx */
+  hoverChainCard(id, hovered, cx) {
+    const next = hovered ? id : (this.hoveredCardId === id ? null : this.hoveredCardId);
+    if (next === this.hoveredCardId) return;
+    this.hoveredCardId = next;
+    cx.notify();
+  }
+
+  /** @param {import("gpui-kit").Context} cx */
+  toggleInspector(cx) {
+    if (this.inspectorOpen) {
+      this.clearChainSelection(cx);
+      return;
+    }
+    this.inspectorOpen = true;
+    if (!this.selectedCardId || !this.graph?.componentById?.has(this.selectedCardId)) {
+      const firstComp = this.graph?.components?.[0];
+      this.selectedCardId = firstComp?.roots?.[0] ?? firstComp?.nodeIds?.[0] ?? null;
+    }
+    if (this.viewer.root) this.viewer.close(cx);
+    else cx.notify();
+  }
+
+  /** @param {import("gpui-kit").Context} cx */
+  clearChainSelection(cx) {
+    if (!this.selectedCardId && !this.hoveredCardId && !this.inspectorOpen) return;
+    this.selectedCardId = null;
+    this.hoveredCardId = null;
+    this.inspectorOpen = false;
+    cx.notify();
+  }
+
+  /** @param {string} id @param {import("gpui-kit").Context} cx */
+  focusCardFromInspector(id, cx) {
+    this.selectedCardId = id;
+    this.inspectorOpen = true;
+    const node = this.graph?.nodes?.get(id);
+    if (node && !node.missing) {
+      this.folded.delete(`card:${id}`);
+      if (node.column) this.collapsed.delete(node.column);
+      if (this.filter && node.project && this.filter !== node.project) this.filter = null;
+      this.scrollToCard(id);
+    }
+    cx.notify();
+  }
+
+  /** @param {string} id */
+  scrollToCard(id) {
+    this.scrolledToCardId = id;
+    const card = (this.cards ?? []).find((c) => c.id === id);
+    if (!card) return;
+    const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
+    try {
+      if (stacked) {
+        const colIdx = this.shownColumns().findIndex((col) => col.id === card.column);
+        if (colIdx >= 0 && this.boardScroll) this.boardScroll.scroll_to_item(colIdx);
+        return;
+      }
+      const handle = this.colScrolls?.get(card.column);
+      if (!handle) return;
+      const secs = this.sections(card.column);
+      if (secs.length === 1 && !secs[0].title) {
+        const entries = this.entries(secs[0].cards);
+        const itemIdx = entries.findIndex((x) => (x.topic ? x.cards.some((m) => m.id === id) : x.card.id === id));
+        if (itemIdx >= 0) handle.scroll_to_item(itemIdx);
+      } else {
+        const secIdx = secs.findIndex((s) => s.cards.some((m) => m.id === id));
+        if (secIdx >= 0) handle.scroll_to_item(secIdx);
+      }
+    } catch {}
+  }
+
+  /** @param {any} node @param {any} comp @param {Record<string, `#${string}`>} t @param {boolean} [compact] */
+  renderDagNode(node, comp, t, compact = false) {
+    const id = node.id;
+    const role = this.highlight?.roles?.get(id) ?? null;
+    const isSelected = this.selectedCardId === id;
+    const borderCol = isSelected || role === "selected" ? t.accent
+      : role === "upstream" ? t.working
+      : role === "downstream" ? t.ansi6
+      : t.border;
+    const roleLabel = isSelected || role === "selected" ? "Selected"
+      : role === "upstream" ? "Upstream"
+      : role === "downstream" ? "Downstream"
+      : role === "branch" ? "Branch" : null;
+    const roleColor = isSelected || role === "selected" ? t.accent
+      : role === "upstream" ? t.working
+      : role === "downstream" ? t.ansi6
+      : t.muted;
+    const colDef = COLUMNS.find((k) => k.id === node.column);
+    const stateLabel = node.missing ? "external"
+      : node.column === "queued" ? ((node.waitingIds?.length ?? 0) > 0 ? "waiting" : "ready")
+      : (node.column || node.state || "unknown");
+    const stateColor = node.missing ? t.muted
+      : node.column === "queued" && (node.waitingIds?.length ?? 0) > 0 ? t.blocked
+      : (colDef ? t[colDef.color] : t.muted) ?? t.muted;
+    const strip = (title) => (node.project && title.startsWith(`${node.project} `) ? title.slice(node.project.length + 1) : title);
+    const box = v_flex().id(`dep-node-${id}`).when(!compact, (e) => e.flex_1().min_w(160)).when(compact, (e) => e.min_w(0)).gap(3).p(compact ? 5 : 7).rounded(6)
+      .bg(isSelected ? t.selected : t.background).border(isSelected || role === "upstream" || role === "downstream" ? 2 : 1)
+      .border_color(borderCol).cursor_pointer().hover((s) => s.bg(t.hover))
+      .tooltip(`${id}: ${node.title} · Click to highlight & scroll to card`)
+      .on_hover((hovered, cx) => this.hoverChainCard(id, hovered, cx))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.focusCardFromInspector(id, cx); });
+    const topRow = h_flex().gap(5).items_center().min_w(0)
+      .child(this.projectBadge(node.project || "firstmate", t, `dep-tag-${id}`))
+      .child(div().flex_1().min_w(0).truncate().text_size(this.fs(10.5)).font_semibold().text_color(t.muted).child(id))
+      .child(div().flex_none().px(4).py(0.5).rounded(4).bg(stateColor + "22").text_size(this.fs(10)).font_semibold().text_color(stateColor).child(stateLabel));
+    if (roleLabel) {
+      topRow.child(div().id(`dep-role-${id}`).flex_none().px(4).py(0.5).rounded(4).bg(roleColor + "24")
+        .text_size(this.fs(9.5)).font_semibold().text_color(roleColor).child(roleLabel));
+    }
+    box.child(topRow)
+      .child(div().min_w(0).truncate().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child(strip(node.title ?? id)));
+    if (!compact) {
+      const edgePills = [];
+      if ((node.waitingIds?.length ?? 0) > 0) {
+        edgePills.push(div().flex_none().text_size(this.fs(10)).text_color(t.blocked).child(`← Waits on ${node.waitingIds.join(", ")}`));
+      }
+      if ((node.blocksCount ?? 0) > 0) {
+        edgePills.push(div().flex_none().text_size(this.fs(10)).text_color(t.ansi6).child(`★ Blocks ${node.blocksCount} →`));
+      }
+      if ((node.crossProjectBlockers?.length ?? 0) > 0) {
+        edgePills.push(div().id(`dep-xproj-${id}`).flex_none().px(4).py(0.5).rounded(4).bg(t.blocked + "20")
+          .text_size(this.fs(9.5)).font_semibold().text_color(t.blocked).child(`Cross-project ← ${node.crossProjectBlockers.join(", ")}`));
+      }
+      if (edgePills.length) box.child(h_flex().gap(6).items_center().flex_wrap().children(edgePills));
+    }
+    return box;
+  }
+
+  /** @param {any | null} comp @param {Record<string, `#${string}`>} t */
+  renderInspector(comp, t) {
+    const components = this.graph?.components ?? [];
+    const activeComp = comp ?? components[0] ?? null;
+    const header = h_flex().gap(6).items_center().px(8).py(6).rounded(6).bg(t.selected)
+      .child(div().flex_1().min_w(0).truncate().text_size(this.fs(12.5)).font_semibold().text_color(t.foreground).child("Dependency Inspector"))
+      .when(Boolean(activeComp), (el) => el.child(div().id("dep-inspector-summary").flex_none().px(6).py(1).rounded(5).bg(t.raised)
+        .text_size(this.fs(10.5)).font_semibold().text_color(t.accent)
+        .child(`${activeComp.summaryLabel} · depth ${activeComp.depth}`)))
+      .child(this.button("dep-inspector-close", "Close", t, (cx) => this.clearChainSelection(cx)));
+    const panel = this.frame(v_flex().id("dep-inspector").size_full().min_h(0).gap(8), t)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") { this.clearChainSelection(cx); cx.stop_propagation(); }
+      })
+      .child(header);
+    if (!activeComp) {
+      return panel.child(div().p(12).text_size(this.fs(11.5)).text_color(t.muted)
+        .child("No active task dependencies in the current backlog snapshot."));
+    }
+    if (components.length > 1) {
+      panel.child(h_flex().id("dep-chain-tabs").gap(4).items_center().flex_wrap()
+        .child(div().flex_none().text_size(this.fs(10.5)).text_color(t.dim).child("Chains"))
+        .children(components.map((cComp) => {
+          const on = cComp.id === activeComp.id;
+          const targetId = cComp.roots?.[0] ?? cComp.nodeIds?.[0];
+          return div().id(`dep-chain-${cComp.id}`).flex_none().px(6).py(2).rounded(5).cursor_pointer()
+            .bg(on ? t.selected : t.raised).border(1).border_color(on ? t.accent : t.border)
+            .text_size(this.fs(10.5)).font_semibold().text_color(on ? t.foreground : t.muted)
+            .hover((s) => s.opacity(0.85))
+            .on_click((_e, cx) => { if (targetId) this.focusCardFromInspector(targetId, cx); })
+            .child(`${cComp.summaryLabel} (${cComp.nodeIds.length})`);
+        })));
+    }
+    const metaBadges = [];
+    if (activeComp.hasCycle) {
+      metaBadges.push(div().id("dep-cycle-badge").flex_none().px(5).py(1).rounded(4).bg(t.ansi1 + "24")
+        .text_size(this.fs(10)).font_semibold().text_color(t.ansi1).child("Cycle guard active"));
+    }
+    if (activeComp.crossProjectEdges?.length) {
+      metaBadges.push(div().id("dep-cross-project-badge").flex_none().px(5).py(1).rounded(4).bg(t.blocked + "22")
+        .text_size(this.fs(10)).font_semibold().text_color(t.blocked)
+        .child(`Cross-project (${activeComp.crossProjectEdges.length})`));
+    }
+    if (activeComp.joins?.length) {
+      metaBadges.push(div().id("dep-join-badge").flex_none().px(5).py(1).rounded(4).bg(t.ansi6 + "22")
+        .text_size(this.fs(10)).font_semibold().text_color(t.ansi6)
+        .child(`Join (${activeComp.joins.length})`));
+    }
+    const legendDot = (label, color) => h_flex().flex_none().gap(4).items_center()
+      .child(div().w(6).h(6).rounded(3).bg(color))
+      .child(div().text_size(this.fs(10)).text_color(t.muted).child(label));
+    panel.child(h_flex().gap(8).items_center().justify_between().flex_wrap()
+      .child(h_flex().gap(8).items_center().flex_wrap()
+        .child(legendDot("Upstream", t.working))
+        .child(legendDot("Selected", t.accent))
+        .child(legendDot("Downstream", t.ansi6))
+        .children(metaBadges))
+      .when(Boolean(this.selectedCardId), (el) =>
+        el.child(this.button("dep-inspector-clear", "Clear selection", t, (cx) => {
+          this.selectedCardId = null; this.hoveredCardId = null; cx.notify();
+        }))));
+    const dagList = v_flex().id("dep-inspector-levels").flex_1().min_h(0).gap(6).overflow_y_scrollbar();
+    activeComp.levels.forEach((lg, idx) => {
+      if (idx > 0) {
+        const edgeDesc = lg.hasCrossProject ? "↓ Cross-project dependency"
+          : lg.hasJoin ? "↓ Fan-in join"
+          : lg.hasBranch ? "↓ Parallel fan-out"
+          : "↓ Unblocks";
+        dagList.child(h_flex().px(6).gap(6).items_center()
+          .child(div().text_size(this.fs(10.5)).font_semibold().text_color(lg.hasCrossProject ? t.blocked : t.dim).child(edgeDesc)));
+      }
+      const levelRole = lg.level === 0 ? "Root blocker"
+        : lg.hasJoin ? "Join · Fan-in"
+        : lg.hasBranch ? "Parallel branch"
+        : `Step ${lg.level + 1}`;
+      const levelBox = v_flex().id(`dep-level-${lg.level}`).gap(5).p(6).rounded(6).bg(t.surface).border(1).border_color(t.border)
+        .child(h_flex().gap(6).items_center().flex_wrap()
+          .child(div().flex_none().px(5).py(0.5).rounded(4).bg(t.selected).text_size(this.fs(10)).font_semibold().text_color(t.foreground).child(`L${lg.level}`))
+          .child(div().flex_1().min_w(0).text_size(this.fs(10.5)).text_color(t.muted).child(levelRole))
+          .when(lg.hasCrossProject, (el) => el.child(div().flex_none().px(4).py(0.5).rounded(4).bg(t.blocked + "20")
+            .text_size(this.fs(9.5)).font_semibold().text_color(t.blocked)
+            .child(lg.crossProjectEdges.map((e) => `${e.fromProject} → ${e.toProject}`).join(", "))))
+          .when(lg.hasJoin, (el) => el.child(div().flex_none().px(4).py(0.5).rounded(4).bg(t.ansi6 + "20")
+            .text_size(this.fs(9.5)).font_semibold().text_color(t.ansi6)
+            .child(`Merges ${lg.joinNodes.map((j) => j.blockers.length).join("+")} blockers`))))
+        .child(lg.nodes.length > 1
+          ? h_flex().gap(6).flex_wrap().children(lg.nodes.map((n) => this.renderDagNode(n, activeComp, t, false)))
+          : v_flex().gap(4).children(lg.nodes.map((n) => this.renderDagNode(n, activeComp, t, false))));
+      dagList.child(levelBox);
+    });
+    panel.child(dagList);
+    const focusNode = this.selectedCardId ? this.graph?.nodes?.get(this.selectedCardId) : null;
+    if (focusNode) {
+      panel.child(h_flex().id("dep-inspector-focus").gap(6).p(6).rounded(6).bg(t.surface).border(1).border_color(t.border).items_center().justify_between()
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(div().truncate().text_size(this.fs(11)).font_semibold().text_color(t.foreground).child(`Selected: ${focusNode.id}`))
+          .child(div().truncate().text_size(this.fs(10.5)).text_color(t.muted)
+            .child(`Upstream: ${focusNode.upstreamIds?.length ?? 0} · Downstream: ${focusNode.blocksCount ?? 0}`)))
+        .child(this.askButton(`dep:${focusNode.id}`, [focusNode.id], focusNode.title ?? focusNode.id, t)));
+    }
+    return panel;
+  }
+
+  /** @param {any} comp @param {Record<string, `#${string}`>} t */
+  renderCompactInspector(comp, t) {
+    const components = this.graph?.components ?? [];
+    const box = v_flex().id("dep-inspector-compact").flex_none().gap(6).p(8).rounded(8).bg(t.surface).border(1).border_color(t.accent)
+      .child(h_flex().gap(6).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground)
+          .child(`Dependency Inspector · ${comp.summaryLabel} (depth ${comp.depth})`))
+        .when(comp.hasCycle, (el) => el.child(div().id("dep-cycle-badge").flex_none().px(4).py(0.5).rounded(4).bg(t.ansi1 + "24")
+          .text_size(this.fs(9.5)).font_semibold().text_color(t.ansi1).child("Cycle")))
+        .child(this.button("dep-inspector-close", "Close", t, (cx) => this.clearChainSelection(cx))));
+    if (components.length > 1) {
+      box.child(h_flex().id("dep-chain-tabs").gap(4).items_center().flex_wrap()
+        .children(components.map((cComp) => {
+          const on = cComp.id === comp.id;
+          const targetId = cComp.roots?.[0] ?? cComp.nodeIds?.[0];
+          return div().id(`dep-chain-${cComp.id}`).flex_none().px(5).py(1).rounded(4).cursor_pointer()
+            .bg(on ? t.selected : t.raised).text_size(this.fs(10)).font_semibold().text_color(on ? t.foreground : t.muted)
+            .on_click((_e, cx) => { if (targetId) this.focusCardFromInspector(targetId, cx); })
+            .child(`${cComp.summaryLabel} (${cComp.nodeIds.length})`);
+        })));
+    }
+    const flow = v_flex().id("dep-inspector-levels").gap(4);
+    comp.levels.forEach((lg, idx) => {
+      if (idx > 0) flow.child(div().pl(6).text_size(this.fs(10)).text_color(t.dim).child("↓"));
+      flow.child(h_flex().id(`dep-level-${lg.level}`).gap(6).items_start().min_w(0)
+        .child(div().flex_none().px(4).py(1).rounded(4).bg(t.selected).text_size(this.fs(9.5)).font_semibold().text_color(t.foreground).child(`L${lg.level}`))
+        .child(v_flex().flex_1().min_w(0).gap(4).children(lg.nodes.map((n) => this.renderDagNode(n, comp, t, true)))));
+    });
+    return box.child(flow);
   }
 
   // The terminal must still carry this task's label: hc can reuse an address.
@@ -1499,12 +2058,17 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
-  // The top of the Kanban section: the field, the find icon, and where the current match sits.
+  // The top of the Kanban section: the field, the find icon, where the current match sits,
+  // and the Dependency Inspector toggle.
   searchRow(t, matches) {
     const count = !this.query ? null : matches.length ? `${this.matchAt % matches.length + 1}/${matches.length}` : "No matches";
+    const chainCount = this.graph?.components?.length ?? 0;
+    const inspectorActive = Boolean(this.inspectorOpen || this.selectedCardId);
+    const toggleLabel = chainCount > 0 ? `Inspector (${chainCount})` : "Inspector";
     return h_flex().id("kanban-search").flex_none().gap(4).items_center()
       .on_key_down((e, cx) => {
         if (e.key === "escape" && (this.query || this.search.value())) { this.clearSearch(cx); cx.stop_propagation(); }
+        else if (e.key === "escape" && (this.selectedCardId || this.inspectorOpen)) { this.clearChainSelection(cx); cx.stop_propagation(); }
       })
       .child(div().flex_1().min_w(0).child(this.field(this.search, t)))
       .child(div().id("search-find").flex_none().p(5).rounded(5).cursor_pointer().bg(t.raised)
@@ -1512,7 +2076,15 @@ export default class FmBoard extends View {
         .on_click((_e, cx) => this.findNext(cx))
         .child(svg("mods/workspace-chrome/search.svg").size(this.fs(14)).text_color(t.muted)))
       .when(count !== null, (el) =>
-        el.child(div().flex_none().text_size(this.fs(11)).text_color(matches.length ? t.muted : t.blocked).child(count)));
+        el.child(div().flex_none().text_size(this.fs(11)).text_color(matches.length ? t.muted : t.blocked).child(count)))
+      .child(div().id("dep-inspector-toggle").flex_none().px(7).py(3.5).rounded(5).cursor_pointer()
+        .border(1).border_color(inspectorActive ? t.accent : t.border)
+        .bg(inspectorActive ? t.selected : t.raised)
+        .text_size(this.fs(11)).font_semibold().text_color(inspectorActive ? t.foreground : t.muted)
+        .hover((s) => s.opacity(0.85))
+        .tooltip(inspectorActive ? "Close Dependency Inspector (Esc)" : "Open Dependency Inspector")
+        .on_click((_e, cx) => this.toggleInspector(cx))
+        .child(toggleLabel));
   }
 
   cardsIn(id) {
@@ -1564,7 +2136,8 @@ export default class FmBoard extends View {
         .child(this.holdHeading(s, t))
         .children(this.items(s.cards, t)));
     }
-    return el.child(stacked ? list : list.flex_1().min_h(0).overflow_y_scrollbar());
+    const handle = this.colScrolls?.get(col.id);
+    return el.child(stacked ? list : list.flex_1().min_h(0).when(Boolean(handle), (e) => e.track_scroll(handle)).overflow_y_scrollbar());
   }
 
   // The same tag on project rows and cards; hovering shows the full project name.
@@ -1635,15 +2208,29 @@ export default class FmBoard extends View {
       c.column = c.background && c.ownColumn === "paused" ? "working" : c.ownColumn;
     }
     this.monoFont = String(settings()?.font_family ?? "JetBrains Mono");
+    this.graph = dependencyGraph(this.cards ?? []);
+    this.highlight = chainHighlight(this.graph, this.selectedCardId, this.hoveredCardId);
+    const activeComp = this.highlight?.selectedComponent ?? (this.inspectorOpen ? (this.highlight?.component ?? this.graph.components[0] ?? null) : null);
+    const wantInspector = Boolean(this.inspectorOpen || this.selectedCardId);
     // The cards drawn below record which worker screens are worth reading.
     this.shownTerminals = new Set();
     const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
+    const modWidth = (this.size?.width ?? Infinity) + (this.splitWasOpen ? (this.rightSplitWidth || this.inspectorWidth()) : 0);
+    const narrowMod = modWidth < STACK_BELOW_PX;
     const matches = this.query ? this.matchIds() : [];
     this.currentMatch = matches.length ? matches[this.matchAt % matches.length] : null;
-    const board = (stacked ? v_flex().id("board").overflow_y_scrollbar() : h_flex()).flex_1().min_h(0).gap(8)
-      .children(this.shownColumns().map((c) => this.column(c, t, stacked)));
+    const board = (stacked
+      ? v_flex().id("board").when(Boolean(this.boardScroll), (e) => e.track_scroll(this.boardScroll)).overflow_y_scrollbar()
+      : h_flex().id("board")).flex_1().min_h(0).gap(8);
+    if (narrowMod && wantInspector && activeComp) {
+      board.child(this.renderCompactInspector(activeComp, t));
+    }
+    board.children(this.shownColumns().map((c) => this.column(c, t, stacked)));
     const root = v_flex().id("root").size_full().bg(t.canvas).px(8).pt(2.5).pb(3).gap(6)
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
+      .on_key_down((e, cx) => {
+        if (e.key === "escape" && (this.selectedCardId || this.inspectorOpen)) { this.clearChainSelection(cx); cx.stop_propagation(); }
+      })
       .child(this.projectSection(t));
     if (this.filter) {
       root.child(h_flex().gap(6).items_center()
@@ -1653,15 +2240,30 @@ export default class FmBoard extends View {
     root.child(this.frame(v_flex().flex_1().min_h(0).gap(6), t)
       .child(this.searchRow(t, matches)).child(board).child(this.footer(t)))
       .child(this.commandSection(t));
-    if (!this.viewer.root) return root;
-    // The viewer sits on the Board's right behind a draggable divider. Herdr keeps the
-    // dragged width under the group id; the Board half keeps measuring its own width
-    // so the columns still stack when that half gets narrow.
-    return h_resizable("board-viewer-split").size_full().bg(t.canvas)
-      .child(resizable_panel().size_range(280).child(root))
-      .child(resizable_panel().size(this.viewerWidth()).size_range(260)
-        .child(div().id("viewer-wrap").size_full().pl(4).pr(8).pt(2.5).pb(3)
-          .child(this.viewer.render(t, (px) => this.fs(px), this.viewSources(this.viewProject)))));
+    if (this.viewer.root) {
+      this.splitWasOpen = true;
+      // The viewer sits on the Board's right behind a draggable divider. Herdr keeps the
+      // dragged width under the group id; the Board half keeps measuring its own width
+      // so the columns still stack when that half gets narrow.
+      return h_resizable("board-viewer-split").size_full().bg(t.canvas)
+        .child(resizable_panel().size_range(280).child(root))
+        .child(resizable_panel().size(this.viewerWidth()).size_range(260)
+          .child(div().id("viewer-wrap").size_full().pl(4).pr(8).pt(2.5).pb(3)
+            .on_size_change((size, cx) => { this.rightSplitWidth = size.width; cx.notify(); })
+            .child(this.viewer.render(t, (px) => this.fs(px), this.viewSources(this.viewProject)))));
+    }
+    if (!narrowMod && wantInspector) {
+      this.splitWasOpen = true;
+      return h_resizable("board-viewer-split").size_full().bg(t.canvas)
+        .child(resizable_panel().size_range(280).child(root))
+        .child(resizable_panel().size(this.inspectorWidth()).size_range(260)
+          .child(div().id("inspector-wrap").size_full().pl(4).pr(8).pt(2.5).pb(3)
+            .on_size_change((size, cx) => { this.rightSplitWidth = size.width; cx.notify(); })
+            .child(this.renderInspector(activeComp, t))));
+    }
+    this.splitWasOpen = false;
+    this.rightSplitWidth = 0;
+    return root;
   }
 
   // The starting width only: after the first drag Herdr keeps the user's width under
@@ -1669,5 +2271,10 @@ export default class FmBoard extends View {
   viewerWidth() {
     const w = this.size?.width;
     return w ? Math.max(420, Math.round(w / 2)) : 560;
+  }
+
+  inspectorWidth() {
+    const w = this.size?.width;
+    return w ? Math.max(320, Math.min(440, Math.round(w * 0.34))) : 360;
   }
 }

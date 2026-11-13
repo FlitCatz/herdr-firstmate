@@ -343,18 +343,15 @@ function cleanPausedReason(text) {
 
 const WAITING_CLAUSE = /\b(?:awaiting|waiting\s+for|waits\s+on|until\s+(?:\d{2}-\d{2}\s+)?\d{2}:\d{2}|resume\s+(?:when|on|at))\b|대기|기다/i;
 
-// Moves any waiting/until/resume clause to the front so single-line truncation keeps what is waited on visible.
+// Rotates the text at the separator before the first waiting/until/resume clause so single-line truncation keeps what is waited on visible.
 /** @param {string} text @returns {string} */
 function prioritizeWaitingClause(text) {
   if (!text) return "";
-  const sep = text.includes(";") ? ";" : text.includes(",") ? "," : null;
-  if (!sep) return text;
-  const parts = text.split(new RegExp(`\\s*${sep}\\s*`)).filter(Boolean);
-  if (parts.length < 2) return text;
-  const first = parts.filter((p) => WAITING_CLAUSE.test(p));
-  if (!first.length || first.length === parts.length) return text;
-  const rest = parts.filter((p) => !WAITING_CLAUSE.test(p));
-  return [...first, ...rest].join(`${sep} `);
+  const match = WAITING_CLAUSE.exec(text);
+  if (!match) return text;
+  const boundary = [...text.slice(0, match.index).matchAll(/\s*(?:;\s*|,\s+)/g)].at(-1);
+  if (!boundary) return text;
+  return `${text.slice(boundary.index + boundary[0].length)}; ${text.slice(0, boundary.index)}`;
 }
 
 // The PR URL in Firstmate's detail, which it adds when the worker never reported one.

@@ -564,6 +564,8 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
     makeTask("missing-wait", "paused", "", "paused [at=1794541444]: "),
     makeTask("run-words", "paused", "", "paused [at=1]: validating run: 01M79GKB5X3AKE32E4AKZB9RKP resume when green; the nightly run: results due at 06:00"),
     makeTask("multi-line", "paused", "", "paused [at=1]: line1\nline2"),
+    makeTask("comma-list", "paused", "", "paused [at=1]: Step 1 committed, awaiting release URL, source revision, platform SHA"),
+    makeTask("nested-clause", "paused", "", "paused [at=1]: processed 1,234 rows; tests green, awaiting review"),
     makeTask("plain-working", "unknown", "harness state unavailable", "working on build"),
     makeTask("done-no-pr", "unknown", "harness state unavailable", "done [at=1]: report written to data/x.md"),
     makeTask("harness-idle", "paused", "idle", "working [at=1]: building"),
@@ -586,7 +588,7 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
 
   const koRow = b.items.find((x) => x.id === "waiting-korean-wait");
   const koFull = "커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until 01-02 13:40";
-  assert.equal(koRow?.text, "Waiting for: 결과 반환 시 재개, until 01-02 13:40; 커밋 368fb16 기준 로컬 CI 실행");
+  assert.equal(koRow?.text, "Waiting for: until 01-02 13:40; 커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개");
   assert.deepEqual(koRow?.calls.find((c) => c[0] === "tooltip"), ["tooltip", koFull]);
 
   const koWordRow = b.items.find((x) => x.id === "waiting-korean-wait-word");
@@ -597,6 +599,9 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
 
   assert.equal(b.text("waiting-run-words"), "Waiting for: validating resume when green; the nightly run: results due at 06:00");
   assert.equal(b.text("waiting-multi-line"), "Waiting for: line1\nline2");
+  // The items being waited on stay with their clause, and a clause after a comma inside a ";" part still leads.
+  assert.equal(b.text("waiting-comma-list"), "Waiting for: awaiting release URL, source revision, platform SHA; Step 1 committed");
+  assert.equal(b.text("waiting-nested-clause"), "Waiting for: awaiting review; processed 1,234 rows; tests green");
   assert.ok(b.text("card-plain-working").includes("working on build"));
 
   // Paused-column cards without a worker "paused" line are not waiting on anything they declared.

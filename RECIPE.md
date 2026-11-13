@@ -101,7 +101,7 @@ A failed save keeps the text in the field.
 The tab bar marks working tabs with a spinner, blocked and done tabs with status dots, and zoomed tabs with a `Z` suffix.
 Idle tabs have no activity marker.
 Controls highlight on hover, and project badges and several buttons have explanatory tooltips.
-The board watches the home's state and data folders and has a 30-second refresh fallback; its footer update time is displayed in Korea time.
+The board watches the home's state and data folders and has a 30-second refresh fallback; each refresh is bounded by a 15-second deadline (showing `Update failed` on timeout while keeping the last board on screen so later refreshes can still run), and its footer `Updated` time is displayed in Korea time; clicking it, or the `Update failed` notice, refreshes immediately.
 
 ## Built from
 

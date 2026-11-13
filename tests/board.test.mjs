@@ -1053,3 +1053,169 @@ test("an inspector node for a blocker that is not on the board gets a neutral ta
   assert.equal(b.text("dep-tag-X1"), b.text("tag-X1"));
   assert.notEqual(b.text("dep-tag-ghost-task"), b.text("tag-X1"));
 });
+
+test("refresh bounds exec timeouts, clears loading after deadline, ignores stale results, and refreshes on click", async () => {
+  const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
+    .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
+  const execCalls = [];
+  const timers = [];
+  const spawned = [];
+  let snapshotImpl;
+  let enrichmentTimesOut = false;
+  let receiptsImpl = async () => ({ code: 0, stdout: JSON.stringify({ pending: [] }), stderr: "" });
+  const cx = {
+    notify() {},
+    stop_propagation() {},
+    spawn(fn) {
+      const p = fn(cx);
+      spawned.push(p);
+      return p;
+    },
+    timer: {
+      every() {},
+      after(ms, fn) {
+        const entry = { ms, fn, cancelled: false };
+        timers.push(entry);
+        return { cancel() { entry.cancelled = true; }, is_done: () => entry.cancelled };
+      },
+    },
+    focus_handle() { return { focus() {}, is_focused: () => false, release: () => true }; },
+  };
+  const input = () => ({ on() {}, value: () => "", set_value() {} });
+  const theme = new Proxy({}, { get: () => "#808080" });
+  const scope = {
+    View: class {}, div: element, svg: element, v_flex: element, h_flex: element, Input: { new: element },
+    h_resizable: element, resizable_panel: element, InputState: { new: input },
+    ScrollHandle: { new: () => ({ scroll_to_item() {} }) },
+    FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
+    props: () => ({ home: HOME, collapsed: [] }),
+    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
+    localStorage: { getItem: () => null, setItem() {} },
+    readTextFile: async (file) => {
+      if (file === `${HOME}/data/projects.md`) return "- maple-workshop - Fictional project.\n";
+      if (file === `${HOME}/state/.watch.lock/pid`) return "12345\n";
+      throw new Error(`no such file: ${file}`);
+    },
+    exec: async (cmd, args, opts) => {
+      execCalls.push({ cmd, args, opts });
+      if (cmd === "/usr/bin/env" && args[1]?.endsWith("fm-fleet-snapshot.sh")) return snapshotImpl();
+      if (cmd === "/usr/bin/env" && args[1]?.endsWith("fm-inbox.sh")) {
+        if (args[2] === "ready") return { code: 0, stdout: JSON.stringify({ can_receive: true }), stderr: "" };
+        if (args[2] === "receipts") return receiptsImpl();
+        return { code: 0, stdout: "{}", stderr: "" };
+      }
+      if (cmd === "hc" && args[0] === "get" && enrichmentTimesOut) throw new Error("timed out");
+      if (cmd === "ps" && enrichmentTimesOut) throw new Error("timed out");
+      if (cmd === "hc" && args[0] === "get") return { code: 0, stdout: JSON.stringify({ labels: {}, status: { state: "idle" } }), stderr: "" };
+      if (cmd === "ps") return { code: 0, stdout: "12345 00:10\n", stderr: "" };
+      return { code: 1, stdout: "", stderr: "" };
+    },
+    watchFolder: () => new Promise(() => {}),
+    pickFolder: async () => null,
+  };
+  const { FmBoard } = vm.runInNewContext(`${source}\n({ FmBoard })`, scope);
+  const makeSnap = (id, generated) => ({
+    schema: "fm-fleet-snapshot.v1",
+    fm_home: HOME,
+    generated,
+    tasks: [{ id, backend: "hc", endpoint: { target: "default:t1" }, current_state: { state: "unknown" }, backlog: { state: "in_flight", repo: "maple-workshop", title: `Task ${id}` } }],
+    backlog: { records: [] },
+  });
+
+  // 1. Initial refresh succeeds and passes timeout options on all exec calls.
+  snapshotImpl = async () => ({ code: 0, stdout: JSON.stringify(makeSnap("T1", "2026-11-13T03:00:00Z")), stderr: "" });
+  const view = new FmBoard();
+  view.init({}, cx);
+  await spawned.shift();
+  assert.equal(view.loading, false);
+  assert.equal(view.error, null);
+  assert.deepEqual([...view.cards.map((c) => c.id)], ["T1"]);
+  assert.ok(timers[0].cancelled, "deadline timer cancelled on normal completion");
+  for (const call of execCalls) {
+    assert.ok(typeof call.opts?.timeout === "number" && call.opts.timeout > 0, `missing timeout for ${call.cmd} ${call.args.join(" ")}`);
+  }
+
+  let items = drawn(view.render(cx));
+  const refreshEl = items.find((x) => x.id === "refresh");
+  assert.ok(refreshEl?.click, "Updated footer text is clickable");
+  assert.ok(refreshEl.calls.some((c) => c[0] === "tooltip" && /refresh/i.test(c[1])), "Updated has a refresh tooltip");
+  assert.ok(items.some((x) => x.text.includes("Receiving")), "Receiving badge remains");
+
+  // 2. Clicking Updated bypasses MIN_GAP_MS immediately, shows in-progress state, and hangs on exec.
+  let resolveHung;
+  snapshotImpl = () => new Promise((resolve) => { resolveHung = resolve; });
+  refreshEl.click({}, cx);
+  const hungSpawn = spawned.at(-1);
+  assert.equal(view.loading, true);
+  items = drawn(view.render(cx));
+  assert.ok(items.some((x) => x.id === "refresh" && x.text === "Refreshing…"), "shows in-progress state while refreshing");
+
+  // 3. Deadline fires: clears loading, sets error + Update failed badge, keeps last good board (T1).
+  const hungTimer = timers.at(-1);
+  assert.equal(hungTimer.cancelled, false);
+  hungTimer.fn(cx);
+  assert.equal(view.loading, false);
+  assert.equal(view.error, "refresh timed out");
+  assert.deepEqual([...view.cards.map((c) => c.id)], ["T1"]);
+  const failedItems = drawn(view.render(cx));
+  const failedText = failedItems.map((x) => x.text).join(" ");
+  assert.ok(failedText.includes("refresh timed out"));
+  assert.ok(failedText.includes("Update failed"));
+  const failedEl = failedItems.find((x) => x.id === "refresh");
+  assert.ok(failedEl?.text.includes("Update failed") && failedEl.click, "failed state is clickable");
+  assert.ok(failedEl.calls.some((c) => c[0] === "tooltip" && /refresh/i.test(c[1])), "failed state has a refresh tooltip");
+
+  // 4. Clicking the failed state refreshes at once; it succeeds, and late settlement of the abandoned refresh is ignored.
+  snapshotImpl = async () => ({ code: 0, stdout: JSON.stringify(makeSnap("T3", "2026-11-13T03:05:00Z")), stderr: "" });
+  failedEl.click({}, cx);
+  assert.equal(view.loading, true);
+  await spawned.at(-1);
+  assert.equal(view.loading, false);
+  assert.equal(view.error, null);
+  assert.deepEqual([...view.cards.map((c) => c.id)], ["T3"]);
+  assert.equal(view.generated, "2026-11-13T03:05:00Z");
+
+  // Resolve the abandoned refresh with stale T2 data and flush microtasks.
+  resolveHung({ code: 0, stdout: JSON.stringify(makeSnap("T2", "2026-11-13T03:01:00Z")), stderr: "" });
+  await hungSpawn;
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual([...view.cards.map((c) => c.id)], ["T3"], "late result must not overwrite newer refresh");
+  assert.equal(view.generated, "2026-11-13T03:05:00Z");
+  assert.equal(view.error, null);
+  assert.equal(view.loading, false);
+
+  // 5. A good snapshot shows even when the inbox stage then hangs past the deadline.
+  let resolveReceipts;
+  receiptsImpl = () => new Promise((resolve) => { resolveReceipts = resolve; });
+  snapshotImpl = async () => ({ code: 0, stdout: JSON.stringify(makeSnap("T4", "2026-11-13T03:10:00Z")), stderr: "" });
+  view.refresh(cx, { force: true });
+  const inboxSpawn = spawned.at(-1);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual([...view.cards.map((c) => c.id)], ["T4"], "cards update before the inbox stage finishes");
+  timers.at(-1).fn(cx);
+  assert.equal(view.error, "refresh timed out");
+  assert.equal(view.loading, false);
+  assert.deepEqual([...view.cards.map((c) => c.id)], ["T4"]);
+  resolveReceipts({ code: 0, stdout: JSON.stringify({ pending: [] }), stderr: "" });
+  await inboxSpawn;
+
+  // 6. Board requests are not bound by the refresh timeouts.
+  receiptsImpl = async () => ({ code: 0, stdout: JSON.stringify({ pending: [] }), stderr: "" });
+  view.send("Hello", cx);
+  await spawned.at(-1);
+  await spawned.at(-1);
+  const note = execCalls.find((c) => c.args[2] === "note");
+  assert.ok(note, "send runs fm-inbox.sh note");
+  assert.equal(note.opts?.timeout, undefined, "note runs without a timeout");
+  assert.equal(view.notice, "Request sent");
+
+  // 7. A timed-out hc get or ps leaves out only its own detail; the refresh still succeeds.
+  enrichmentTimesOut = true;
+  snapshotImpl = async () => ({ code: 0, stdout: JSON.stringify(makeSnap("T5", "2026-11-13T03:15:00Z")), stderr: "" });
+  view.refresh(cx, { force: true });
+  await spawned.at(-1);
+  assert.equal(view.error, null);
+  assert.deepEqual([...view.cards.map((c) => c.id)], ["T5"]);
+  assert.equal(view.ready, true);
+  assert.equal(JSON.stringify(view.watchers), JSON.stringify([{ role: "Watcher", pid: "12345", up: null }]));
+});

@@ -277,7 +277,9 @@ function inferred(task, record) {
 
 // The worker's last status line without its state prefix and timestamp.
 function lastEventDetail(task) {
-  return (task?.hints?.last_event_text ?? "").replace(/^[a-z-]+\s*(\[[^\]]*\]\s*)*:\s*/, "");
+  const text = task?.hints?.last_event_text ?? "";
+  const m = /^[a-z-]+\s*(?:\[[^\]]*\]\s*)*(?::\s*(.*))?$/s.exec(text);
+  return m ? (m[1] ?? "") : text;
 }
 
 // Firstmate's state detail is " · "-separated machine text, such as
@@ -287,6 +289,7 @@ function lastEventDetail(task) {
 // shows only when nothing is left.
 const ULID = /\b[0-9A-HJKMNP-TV-Z]{26}\b/g;
 const RUN_IDS = new RegExp(`;?\\s*(?:last reported )?run ids?:[\\s,]*(?:${ULID.source}[\\s,]*)*`, "g");
+const RUN_REF = new RegExp(`\\b(?:earlier\\s+)?run:\\s*${ULID.source}`, "g");
 function readableDetail(task) {
   const raw = task?.current_state?.detail;
   if (!raw) return "";
@@ -308,6 +311,49 @@ function readableDetail(task) {
   const rest = parts.map((p) => p.replace(RUN_IDS, "; ").replace(ULID, "").replace(/^[;\s]+|[;\s]+$/g, "")
     .replace(/\s{2,}/g, " ")).filter(Boolean).join(" · ");
   return rest || lastEventDetail(task);
+}
+
+// Strips machine noise from a paused reason, turns "until <UTC>" into local "until HH:MM" (with
+// "MM-DD" before it on another day), and shortens a PR link to "owner/repo#N".
+/** @param {string} text @returns {string} */
+function cleanPausedReason(text) {
+  if (!text) return "";
+  let out = text
+    .replace(/\[(?:at|key)=[^\]]*\]/g, "")
+    .replace(/\b(?:at|key|pr)=\S+/g, "")
+    .replace(RUN_IDS, "; ")
+    .replace(RUN_REF, "")
+    .replace(ULID, "")
+    .replace(/(?:[;,]\s*)?\bdetails=\S+/g, "")
+    .replace(/\buntil\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?Z)\b/gi, (m, iso) => {
+      const ms = Date.parse(iso);
+      if (Number.isNaN(ms)) return m;
+      const d = new Date(ms), pad = (n) => String(n).padStart(2, "0");
+      const day = d.toDateString() === new Date().toDateString() ? "" : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} `;
+      return `until ${day}${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    })
+    .replace(/https:\/\/[^/\s]+\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/g, "$1#$2");
+  out = out
+    .replace(/\s*;\s*(?:;\s*)+/g, "; ")
+    .replace(/\s*,\s*(?:,\s*)+/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^[;,\s·]+|[;,\s·]+$/g, "");
+  return out;
+}
+
+const WAITING_CLAUSE = /\b(?:awaiting|waiting\s+for|waits\s+on|until\s+(?:\d{2}-\d{2}\s+)?\d{2}:\d{2}|resume\s+(?:when|on|at|once)|retry)\b|대기|기다|재개/i;
+
+// Rotates the text at the separator before the first waiting/until/resume clause so single-line truncation keeps what is waited on visible.
+/** @param {string} text @returns {string} */
+function prioritizeWaitingClause(text) {
+  if (!text) return "";
+  const match = WAITING_CLAUSE.exec(text);
+  if (!match) return text;
+  const head = text.slice(0, match.index);
+  const separator = /^until\b/i.test(match[0]) && /,\s*$/.test(head) ? /\s*;\s*/g : /\s*(?:;\s*|,\s+)/g;
+  const boundary = [...head.matchAll(separator)].at(-1);
+  if (!boundary) return text;
+  return `${text.slice(boundary.index + boundary[0].length)}; ${text.slice(0, boundary.index)}`;
 }
 
 // The PR URL in Firstmate's detail, which it adds when the worker never reported one.
@@ -407,7 +453,11 @@ function cardsFrom(snapshot) {
     const decision = parseDecision(record?.hold_reason || "");
     // A hold's question is the card's detail. An open decision is listed in full below the
     // detail instead, so a detail that only repeats one is left out.
-    const detail = decision?.question || (inferred(task, record) ? lastEventDetail(task) : "")
+    const ownColumn = columnOf(record, task);
+    // Only the worker's own "paused" status line says what a paused card waits for.
+    const waitingFor = ownColumn === "paused" && !decision?.question
+      && /^paused(?:\s|\[|:|$)/.test(task?.hints?.last_event_text ?? "") ? cleanPausedReason(lastEventDetail(task)) : "";
+    const detail = waitingFor || decision?.question || (inferred(task, record) ? lastEventDetail(task) : "")
       || readableDetail(task) || record?.hold_reason || "";
     const listed = openDecisions.some((d) => d.summary && (detail.includes(d.summary) || detail === d.decision?.question));
     return {
@@ -417,9 +467,9 @@ function cardsFrom(snapshot) {
     // Which HOLD_GROUPS entry a Held card is drawn under, and the date a deferred one waits for.
     holdGroup: holdGroupOf(record),
     holdUntil: typeof record?.hold_until === "string" ? record.hold_until : null,
-    column: columnOf(record, task),
+    column: ownColumn,
     // What columnOf says; column moves away from it only while the worker runs a background job.
-    ownColumn: columnOf(record, task),
+    ownColumn,
     title: record?.title ?? task.id,
     // Unfinished work this item waits on, by title; empty when it can start.
     waitingOn: (record?.unresolved_blocker_ids ?? []).map((id) => titles.get(id) ?? id),
@@ -428,8 +478,9 @@ function cardsFrom(snapshot) {
     priority: /^[0-4]$/.test(String(record?.priority ?? "")) ? Number(record.priority) : null,
     project: projectOf(task?.project, record?.repo),
     // An unobservable worker shows the state its column was derived from, not "unknown".
-    state: inferred(task, record) ? columnOf(record, task) : task?.current_state?.state ?? record?.state ?? "",
+    state: inferred(task, record) ? ownColumn : task?.current_state?.state ?? record?.state ?? "",
     detail: listed ? "" : detail,
+    waitingFor: listed ? "" : waitingFor,
     // Firstmate's own wording, kept so the search still finds it.
     sourceDetail: task?.current_state?.detail ?? "",
     pr: task?.pr?.url ?? record?.pr_url ?? detailPr(task?.current_state?.detail),
@@ -1086,7 +1137,13 @@ export default class FmBoard extends View {
       // In a narrow column the job's name moves to a second line whole, instead of being cut off.
       .child(h_flex().flex_1().min_w(0).flex_wrap().gap_x(4).text_size(this.fs(11)).font_semibold().text_color(t.foreground)
         .child(div().flex_none().child("백그라운드 실행 중:")).child(div().min_w(0).truncate().child(c.background))));
-    if (c.detail && !inGroup) el.child(div().text_size(this.fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
+    if (c.waitingFor && !inGroup) {
+      el.child(h_flex().id(`waiting-${c.id}`).gap(4).items_center().min_w(0).tooltip(c.waitingFor)
+        .child(div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.muted).child("Waiting for:"))
+        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim).child(prioritizeWaitingClause(c.waitingFor))));
+    } else if (c.detail && !inGroup) {
+      el.child(div().text_size(this.fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
+    }
     const ownDecision = c.decision && !c.decision.topic;
     if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id], c.column === "held");
     c.openDecisions.forEach((d, i) => this.openDecision(el, c, d, i, t));

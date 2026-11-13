@@ -60,7 +60,7 @@ function drawn(tree) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }) } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
@@ -77,7 +77,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
     localStorage: store,
     readTextFile: async (file) => {
-      if (file === snapshotFile) return readFile(file, "utf8");
+      if (file === snapshotFile) return customSnapshot ? JSON.stringify(customSnapshot) : readFile(file, "utf8");
       if (file === `${HOME}/data/projects.md`) {
         if (registry.fails) throw new Error("registry unreadable");
         return registry.projects.map((name) => `- ${name} - Fictional project.\n`).join("");
@@ -533,4 +533,88 @@ test("Scout and Task still go through the firstmate terminal path, not a Memo no
   // With no terminal to find, Task falls back to a Board request, not a memo.
   assert.match(p.notes()[0].at(-1), /^\[Board request\] New task: project=\(firstmate picks\) - look into it$/);
   assert.ok(!p.notes().some((n) => n.at(-1).includes("[Board memo]")));
+});
+
+// Asia/Seoul is UTC+9 all year, so an instant at 03:50Z reads 12:50 there on the same date.
+test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-work, Korean, and nothing when missing", async (t) => {
+  const tz = process.env.TZ;
+  process.env.TZ = "Asia/Seoul";
+  t.after(() => { if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz; });
+  const seoulToday = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+  const makeTask = (id, state, detail, lastEvent, prUrl = null) => ({
+    id, kind: "ship", project: `${HOME}/projects/orchard-atlas`, branch: `fm/${id}`, harness: "codex", backend: "hc",
+    mode: "no-mistakes", yolo: false, spawn_gen: "s1", remote: "origin", secondmate_projects: [],
+    paths: { home: HOME, meta: "", status_log: "", worktree: { path: "", present: false }, report: { path: "", present: false } },
+    current_state: { state, source: "pane", detail, raw: detail, observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+    endpoint: { target: null, exists: false, agent_alive: "not_checked", status: "absent", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+    pr: { url: prUrl, source: prUrl ? "status_event" : "absent", head: null },
+    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: lastEvent },
+    actions: { watch: "", steer: "", return_channel_note: null },
+    backlog: { id, state: "in_flight", kind: "ship", repo: "orchard-atlas", title: id },
+  });
+  const makeRecord = (id) => ({ id, state: "in_flight", kind: "ship", repo: "orchard-atlas", title: id, structured: true });
+  const tasks = [
+    makeTask("ci-wait", "paused", "ci running",
+      `paused [at=1794541315]: no-mistakes CI drive until ${seoulToday}T03:50Z for https://github.com/FlitCatz/orchard-atlas/pull/52; resume on gate or CI-ready outcome`),
+    makeTask("other-work", "unknown", "harness state unavailable",
+      "paused [at=1794539820]: Step 1 committed; awaiting maple-workshop release URL; details=/fictional/firstmate/data/maple-wire-eval/step2-preparation.md"),
+    makeTask("korean-wait", "unknown", "harness state unavailable",
+      "paused [at=1794541444] [key=final-local-ci]: 커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until 2020-01-02T04:40Z"),
+    makeTask("korean-wait-word", "paused", "", "paused [at=1]: 빌드 완료; 릴리스 태그 대기 중"),
+    makeTask("missing-wait", "paused", "", "paused [at=1794541444]: "),
+    makeTask("run-words", "paused", "", "paused [at=1]: validating run: 01M79GKB5X3AKE32E4AKZB9RKP resume when green; the nightly run: results due at 06:00"),
+    makeTask("multi-line", "paused", "", "paused [at=1]: line1\nline2"),
+    makeTask("comma-list", "paused", "", "paused [at=1]: Step 1 committed, awaiting release URL, source revision, platform SHA"),
+    makeTask("nested-clause", "paused", "", "paused [at=1]: processed 1,234 rows; tests green, awaiting review"),
+    makeTask("retry-until", "paused", "", "paused [at=1]: build ok; retry once CI passes, until 13:40"),
+    makeTask("unlisted-until", "paused", "", "paused [at=1]: build ok; CI passes, until 13:40"),
+    makeTask("comma-then-until", "paused", "", "paused [at=1]: Step 1 committed, CI drive until 13:40 for FlitCatz/x#52"),
+    makeTask("plain-working", "unknown", "harness state unavailable", "working on build"),
+    makeTask("done-no-pr", "unknown", "harness state unavailable", "done [at=1]: report written to data/x.md"),
+    makeTask("harness-idle", "paused", "idle", "working [at=1]: building"),
+  ];
+  const b = await board({
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records: tasks.map((x) => makeRecord(x.id)) } },
+  });
+
+  const ciRow = b.items.find((x) => x.id === "waiting-ci-wait");
+  const ciExpected = "no-mistakes CI drive until 12:50 for FlitCatz/orchard-atlas#52; resume on gate or CI-ready outcome";
+  assert.equal(ciRow?.text, `Waiting for: ${ciExpected}`);
+  assert.deepEqual(ciRow?.calls.find((c) => c[0] === "tooltip"), ["tooltip", ciExpected]);
+  // A PR named only in the wait reason is what the worker waits on, not the card's own PR.
+  assert.equal(b.items.find((x) => x.id === "pr-ci-wait"), undefined);
+
+  const otherRow = b.items.find((x) => x.id === "waiting-other-work");
+  const otherFull = "Step 1 committed; awaiting maple-workshop release URL";
+  assert.equal(otherRow?.text, "Waiting for: awaiting maple-workshop release URL; Step 1 committed");
+  assert.deepEqual(otherRow?.calls.find((c) => c[0] === "tooltip"), ["tooltip", otherFull]);
+
+  const koRow = b.items.find((x) => x.id === "waiting-korean-wait");
+  const koFull = "커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until 01-02 13:40";
+  assert.equal(koRow?.text, "Waiting for: 결과 반환 시 재개, until 01-02 13:40; 커밋 368fb16 기준 로컬 CI 실행");
+  assert.deepEqual(koRow?.calls.find((c) => c[0] === "tooltip"), ["tooltip", koFull]);
+
+  const koWordRow = b.items.find((x) => x.id === "waiting-korean-wait-word");
+  assert.equal(koWordRow?.text, "Waiting for: 릴리스 태그 대기 중; 빌드 완료");
+  assert.deepEqual(koWordRow?.calls.find((c) => c[0] === "tooltip"), ["tooltip", "빌드 완료; 릴리스 태그 대기 중"]);
+
+  assert.equal(b.items.find((x) => x.id === "waiting-missing-wait"), undefined);
+
+  assert.equal(b.text("waiting-run-words"), "Waiting for: validating resume when green; the nightly run: results due at 06:00");
+  assert.equal(b.text("waiting-multi-line"), "Waiting for: line1\nline2");
+  // The items being waited on stay with their clause, and a clause after a comma inside a ";" part still leads.
+  assert.equal(b.text("waiting-comma-list"), "Waiting for: awaiting release URL, source revision, platform SHA; Step 1 committed");
+  assert.equal(b.text("waiting-nested-clause"), "Waiting for: awaiting review; processed 1,234 rows; tests green");
+  // A deadline after a comma stays with the condition it bounds.
+  assert.equal(b.text("waiting-retry-until"), "Waiting for: retry once CI passes, until 13:40; build ok");
+  assert.equal(b.text("waiting-unlisted-until"), "Waiting for: CI passes, until 13:40; build ok");
+  assert.equal(b.text("waiting-comma-then-until"), "Waiting for: CI drive until 13:40 for FlitCatz/x#52; Step 1 committed");
+  assert.ok(b.text("card-plain-working").includes("working on build"));
+
+  // Paused-column cards without a worker "paused" line are not waiting on anything they declared.
+  assert.equal(b.items.find((x) => x.id === "waiting-done-no-pr"), undefined);
+  assert.ok(b.text("card-done-no-pr").includes("report written to data/x.md"));
+  assert.ok(!b.text("card-done-no-pr").includes("Waiting for:"));
+  assert.equal(b.items.find((x) => x.id === "waiting-harness-idle"), undefined);
+  assert.ok(b.text("card-harness-idle").includes("idle"));
 });

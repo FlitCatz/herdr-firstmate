@@ -1061,6 +1061,7 @@ test("refresh bounds exec timeouts, clears loading after deadline, ignores stale
   const timers = [];
   const spawned = [];
   let snapshotImpl;
+  let enrichmentTimesOut = false;
   let receiptsImpl = async () => ({ code: 0, stdout: JSON.stringify({ pending: [] }), stderr: "" });
   const cx = {
     notify() {},
@@ -1103,6 +1104,8 @@ test("refresh bounds exec timeouts, clears loading after deadline, ignores stale
         if (args[2] === "receipts") return receiptsImpl();
         return { code: 0, stdout: "{}", stderr: "" };
       }
+      if (cmd === "hc" && args[0] === "get" && enrichmentTimesOut) throw new Error("timed out");
+      if (cmd === "ps" && enrichmentTimesOut) throw new Error("timed out");
       if (cmd === "hc" && args[0] === "get") return { code: 0, stdout: JSON.stringify({ labels: {}, status: { state: "idle" } }), stderr: "" };
       if (cmd === "ps") return { code: 0, stdout: "12345 00:10\n", stderr: "" };
       return { code: 1, stdout: "", stderr: "" };
@@ -1200,8 +1203,19 @@ test("refresh bounds exec timeouts, clears loading after deadline, ignores stale
   receiptsImpl = async () => ({ code: 0, stdout: JSON.stringify({ pending: [] }), stderr: "" });
   view.send("Hello", cx);
   await spawned.at(-1);
+  await spawned.at(-1);
   const note = execCalls.find((c) => c.args[2] === "note");
   assert.ok(note, "send runs fm-inbox.sh note");
   assert.equal(note.opts?.timeout, undefined, "note runs without a timeout");
   assert.equal(view.notice, "Request sent");
+
+  // 7. A timed-out hc get or ps leaves out only its own detail; the refresh still succeeds.
+  enrichmentTimesOut = true;
+  snapshotImpl = async () => ({ code: 0, stdout: JSON.stringify(makeSnap("T5", "2026-11-13T03:15:00Z")), stderr: "" });
+  view.refresh(cx, { force: true });
+  await spawned.at(-1);
+  assert.equal(view.error, null);
+  assert.deepEqual([...view.cards.map((c) => c.id)], ["T5"]);
+  assert.equal(view.ready, true);
+  assert.equal(JSON.stringify(view.watchers), JSON.stringify([{ role: "Watcher", pid: "12345", up: null }]));
 });

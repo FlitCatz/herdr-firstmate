@@ -949,8 +949,8 @@ export default class FmBoard extends View {
       if (task.backend !== "hc" || task.current_state?.state !== "unknown") return;
       const address = hcAddress(task);
       if (!address) return;
-      const r = await exec("hc", ["get", address, "--json"], { timeout: CORE_STATUS_TIMEOUT_MS });
-      if (r.code !== 0) return;
+      const r = await exec("hc", ["get", address, "--json"], { timeout: CORE_STATUS_TIMEOUT_MS }).catch(() => null);
+      if (r?.code !== 0) return;
       const terminal = JSON.parse(r.stdout);
       // An address can be reused, so the terminal must still carry this task's label.
       if (terminal.labels?.["firstmate.task"] === `fm-${task.id}`) task.core_status = terminal.status?.state;
@@ -998,8 +998,8 @@ export default class FmBoard extends View {
       if (/^\d+$/.test(pid)) roles.push({ role: "Watcher", pid });
     } catch {}
     if (!roles.length) return [];
-    const r = await exec("ps", ["-o", "pid=,etime=", "-p", roles.map((x) => x.pid).join(",")], { timeout: PROCESS_LIST_TIMEOUT_MS });
-    const alive = new Map((r.stdout ?? "").trim().split("\n").filter(Boolean)
+    const r = await exec("ps", ["-o", "pid=,etime=", "-p", roles.map((x) => x.pid).join(",")], { timeout: PROCESS_LIST_TIMEOUT_MS }).catch(() => null);
+    const alive = new Map((r?.stdout ?? "").trim().split("\n").filter(Boolean)
       .map((l) => l.trim().split(/\s+/)).map(([pid, etime]) => [pid, etime]));
     return roles.map((x) => ({ ...x, up: alive.get(x.pid) ?? null }));
   }

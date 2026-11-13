@@ -564,6 +564,8 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
     makeTask("run-words", "paused", "", "paused [at=1]: validating run: 01M79GKB5X3AKE32E4AKZB9RKP resume when green; the nightly run: results due at 06:00"),
     makeTask("multi-line", "paused", "", "paused [at=1]: line1\nline2"),
     makeTask("plain-working", "unknown", "harness state unavailable", "working on build"),
+    makeTask("done-no-pr", "unknown", "harness state unavailable", "done [at=1]: report written to data/x.md"),
+    makeTask("harness-idle", "paused", "idle", "working [at=1]: building"),
   ];
   const b = await board({
     snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records: tasks.map((x) => makeRecord(x.id)) } },
@@ -586,4 +588,11 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
   assert.equal(b.text("waiting-run-words"), "Waiting for: validating resume when green; the nightly run: results due at 06:00");
   assert.equal(b.text("waiting-multi-line"), "Waiting for: line1\nline2");
   assert.ok(b.text("card-plain-working").includes("working on build"));
+
+  // Paused-column cards without a worker "paused" line are not waiting on anything they declared.
+  assert.equal(b.items.find((x) => x.id === "waiting-done-no-pr"), undefined);
+  assert.ok(b.text("card-done-no-pr").includes("report written to data/x.md"));
+  assert.ok(!b.text("card-done-no-pr").includes("Waiting for:"));
+  assert.equal(b.items.find((x) => x.id === "waiting-harness-idle"), undefined);
+  assert.ok(b.text("card-harness-idle").includes("idle"));
 });

@@ -439,11 +439,11 @@ function cardsFrom(snapshot) {
     // A hold's question is the card's detail. An open decision is listed in full below the
     // detail instead, so a detail that only repeats one is left out.
     const ownColumn = columnOf(record, task);
-    const pausedEvent = ownColumn === "paused" && /^paused(?:\s|\[|:|$)/.test(task?.hints?.last_event_text ?? "")
-      ? lastEventDetail(task) : "";
-    const rawDetail = decision?.question || pausedEvent || (inferred(task, record) ? lastEventDetail(task) : "")
+    // Only the worker's own "paused" status line says what a paused card waits for.
+    const waitingFor = ownColumn === "paused" && !decision?.question
+      && /^paused(?:\s|\[|:|$)/.test(task?.hints?.last_event_text ?? "") ? cleanPausedReason(lastEventDetail(task)) : "";
+    const detail = waitingFor || decision?.question || (inferred(task, record) ? lastEventDetail(task) : "")
       || readableDetail(task) || record?.hold_reason || "";
-    const detail = ownColumn === "paused" && !decision?.question ? cleanPausedReason(rawDetail) : rawDetail;
     const listed = openDecisions.some((d) => d.summary && (detail.includes(d.summary) || detail === d.decision?.question));
     return {
     id: record?.id ?? task.id,
@@ -465,6 +465,7 @@ function cardsFrom(snapshot) {
     // An unobservable worker shows the state its column was derived from, not "unknown".
     state: inferred(task, record) ? ownColumn : task?.current_state?.state ?? record?.state ?? "",
     detail: listed ? "" : detail,
+    waitingFor: listed ? "" : waitingFor,
     // Firstmate's own wording, kept so the search still finds it.
     sourceDetail: task?.current_state?.detail ?? "",
     pr: task?.pr?.url ?? record?.pr_url ?? detailPr(task?.current_state?.detail),
@@ -1121,10 +1122,10 @@ export default class FmBoard extends View {
       // In a narrow column the job's name moves to a second line whole, instead of being cut off.
       .child(h_flex().flex_1().min_w(0).flex_wrap().gap_x(4).text_size(this.fs(11)).font_semibold().text_color(t.foreground)
         .child(div().flex_none().child("백그라운드 실행 중:")).child(div().min_w(0).truncate().child(c.background))));
-    if (c.ownColumn === "paused" && c.detail && !inGroup) {
-      el.child(h_flex().id(`waiting-${c.id}`).gap(4).items_center().min_w(0).tooltip(c.detail)
+    if (c.waitingFor && !inGroup) {
+      el.child(h_flex().id(`waiting-${c.id}`).gap(4).items_center().min_w(0).tooltip(c.waitingFor)
         .child(div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.muted).child("Waiting for:"))
-        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim).child(c.detail)));
+        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim).child(c.waitingFor)));
     } else if (c.detail && !inGroup) {
       el.child(div().text_size(this.fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
     }

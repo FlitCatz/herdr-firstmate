@@ -672,18 +672,19 @@ test("dependencyGraph derives reverse dependencies, transitive downstream counts
   assert.deepEqual(Array.from(byId.get("K4").upstreamIds), ["K3", "K2"]);
   assert.deepEqual(Array.from(byId.get("K4").blocks), ["K6", "K7"]);
   assert.equal(byId.get("K4").blocksCount, 2);
-  assert.equal(waitingLabel(byId.get("K4")), "← Waits on K3 Step 2 wire");
+  assert.equal(waitingLabel(byId.get("K4")), "Waiting on K3 Step 2 wire");
+  assert.equal(waitingLabel(byId.get("K4"), "← Waits on"), "← Waits on K3 Step 2 wire");
   assert.equal(blocksLabel(byId.get("K4")), "★ Blocks 2 →");
 
   assert.equal(byId.get("K7").blocksCount, 0);
   assert.deepEqual(Array.from(byId.get("K7").upstreamIds), ["K6", "K4", "K3", "K2"]);
 
-  // Topological levels 0..4 for K2..K7, and 1 connected component (solo is not in any component).
-  assert.deepEqual(["K2", "K3", "K4", "K6", "K7"].map((id) => byId.get(id).level), [0, 1, 2, 3, 4]);
+  // Topological levels L0..L4 for K2..K7, and 1 connected component (solo is not in any component).
   assert.equal(graph.components.length, 1);
+  assert.deepEqual(Array.from(graph.components[0].levels, (lg) => Array.from(lg.ids)), [["K2"], ["K3"], ["K4"], ["K6"], ["K7"]]);
   assert.equal(graph.components[0].depth, 5);
   assert.equal(graph.components[0].summaryLabel, "K2 → K7");
-  assert.equal(byId.get("solo").componentId, null);
+  assert.equal(graph.componentById.has("solo"), false);
 });
 
 test("dependencyGraph handles parallel branches, cross-project joins, and cycles safely", async () => {
@@ -702,26 +703,25 @@ test("dependencyGraph handles parallel branches, cross-project joins, and cycles
   const graph = dependencyGraph(cards);
   const o2 = graph.nodes.get("O2");
   assert.deepEqual(Array.from(o2.crossProjectBlockers), ["M1"]);
-  assert.deepEqual(Array.from(graph.nodes.get("M1").crossProjectDependents), ["O2"]);
-  assert.equal(o2.level, 1);
-  assert.equal(graph.nodes.get("O3A").level, 2);
-  assert.equal(graph.nodes.get("O3B").level, 2);
+  assert.deepEqual(Array.from(graph.nodes.get("M1").blockingIds), ["O2"]);
 
+  // M1 and O1 join at O2, which fans out to O3A and O3B.
   const joinComp = graph.componentById.get("O2");
+  assert.deepEqual(Array.from(joinComp.levels, (lg) => Array.from(lg.ids)), [["M1", "O1"], ["O2"], ["O3A", "O3B"]]);
   assert.equal(joinComp.hasCycle, false);
   assert.equal(joinComp.joins.length, 1);
   assert.equal(joinComp.joins[0].id, "O2");
-  assert.equal(joinComp.joins[0].crossProject, true);
-  assert.ok(joinComp.crossProjectEdges.some((e) => e.from === "M1" && e.to === "O2"));
-  assert.deepEqual(Array.from(joinComp.branches), ["O2"]);
+  assert.deepEqual(Array.from(joinComp.joins[0].blockers), ["M1", "O1"]);
+  assert.equal(joinComp.levels[1].hasCrossProject, true);
+  assert.deepEqual(Array.from(joinComp.levels[1].crossProjectEdges, (e) => `${e.fromProject} → ${e.toProject}`), ["maple-workshop → orchard-atlas"]);
+  // O3B (maple-workshop) waits on O2 (orchard-atlas): a second cross-project edge one level down.
+  assert.equal(joinComp.crossProjectEdges.length, 2);
   assert.equal(joinComp.levels[2].hasBranch, true);
 
+  // The cycle C1 -> C2 -> C3 -> C1 ends in finite levels, each task drawn exactly once.
   const cycleComp = graph.componentById.get("C1");
   assert.equal(cycleComp.hasCycle, true);
-  assert.ok(graph.cycleNodes.size > 0);
-  for (const id of ["C1", "C2", "C3"]) {
-    assert.ok(Number.isFinite(graph.nodes.get(id).level) && graph.nodes.get(id).level >= 0);
-  }
+  assert.deepEqual(Array.from(cycleComp.levels).flatMap((lg) => Array.from(lg.ids)).sort(), ["C1", "C2", "C3"]);
 });
 
 test("card dependency badges render in every column, not only Queued", async () => {
@@ -730,7 +730,7 @@ test("card dependency badges render in every column, not only Queued", async () 
   assert.equal(b.view.cards.find((c) => c.id === "orchard-map-labels").column, "queued");
   assert.equal(b.text("blocks-orchard-map-labels"), "★ Blocks 1 →");
   assert.equal(b.view.cards.find((c) => c.id === "orchard-label-polish").column, "held");
-  assert.equal(b.text("wait-orchard-label-polish"), "← Waits on Add map labels");
+  assert.equal(b.text("waits-orchard-label-polish"), "← Waits on Add map labels");
 
   // Across Working, Held, Paused, Review, and Queued columns:
   const makeTask = (id, state, detail = "", prUrl = null, lastEvent = "") => ({
@@ -763,19 +763,31 @@ test("card dependency badges render in every column, not only Queued", async () 
   assert.equal(multi.text("blocks-W1"), "★ Blocks 4 →");
 
   assert.equal(multi.view.cards.find((c) => c.id === "P1").column, "paused");
-  assert.equal(multi.text("wait-P1"), "← Waits on Working Blocker");
+  assert.equal(multi.text("waits-P1"), "← Waits on Working Blocker");
   assert.equal(multi.text("blocks-P1"), "★ Blocks 3 →");
 
   assert.equal(multi.view.cards.find((c) => c.id === "R1").column, "review");
-  assert.equal(multi.text("wait-R1"), "← Waits on Paused Step");
+  assert.equal(multi.text("waits-R1"), "← Waits on Paused Step");
   assert.equal(multi.text("blocks-R1"), "★ Blocks 2 →");
 
   assert.equal(multi.view.cards.find((c) => c.id === "H1").column, "held");
-  assert.equal(multi.text("wait-H1"), "← Waits on Review Step");
+  assert.equal(multi.text("waits-H1"), "← Waits on Review Step");
   assert.equal(multi.text("blocks-H1"), "★ Blocks 1 →");
 
   assert.equal(multi.view.cards.find((c) => c.id === "Q1").column, "queued");
-  assert.equal(multi.text("wait-Q1"), "← Waits on Held Step");
+  assert.equal(multi.text("waits-Q1"), "← Waits on Held Step");
+
+  // A queued card's waiting row still expands and hides the order it waits on, without opening the inspector.
+  assert.equal(multi.text("wait-Q1"), "▸ Waiting on Held Step");
+  assert.ok(!multi.text("card-Q1").includes("this task"));
+  multi.click("wait-Q1");
+  assert.equal(multi.text("wait-Q1"), "▾ Waiting on Held Step");
+  assert.ok(multi.text("card-Q1").includes("this task"));
+  assert.equal(multi.view.inspectorOpen, false);
+  multi.click("wait-Q1");
+  assert.ok(!multi.text("card-Q1").includes("this task"));
+  // Only queued cards have the waiting row.
+  assert.ok(!multi.ids.includes("wait-H1"));
 });
 
 test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlights upstream/selected/downstream, dims unrelated cards only while selected, and clears on Escape or Close", async () => {
@@ -829,20 +841,35 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   const u1SelectedCalls = b.items.find((x) => x.id === "card-U1").calls;
   assert.ok(u1SelectedCalls.some((c) => c[0] === "opacity" && c[1] === 0.35), "selected chain must dim unrelated cards");
 
-  // Clicking a node in the Dependency Inspector focuses and scrolls to that card, unfolding/uncollapsing if needed.
+  // Clicking a node in the Dependency Inspector focuses and scrolls to that card, showing its
+  // folded card and collapsed column open without changing the saved folds.
   b.view.folded.add("card:K4");
   b.view.collapsed.add("queued");
   b.redraw();
+  assert.ok(!b.ids.includes("tag-K4"));
+  assert.ok(!b.ids.includes("list-queued"));
   b.click("dep-node-K4");
   assert.equal(b.view.selectedCardId, "K4");
-  assert.equal(b.view.scrolledToCardId, "K4");
-  assert.ok(!b.view.folded.has("card:K4"));
-  assert.ok(!b.view.collapsed.has("queued"));
-  assert.ok(b.scrolled.length > 0);
+  assert.ok(b.ids.includes("tag-K4"));
+  assert.ok(b.ids.includes("list-queued"));
+  assert.ok(b.view.folded.has("card:K4"));
+  assert.ok(b.view.collapsed.has("queued"));
+  // Queued draws K4, K6, U1 in backlog order, so K4 is the column list's first item.
+  assert.deepEqual(Array.from(b.scrolled), [0]);
   assert.equal(b.text("hl-K2"), "Upstream");
   assert.equal(b.text("hl-K3"), "Upstream");
   assert.equal(b.text("hl-K4"), "Selected");
   assert.equal(b.text("hl-K6"), "Downstream");
+
+  // A later, unrelated fold click saves only that fold; folding K4 again drops the temporary reveal.
+  b.click("fold-card:K6");
+  assert.ok(b.view.folded.has("card:K6"));
+  assert.ok(b.view.folded.has("card:K4"));
+  assert.ok(b.ids.includes("tag-K4"));
+  b.click("fold-card:K4");
+  assert.ok(!b.ids.includes("tag-K4"));
+  assert.ok(b.view.folded.has("card:K4"));
+  b.click("fold-card:K6");
 
   // On a narrow board (< STACK_BELOW_PX = 720), the compact chain card is pinned at the top of board instead of the split.
   b.view.size = { width: 520, height: 800 };
@@ -852,6 +879,14 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.ok(b.ids.includes("dep-inspector-compact"));
   assert.ok(!b.ids.includes("inspector-wrap"));
   assert.ok(b.ids.indexOf("dep-inspector-compact") < b.ids.indexOf("col-held"));
+  // The compact card sits above the scrolling board, not inside it, so it stays pinned and a
+  // node click scrolls the board to the position of the card's column among the drawn columns.
+  assert.ok(b.ids.indexOf("dep-inspector-compact") < b.ids.indexOf("board"));
+  b.scrolled.length = 0;
+  b.click("dep-node-K6");
+  const drawnColumns = b.ids.filter((id) => id.startsWith("col-"));
+  assert.deepEqual(Array.from(b.scrolled), [drawnColumns.indexOf("col-queued")]);
+  assert.equal(drawnColumns.indexOf("col-queued"), 1);
 
   // Escape clears the selection and closes the inspector.
   b.keyDown("root", "escape");
@@ -870,5 +905,29 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   assert.equal(b.view.inspectorOpen, false);
   assert.equal(b.view.selectedCardId, null);
   assert.ok(!b.ids.includes("dep-inspector"));
+
+  // A node whose card the active search hides clears the search, so the card is drawn and scrolled to.
+  b.view.query = "K3 Held";
+  b.redraw();
+  assert.ok(!b.ids.includes("card-K6"));
+  b.click("blocks-K3");
+  b.scrolled.length = 0;
+  b.click("dep-node-K6");
+  assert.equal(b.view.query, "");
+  assert.ok(b.ids.includes("card-K6"));
+  assert.deepEqual(Array.from(b.scrolled), [1]);
+});
+
+test("an inspector node for a blocker that is not on the board gets a neutral tag", async () => {
+  const records = [
+    { id: "X1", state: "queued", repo: "maple-workshop", title: "X1 Waits on ghost", structured: true, unresolved_blocker_ids: ["ghost-task"] },
+  ];
+  const b = await board({ snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  b.click("waits-X1");
+  assert.equal(b.text("dep-tag-ghost-task"), "unknown");
+  assert.equal(b.text("dep-tag-X1"), b.text("tag-X1"));
+  assert.notEqual(b.text("dep-tag-ghost-task"), b.text("tag-X1"));
 });
 

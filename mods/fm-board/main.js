@@ -419,12 +419,13 @@ function prWaiting(record, task) {
   return !/\b(merged|closed)\b/i.test(task.current_state.detail ?? "");
 }
 
-// "← Waits on <title>", or "← Waits on 2 · <first title>"; the card's own project name is
-// dropped from the front of the title because the card already shows it.
-function waitingLabel(c) {
+// "Waiting on <title>", or "Waiting on 2 · <first title>"; the card's own project name is
+// dropped from the front of the title because the card already shows it. The dependency
+// badge leads with "← Waits on" instead.
+function waitingLabel(c, lead = "Waiting on") {
   const strip = (title) => (c.project && title.startsWith(`${c.project} `) ? title.slice(c.project.length + 1) : title);
   const n = c.waitingOn.length;
-  return `← Waits on ${n > 1 ? `${n} · ` : ""}${strip(c.waitingOn[0])}`;
+  return `${lead} ${n > 1 ? `${n} · ` : ""}${strip(c.waitingOn[0])}`;
 }
 
 // "★ Blocks N →" on a card that other tasks wait on.
@@ -439,14 +440,13 @@ function dependencyGraph(cards) {
   const byId = new Map();
   for (const c of cards ?? []) {
     if (!c?.id) continue;
-    const rawWait = c.waitingIds ?? c.unresolved_blocker_ids ?? [];
-    const waitingIds = [...new Set(rawWait.filter((id) => id && id !== c.id))];
+    const waitingIds = [...new Set((c.waitingIds ?? []).filter((id) => id && id !== c.id))];
     byId.set(c.id, Object.assign(c, { waitingIds }));
   }
   for (const c of [...byId.values()]) {
     for (const u of c.waitingIds) {
       if (!byId.has(u)) {
-        byId.set(u, { id: u, title: u, project: "", column: "unknown", state: "unknown", priority: null, pr: null, prWaiting: false, waitingIds: [], waitingOn: [], missing: true });
+        byId.set(u, { id: u, title: u, project: "", waitingIds: [], missing: true });
       }
     }
   }
@@ -461,7 +461,6 @@ function dependencyGraph(cards) {
   for (const [id, c] of byId) {
     c.waitingOn = (c.waitingIds ?? []).map((u) => byId.get(u)?.title ?? u);
     c.blockingIds = blockingMap.get(id) ?? [];
-    c.blockingOn = c.blockingIds.map((d) => byId.get(d)?.title ?? d);
   }
   for (const [id, c] of byId) {
     /** @type {string[]} */
@@ -494,10 +493,6 @@ function dependencyGraph(cards) {
       const upProj = byId.get(u)?.project;
       return Boolean(c.project && upProj && c.project !== upProj);
     });
-    c.crossProjectDependents = c.blockingIds.filter((d) => {
-      const downProj = byId.get(d)?.project;
-      return Boolean(c.project && downProj && c.project !== downProj);
-    });
   }
   /** @type {Map<string, number>} */
   const levels = new Map();
@@ -527,10 +522,6 @@ function dependencyGraph(cards) {
     return d;
   };
   for (const id of byId.keys()) computeLevel(id);
-  for (const [id, c] of byId) {
-    c.level = levels.get(id) ?? 0;
-    c.componentId = null;
-  }
   /** @type {Set<string>} */
   const visitedComp = new Set();
   /** @type {any[]} */
@@ -560,8 +551,6 @@ function dependencyGraph(cards) {
     const byLevel = new Map();
     for (const m of memberIds) {
       const lv = (levels.get(m) ?? 0) - minLevel;
-      const node = byId.get(m);
-      if (node) node.level = lv;
       if (!byLevel.has(lv)) byLevel.set(lv, []);
       byLevel.get(lv)?.push(m);
     }
@@ -579,8 +568,7 @@ function dependencyGraph(cards) {
           }
         }
         if ((n.waitingIds ?? []).length > 1) {
-          const blockerProjs = [...new Set(n.waitingIds.map((u) => byId.get(u)?.project).filter(Boolean))];
-          joinNodes.push({ id: n.id, blockers: n.waitingIds, crossProject: blockerProjs.length > 1 || (n.crossProjectBlockers?.length ?? 0) > 0 });
+          joinNodes.push({ id: n.id, blockers: n.waitingIds });
         }
       }
       return {
@@ -595,20 +583,16 @@ function dependencyGraph(cards) {
       };
     });
     const roots = levelGroups[0]?.ids ?? [memberIds[0]];
-    const projects = [...new Set(memberIds.map((m) => byId.get(m)?.project).filter(Boolean))];
     const crossProjectEdges = levelGroups.flatMap((g) => g.crossProjectEdges);
     const joins = levelGroups.flatMap((g) => g.joinNodes);
-    const branches = memberIds.filter((m) => (byId.get(m)?.blockingIds?.length ?? 0) > 1);
     const hasCycle = memberIds.some((m) => cycleNodes.has(m));
     rawComponents.push({
       roots,
       depth: levelGroups.length,
       nodeIds: memberIds,
       levels: levelGroups,
-      projects,
       crossProjectEdges,
       joins,
-      branches,
       hasCycle,
     });
   }
@@ -620,15 +604,11 @@ function dependencyGraph(cards) {
     const rootId = comp.roots[0] ?? comp.nodeIds[0] ?? id;
     const leafId = comp.levels.at(-1)?.ids[0] ?? comp.nodeIds.at(-1) ?? rootId;
     const summaryLabel = rootId !== leafId ? `${rootId} → ${leafId}` : rootId;
-    const enriched = { id, index: idx + 1, summaryLabel, ...comp };
-    for (const m of comp.nodeIds) {
-      const node = byId.get(m);
-      if (node) node.componentId = id;
-      componentById.set(m, enriched);
-    }
+    const enriched = { id, summaryLabel, ...comp };
+    for (const m of comp.nodeIds) componentById.set(m, enriched);
     return enriched;
   });
-  return { nodes: byId, components, componentById, cycleNodes };
+  return { nodes: byId, components, componentById };
 }
 
 // Computes card highlight roles ("upstream", "selected", "downstream", "branch") for the active
@@ -655,8 +635,6 @@ function chainHighlight(graph, selectedCardId = null, hoveredCardId = null) {
     }
   }
   return {
-    activeId: focusComp ? focusId : null,
-    selectedCardId: selectedComp ? selectedCardId : null,
     component: focusComp ?? selectedComp,
     selectedComponent: selectedComp,
     roles,
@@ -728,7 +706,6 @@ function cardsFrom(snapshot) {
     worktree: task?.paths?.worktree?.present ? task.paths.worktree.path : null,
     };
   });
-  dependencyGraph(cards);
   return cards;
 }
 
@@ -755,13 +732,13 @@ export default class FmBoard extends View {
     this.open = new Set(ui.open ?? []); this.filter = ui.filter ?? null;
     this.chainOpen = new Set(ui.chains ?? []);
     /** @type {string | null} */
-    this.selectedCardId = ui.selectedCard ?? ui.inspect ?? null;
+    this.selectedCardId = null;
     /** @type {string | null} */
     this.hoveredCardId = null;
-    /** @type {boolean} */
-    this.inspectorOpen = Boolean(ui.inspector ?? ui.selectedCard ?? ui.inspect);
-    /** @type {string | null} */
-    this.scrolledToCardId = null;
+    this.inspectorOpen = false;
+    // Folds and collapsed columns an inspector click shows open for now, without saving them.
+    /** @type {Set<string>} */
+    this.revealed = new Set();
     this.rightSplitWidth = 0;
     this.splitWasOpen = false;
     this.boardScroll = typeof ScrollHandle !== "undefined" ? ScrollHandle.new() : null;
@@ -883,6 +860,7 @@ export default class FmBoard extends View {
 
   toggleFold(id, cx) {
     if (this.query) return;
+    if (this.revealed.delete(id) && this.folded.has(id)) { cx.notify(); return; }
     if (!this.folded.delete(id)) this.folded.add(id);
     try { localStorage.setItem(FOLDED_KEY, JSON.stringify([...this.folded])); } catch {}
     cx.notify();
@@ -897,6 +875,7 @@ export default class FmBoard extends View {
   }
 
   toggle(id, cx) {
+    if (this.revealed.delete(id) && this.collapsed.has(id)) { cx.notify(); return; }
     if (!this.collapsed.delete(id)) this.collapsed.add(id);
     try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...this.collapsed])); } catch {}
     cx.notify();
@@ -1349,7 +1328,7 @@ export default class FmBoard extends View {
 
   card(c, t, inGroup) {
     // A search shows matching cards open, without changing the remembered folds.
-    const foldId = `card:${c.id}`, folded = this.folded.has(foldId) && !this.query;
+    const foldId = `card:${c.id}`, folded = this.folded.has(foldId) && !this.query && !this.revealed.has(foldId);
     const current = this.query && this.currentMatch === c.id;
     // A queued card that still waits on other work is dimmed and says what it waits on.
     const waiting = c.column === "queued" && c.waitingOn.length > 0;
@@ -1381,17 +1360,26 @@ export default class FmBoard extends View {
       // The year is left out: a deferral date is always ahead, and "until 12-01" fits a narrow card.
       .when(Boolean(until), (e) => e.child(div().id(`until-${c.id}`).flex_none().text_size(this.fs(11)).font_semibold()
         .text_color(t.muted).tooltip(`Deferred until ${until}`).child(`until ${String(until).replace(/^\d{4}-/, "")}`))));
+    if (waiting) {
+      const key = `chain:${c.id}`, shown = this.chainOpen.has(key);
+      el.child(div().id(`wait-${c.id}`).min_w(0).text_size(this.fs(11)).text_color(t.blocked).truncate()
+        .cursor_pointer().hover((st) => st.opacity(0.75))
+        .tooltip(shown ? "Hide the order" : "Show the order this task waits on")
+        .on_click((_e, cx) => { if (!this.chainOpen.delete(key)) this.chainOpen.add(key); cx.notify(); })
+        .child(`${shown ? "▾" : "▸"} ${waitingLabel(c)}`));
+      if (shown) el.child(this.chain(c, t));
+    }
     if (hasDeps || role === "upstream" || role === "selected" || role === "downstream") {
       const depRow = h_flex().id(`deps-${c.id}`).gap(4).items_center().flex_wrap().min_w(0);
       if ((c.waitingOn?.length ?? 0) > 0) {
         const selected = this.selectedCardId === c.id && this.inspectorOpen;
-        depRow.child(div().id(`wait-${c.id}`).min_w(0).px(5).py(1).rounded(4).border(1)
+        depRow.child(div().id(`waits-${c.id}`).min_w(0).px(5).py(1).rounded(4).border(1)
           .border_color(selected ? t.accent : t.blocked).bg(t.blocked + "18")
           .text_size(this.fs(10.5)).font_semibold().text_color(t.blocked).truncate()
           .cursor_pointer().hover((st) => st.opacity(0.8))
           .tooltip(`Inspect dependency chain · Waits on: ${c.waitingOn.join(", ")}`)
           .on_click((_e, cx) => { cx.stop_propagation(); this.selectChainCard(c.id, cx); })
-          .child(waitingLabel(c)));
+          .child(waitingLabel(c, "← Waits on")));
       }
       if ((c.blocksCount ?? 0) > 0) {
         const selected = this.selectedCardId === c.id && this.inspectorOpen;
@@ -1410,7 +1398,6 @@ export default class FmBoard extends View {
           .text_size(this.fs(10)).font_semibold().text_color(roleColor).child(roleLabel));
       }
       el.child(depRow);
-      if (this.chainOpen.has(`chain:${c.id}`)) el.child(this.chain(c, t));
     }
     // The same tint as the Live strip: the working color alone is too faint as text on a light theme.
     if (c.background) el.child(h_flex().id(`background-${c.id}`).gap(6).px(6).py(2).rounded(5).items_center().min_w(0)
@@ -1592,21 +1579,19 @@ export default class FmBoard extends View {
   focusCardFromInspector(id, cx) {
     this.selectedCardId = id;
     this.inspectorOpen = true;
-    const node = this.graph?.nodes?.get(id);
-    if (node && !node.missing) {
-      this.folded.delete(`card:${id}`);
-      if (node.column) this.collapsed.delete(node.column);
-      if (this.filter && node.project && this.filter !== node.project) this.filter = null;
-      this.scrollToCard(id);
+    const card = (this.cards ?? []).find((c) => c.id === id);
+    if (card) {
+      if (this.filter && this.filter !== card.project) this.filter = null;
+      if (this.query && !searchText(card).includes(this.query.toLowerCase())) this.clearSearch(cx);
+      this.revealed = new Set([`card:${id}`, card.column]);
+      if (card.decision?.topic) this.revealed.add(`group:${card.decision.topic}`);
+      this.scrollToCard(card);
     }
     cx.notify();
   }
 
-  /** @param {string} id */
-  scrollToCard(id) {
-    this.scrolledToCardId = id;
-    const card = (this.cards ?? []).find((c) => c.id === id);
-    if (!card) return;
+  scrollToCard(card) {
+    const id = card.id;
     const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
     try {
       if (stacked) {
@@ -1660,7 +1645,10 @@ export default class FmBoard extends View {
       .on_hover((hovered, cx) => this.hoverChainCard(id, hovered, cx))
       .on_click((_e, cx) => { cx.stop_propagation(); this.focusCardFromInspector(id, cx); });
     const topRow = h_flex().gap(5).items_center().min_w(0)
-      .child(this.projectBadge(node.project || "firstmate", t, `dep-tag-${id}`))
+      .child(node.missing
+        ? div().id(`dep-tag-${id}`).flex_none().px(4).py(1).rounded(9).border(1).border_color(t.border)
+          .text_size(this.fs(10)).text_color(t.muted).tooltip("Not on the board").child("unknown")
+        : this.projectBadge(node.project || "firstmate", t, `dep-tag-${id}`))
       .child(div().flex_1().min_w(0).truncate().text_size(this.fs(10.5)).font_semibold().text_color(t.muted).child(id))
       .child(div().flex_none().px(4).py(0.5).rounded(4).bg(stateColor + "22").text_size(this.fs(10)).font_semibold().text_color(stateColor).child(stateLabel));
     if (roleLabel) {
@@ -1737,16 +1725,11 @@ export default class FmBoard extends View {
     const legendDot = (label, color) => h_flex().flex_none().gap(4).items_center()
       .child(div().w(6).h(6).rounded(3).bg(color))
       .child(div().text_size(this.fs(10)).text_color(t.muted).child(label));
-    panel.child(h_flex().gap(8).items_center().justify_between().flex_wrap()
-      .child(h_flex().gap(8).items_center().flex_wrap()
-        .child(legendDot("Upstream", t.working))
-        .child(legendDot("Selected", t.accent))
-        .child(legendDot("Downstream", t.ansi6))
-        .children(metaBadges))
-      .when(Boolean(this.selectedCardId), (el) =>
-        el.child(this.button("dep-inspector-clear", "Clear selection", t, (cx) => {
-          this.selectedCardId = null; this.hoveredCardId = null; cx.notify();
-        }))));
+    panel.child(h_flex().gap(8).items_center().flex_wrap()
+      .child(legendDot("Upstream", t.working))
+      .child(legendDot("Selected", t.accent))
+      .child(legendDot("Downstream", t.ansi6))
+      .children(metaBadges));
     const dagList = v_flex().id("dep-inspector-levels").flex_1().min_h(0).gap(6).overflow_y_scrollbar();
     activeComp.levels.forEach((lg, idx) => {
       if (idx > 0) {
@@ -1996,7 +1979,7 @@ export default class FmBoard extends View {
 
   // One box per topic: the question and its options once, then every task it decides.
   group(topic, cards, t) {
-    const foldId = `group:${topic}`, folded = this.folded.has(foldId) && !this.query;
+    const foldId = `group:${topic}`, folded = this.folded.has(foldId) && !this.query && !this.revealed.has(foldId);
     const first = cards.find((c) => c.decision.options.length) ?? cards[0];
     const ids = cards.map((c) => c.id), question = first.decision.question || topic;
     const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(6).bg(t.raised).border(1).border_color(t.accent)
@@ -2107,7 +2090,7 @@ export default class FmBoard extends View {
   column(col, t, stacked) {
     const cards = this.cardsIn(col.id);
     // A collapsed column that holds a match opens while the search lasts.
-    const collapsed = this.collapsed.has(col.id) && !(this.query && cards.length);
+    const collapsed = this.collapsed.has(col.id) && !(this.query && cards.length) && !this.revealed.has(col.id);
     const header = h_flex().id(`head-${col.id}`).gap(6).items_center().cursor_pointer()
       .hover((s) => s.opacity(0.75))
       .on_click((_e, cx) => { if (!this.query) this.toggle(col.id, cx); })
@@ -2222,9 +2205,6 @@ export default class FmBoard extends View {
     const board = (stacked
       ? v_flex().id("board").when(Boolean(this.boardScroll), (e) => e.track_scroll(this.boardScroll)).overflow_y_scrollbar()
       : h_flex().id("board")).flex_1().min_h(0).gap(8);
-    if (narrowMod && wantInspector && activeComp) {
-      board.child(this.renderCompactInspector(activeComp, t));
-    }
     board.children(this.shownColumns().map((c) => this.column(c, t, stacked)));
     const root = v_flex().id("root").size_full().bg(t.canvas).px(8).pt(2.5).pb(3).gap(6)
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
@@ -2238,7 +2218,9 @@ export default class FmBoard extends View {
         .child(this.button("filter-clear", "Clear", t, (cx) => { this.filter = null; cx.notify(); })));
     }
     root.child(this.frame(v_flex().flex_1().min_h(0).gap(6), t)
-      .child(this.searchRow(t, matches)).child(board).child(this.footer(t)))
+      .child(this.searchRow(t, matches))
+      .when(narrowMod && wantInspector && Boolean(activeComp), (e) => e.child(this.renderCompactInspector(activeComp, t)))
+      .child(board).child(this.footer(t)))
       .child(this.commandSection(t));
     if (this.viewer.root) {
       this.splitWasOpen = true;

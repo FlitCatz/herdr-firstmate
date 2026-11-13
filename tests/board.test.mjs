@@ -560,6 +560,7 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
       "paused [at=1794539820]: Step 1 committed; awaiting maple-workshop release URL; details=/fictional/firstmate/data/maple-wire-eval/step2-preparation.md"),
     makeTask("korean-wait", "unknown", "harness state unavailable",
       "paused [at=1794541444] [key=final-local-ci]: 커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until 2020-01-02T04:40Z"),
+    makeTask("korean-wait-word", "paused", "", "paused [at=1]: 빌드 완료; 릴리스 태그 대기 중"),
     makeTask("missing-wait", "paused", "", "paused [at=1794541444]: "),
     makeTask("run-words", "paused", "", "paused [at=1]: validating run: 01M79GKB5X3AKE32E4AKZB9RKP resume when green; the nightly run: results due at 06:00"),
     makeTask("multi-line", "paused", "", "paused [at=1]: line1\nline2"),
@@ -578,10 +579,19 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
   // A PR named only in the wait reason is what the worker waits on, not the card's own PR.
   assert.equal(b.items.find((x) => x.id === "pr-ci-wait"), undefined);
 
-  const otherExpected = "Step 1 committed; awaiting maple-workshop release URL";
-  assert.equal(b.text("waiting-other-work"), `Waiting for: ${otherExpected}`);
+  const otherRow = b.items.find((x) => x.id === "waiting-other-work");
+  const otherFull = "Step 1 committed; awaiting maple-workshop release URL";
+  assert.equal(otherRow?.text, "Waiting for: awaiting maple-workshop release URL; Step 1 committed");
+  assert.deepEqual(otherRow?.calls.find((c) => c[0] === "tooltip"), ["tooltip", otherFull]);
 
-  assert.equal(b.text("waiting-korean-wait"), "Waiting for: 커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until 01-02 13:40");
+  const koRow = b.items.find((x) => x.id === "waiting-korean-wait");
+  const koFull = "커밋 368fb16 기준 로컬 CI 실행; 결과 반환 시 재개, until 01-02 13:40";
+  assert.equal(koRow?.text, "Waiting for: 결과 반환 시 재개, until 01-02 13:40; 커밋 368fb16 기준 로컬 CI 실행");
+  assert.deepEqual(koRow?.calls.find((c) => c[0] === "tooltip"), ["tooltip", koFull]);
+
+  const koWordRow = b.items.find((x) => x.id === "waiting-korean-wait-word");
+  assert.equal(koWordRow?.text, "Waiting for: 릴리스 태그 대기 중; 빌드 완료");
+  assert.deepEqual(koWordRow?.calls.find((c) => c[0] === "tooltip"), ["tooltip", "빌드 완료; 릴리스 태그 대기 중"]);
 
   assert.equal(b.items.find((x) => x.id === "waiting-missing-wait"), undefined);
 

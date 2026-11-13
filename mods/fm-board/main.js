@@ -341,6 +341,22 @@ function cleanPausedReason(text) {
   return out;
 }
 
+const WAITING_CLAUSE = /\b(?:awaiting|waiting\s+for|waits\s+on|until\s+(?:\d{2}-\d{2}\s+)?\d{2}:\d{2}|resume\s+(?:when|on|at))\b|대기|기다/i;
+
+// Moves any waiting/until/resume clause to the front so single-line truncation keeps what is waited on visible.
+/** @param {string} text @returns {string} */
+function prioritizeWaitingClause(text) {
+  if (!text) return "";
+  const sep = text.includes(";") ? ";" : text.includes(",") ? "," : null;
+  if (!sep) return text;
+  const parts = text.split(new RegExp(`\\s*${sep}\\s*`)).filter(Boolean);
+  if (parts.length < 2) return text;
+  const first = parts.filter((p) => WAITING_CLAUSE.test(p));
+  if (!first.length || first.length === parts.length) return text;
+  const rest = parts.filter((p) => !WAITING_CLAUSE.test(p));
+  return [...first, ...rest].join(`${sep} `);
+}
+
 // The PR URL in Firstmate's detail, which it adds when the worker never reported one.
 function detailPr(detail) {
   const parts = (detail ?? "").split(" · ").map((p) => p.trim());
@@ -1125,7 +1141,7 @@ export default class FmBoard extends View {
     if (c.waitingFor && !inGroup) {
       el.child(h_flex().id(`waiting-${c.id}`).gap(4).items_center().min_w(0).tooltip(c.waitingFor)
         .child(div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.muted).child("Waiting for:"))
-        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim).child(c.waitingFor)));
+        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim).child(prioritizeWaitingClause(c.waitingFor))));
     } else if (c.detail && !inGroup) {
       el.child(div().text_size(this.fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
     }

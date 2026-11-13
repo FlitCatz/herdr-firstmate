@@ -1742,7 +1742,8 @@ export default class FmBoard extends View {
       const levelBox = v_flex().id(`dep-level-${lg.level}`).gap(5).p(6).rounded(6).bg(t.surface).border(1).border_color(t.border)
         .child(h_flex().gap(6).items_center().flex_wrap()
           .child(div().flex_none().px(5).py(0.5).rounded(4).bg(t.selected).text_size(this.fs(10)).font_semibold().text_color(t.foreground).child(`L${lg.level}`))
-          .child(div().flex_1().min_w(0).text_size(this.fs(10.5)).text_color(t.muted).child(levelRole))
+          // No min_w(0): the role keeps its words' width, so a long badge wraps to the next line instead.
+          .child(div().flex_1().text_size(this.fs(10.5)).text_color(t.muted).child(levelRole))
           .when(lg.hasCrossProject, (el) => el.child(div().flex_none().px(4).py(0.5).rounded(4).bg(t.blocked + "20")
             .text_size(this.fs(9.5)).font_semibold().text_color(t.blocked)
             .child(lg.crossProjectEdges.map((e) => `${e.fromProject} → ${e.toProject}`).join(", "))))
@@ -2181,9 +2182,13 @@ export default class FmBoard extends View {
     const activeComp = this.highlight?.selectedComponent ?? (this.inspectorOpen ? (this.highlight?.component ?? this.graph.components[0] ?? null) : null);
     // The cards drawn below record which worker screens are worth reading.
     this.shownTerminals = new Set();
-    const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
-    const modWidth = (this.size?.width ?? Infinity) + (this.splitWasOpen ? (this.rightSplitWidth || this.inspectorWidth()) : 0);
-    const narrowMod = modWidth < STACK_BELOW_PX;
+    const boardWidth = this.size?.width ?? Infinity;
+    const stacked = boardWidth < STACK_BELOW_PX;
+    const modWidth = boardWidth + (this.splitWasOpen ? (this.rightSplitWidth || this.inspectorWidth(boardWidth)) : 0);
+    // The inspector takes the split only if the Board half it leaves still draws unstacked
+    // columns; otherwise it is the compact card. Judged on the whole width, so dragging the
+    // divider keeps the split and the Board half just stacks.
+    const narrowMod = modWidth - this.inspectorWidth(modWidth) < STACK_BELOW_PX;
     const matches = this.query ? this.matchIds() : [];
     this.currentMatch = matches.length ? matches[this.matchAt % matches.length] : null;
     const board = (stacked
@@ -2223,7 +2228,7 @@ export default class FmBoard extends View {
       this.splitWasOpen = true;
       return h_resizable("board-viewer-split").size_full().bg(t.canvas)
         .child(resizable_panel().size_range(280).child(root))
-        .child(resizable_panel().size(this.inspectorWidth()).size_range(260)
+        .child(resizable_panel().size(this.inspectorWidth(modWidth)).size_range(260)
           .child(div().id("inspector-wrap").size_full().pl(4).pr(8).pt(2.5).pb(3)
             .on_size_change((size, cx) => { this.rightSplitWidth = size.width; cx.notify(); })
             .child(this.renderInspector(activeComp, t))));
@@ -2240,8 +2245,8 @@ export default class FmBoard extends View {
     return w ? Math.max(420, Math.round(w / 2)) : 560;
   }
 
-  inspectorWidth() {
-    const w = this.size?.width;
-    return w ? Math.max(320, Math.min(440, Math.round(w * 0.34))) : 360;
+  /** @param {number} w the Board's whole width, split included */
+  inspectorWidth(w) {
+    return Number.isFinite(w) ? Math.max(320, Math.min(440, Math.round(w * 0.34))) : 360;
   }
 }

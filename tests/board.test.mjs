@@ -989,6 +989,58 @@ test("the Inspector toggle shows the no-chains message on wide and narrow boards
   }
 });
 
+test("the inspector opens in the split only when the Board half beside it stays unstacked", async () => {
+  const records = [
+    { id: "A1", state: "queued", repo: "maple-workshop", title: "A1 Root", structured: true, unresolved_blocker_ids: [] },
+    { id: "A2", state: "queued", repo: "maple-workshop", title: "A2 Waits", structured: true, unresolved_blocker_ids: ["A1"] },
+  ];
+  const b = await board({ snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  const STACK_BELOW = 720; // the README's narrow-board threshold
+  // The width the split's right panel opens at, read from the drawn panel that holds the inspector
+  // in the opening frame (this stand-in never measures the two halves, as Herdr would next).
+  const panelWidth = () => {
+    b.view.splitWasOpen = false;
+    const find = (kid) => {
+      if (!kid || typeof kid !== "object") return null;
+      if (kid.node.kids.some((k) => k?.node?.id === "inspector-wrap")) return kid.node;
+      for (const k of kid.node.kids) { const hit = find(k); if (hit) return hit; }
+      return null;
+    };
+    return find(b.view.render({ notify() {} }))?.calls.find((c) => c[0] === "size")?.[1];
+  };
+  // 767px is where the split once drew ~40px-wide unstacked columns beside the inspector.
+  for (const width of [767, 900, 1000, 1080, 1100, 1280, 1600]) {
+    b.view.size = { width, height: 800 };
+    b.view.splitWasOpen = false;
+    b.view.rightSplitWidth = 0;
+    b.redraw();
+    b.click("dep-inspector-toggle");
+    if (b.ids.includes("inspector-wrap")) {
+      assert.ok(!b.ids.includes("dep-inspector-compact"));
+      assert.ok(width - panelWidth() >= STACK_BELOW, `split at ${width}px leaves the Board ${width - panelWidth()}px`);
+    } else {
+      assert.ok(b.ids.includes("dep-inspector-compact"), `no inspector drawn at ${width}px`);
+      assert.ok(!b.items.find((x) => x.id === "board").calls.some((c) => c[0] === "track_scroll"), `compact board at ${width}px keeps its columns side by side`);
+    }
+    if (width === 767) assert.ok(b.ids.includes("dep-inspector-compact"), "767px uses the compact card");
+    if (width >= 1280) assert.ok(b.ids.includes("inspector-wrap"), `${width}px uses the split`);
+    b.click("dep-inspector-close");
+  }
+
+  // Dragging the divider keeps the split; the Board half stacks once it measures below the threshold.
+  b.view.size = { width: 1280, height: 800 };
+  b.view.splitWasOpen = false;
+  b.view.rightSplitWidth = 0;
+  b.redraw();
+  b.click("dep-inspector-toggle");
+  b.view.size = { width: 600, height: 800 };
+  b.view.rightSplitWidth = 680;
+  b.redraw();
+  assert.ok(b.ids.includes("inspector-wrap"));
+  assert.ok(!b.ids.includes("dep-inspector-compact"));
+  assert.ok(b.items.find((x) => x.id === "board").calls.some((c) => c[0] === "track_scroll"), "the dragged-narrow Board half stacks");
+});
+
 test("an inspector node for a blocker that is not on the board gets a neutral tag", async () => {
   const records = [
     { id: "X1", state: "queued", repo: "maple-workshop", title: "X1 Waits on ghost", structured: true, unresolved_blocker_ids: ["ghost-task"] },

@@ -891,7 +891,7 @@ export default class FmBoard extends View {
   // Goes through env so a test home never reaches the real inbox.
   fm(script, args, opts) {
     const root = home();
-    return exec("/usr/bin/env", [`FM_HOME=${root}`, `${root}/bin/${script}`, ...args], { cwd: root, timeout: FM_EXEC_TIMEOUT_MS, ...opts });
+    return exec("/usr/bin/env", [`FM_HOME=${root}`, `${root}/bin/${script}`, ...args], { cwd: root, ...opts });
   }
 
   refresh(cx, { force = false } = {}) {
@@ -916,24 +916,22 @@ export default class FmBoard extends View {
         const snapshot = await this.loadSnapshot();
         if (!isCurrent()) return;
         if (snapshot.schema !== "fm-fleet-snapshot.v1") throw new Error(`unknown schema ${snapshot.schema}`);
-        await this.readCoreStatus(snapshot, isCurrent);
+        await this.readCoreStatus(snapshot);
         if (!isCurrent()) return;
-        const cards = cardsFrom(snapshot);
-        const generated = snapshot.generated ?? "";
+        this.cards = cardsFrom(snapshot);
+        this.generated = snapshot.generated ?? "";
         const projects = parseRegistry(await readTextFile(`${home()}/data/projects.md`));
         if (!isCurrent()) return;
+        this.projects = projects;
+        // An empty registry is more likely a bad read than every project removed, so it frees nothing.
+        if (this.projects.length) this.updateColors([], new Set(this.projectNames()));
         const inbox = await this.loadInbox(isCurrent);
         if (!isCurrent()) return;
-        this.cards = cards;
-        this.generated = generated;
-        this.projects = projects;
         if (inbox.requests !== undefined) this.requests = inbox.requests;
         this.ready = inbox.ready;
         this.beat = inbox.beat;
         this.watchers = inbox.watchers;
         this.error = null;
-        // An empty registry is more likely a bad read than every project removed, so it frees nothing.
-        if (this.projects.length) this.updateColors([], new Set(this.projectNames()));
       } catch (e) {
         if (!isCurrent()) return;
         this.error = String(e?.message ?? e); // keep the last good board on screen
@@ -946,32 +944,31 @@ export default class FmBoard extends View {
     });
   }
 
-  async readCoreStatus(snapshot, isCurrent = () => true) {
-    for (const task of snapshot.tasks ?? []) {
-      if (!isCurrent()) return;
-      if (task.backend !== "hc" || task.current_state?.state !== "unknown") continue;
+  async readCoreStatus(snapshot) {
+    await Promise.all((snapshot.tasks ?? []).map(async (task) => {
+      if (task.backend !== "hc" || task.current_state?.state !== "unknown") return;
       const address = hcAddress(task);
-      if (!address) continue;
+      if (!address) return;
       const r = await exec("hc", ["get", address, "--json"], { timeout: CORE_STATUS_TIMEOUT_MS });
-      if (r.code !== 0) continue;
+      if (r.code !== 0) return;
       const terminal = JSON.parse(r.stdout);
       // An address can be reused, so the terminal must still carry this task's label.
       if (terminal.labels?.["firstmate.task"] === `fm-${task.id}`) task.core_status = terminal.status?.state;
-    }
+    }));
   }
 
   async loadSnapshot() {
     const file = props()?.snapshot_file;
     if (file) return JSON.parse(await readTextFile(file));
-    const r = await this.fm("fm-fleet-snapshot.sh", ["--json"]);
+    const r = await this.fm("fm-fleet-snapshot.sh", ["--json"], { timeout: FM_EXEC_TIMEOUT_MS });
     if (r.code !== 0) throw new Error(r.stderr.trim() || `snapshot exited ${r.code}`);
     return JSON.parse(r.stdout);
   }
 
-  async loadInbox(isCurrent = () => true) {
-    const receipts = await this.fm("fm-inbox.sh", ["receipts", "--all-pending"]);
+  async loadInbox(isCurrent) {
+    const receipts = await this.fm("fm-inbox.sh", ["receipts", "--all-pending"], { timeout: FM_EXEC_TIMEOUT_MS });
     if (!isCurrent()) return null;
-    const ready = await this.fm("fm-inbox.sh", ["ready"]);
+    const ready = await this.fm("fm-inbox.sh", ["ready"], { timeout: FM_EXEC_TIMEOUT_MS });
     if (!isCurrent()) return null;
     let requests;
     if (receipts.code === 0) {
@@ -2187,15 +2184,18 @@ export default class FmBoard extends View {
   footer(t) {
     const text = (value) => div().min_w(0).text_size(this.fs(11)).text_color(t.dim).truncate().child(value);
     const right = h_flex().flex_none().gap(6).items_center().min_w(0);
-    if (this.error && !this.loading) right.child(text(this.error)).child(this.badge("Update failed", t.ansi1));
-    else if (!this.cards) right.child(text("Loading"));
+    const refreshNow = (e) => e.cursor_pointer().hover((s) => s.opacity(0.75))
+      .tooltip("Click to refresh now")
+      .on_click((_e, cx) => this.refresh(cx, { force: true }));
+    if (this.error && !this.loading) {
+      right.child(refreshNow(h_flex().id("refresh").gap(6).items_center().min_w(0)
+        .child(text(this.error)).child(this.badge("Update failed", t.ansi1))));
+    } else if (!this.cards) right.child(text("Loading"));
     else {
       if (this.notice) right.child(text(`${this.notice} ·`));
       const updated = div().id("refresh").min_w(0).text_size(this.fs(11)).text_color(t.dim).truncate()
         .child(this.loading ? "Refreshing…" : `Updated ${koreaTime(this.generated)}`)
-        .when(!this.loading, (e) => e.cursor_pointer().hover((s) => s.opacity(0.75))
-          .tooltip("Click to refresh now")
-          .on_click((_e, cx) => this.refresh(cx, { force: true })));
+        .when(!this.loading, refreshNow);
       right.child(updated);
       if (this.ready !== null) right.child(this.ready ? this.badge("Receiving", t.ansi2) : this.badge("Not receiving", t.working));
     }

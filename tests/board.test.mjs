@@ -2354,6 +2354,28 @@ test("Chains keeps every port of a heavily blocked card on the card's edge", asy
   assert.equal(assertCleanRouting(b, layout, "six blockers"), 0);
 });
 
+test("Chains keeps a join's arrowheads apart even when a card elsewhere in the lane unblocks many", async () => {
+  const b = await board();
+  const { cardsFrom, dependencyGraph, placeChainLane, CHAIN_HEAD_H } = b;
+  const fan = ["D1", "D2", "D3", "D4", "D5", "D6", "D7"];
+  const g = dependencyGraph(cardsFrom({
+    backlog: {
+      records: [
+        { id: "H", state: "queued", repo: "maple-workshop", title: "H", structured: true, unresolved_blocker_ids: [] },
+        ...fan.map((id) => ({ id, state: "queued", repo: "maple-workshop", title: id, structured: true, unresolved_blocker_ids: ["H"] })),
+        { id: "J", state: "queued", repo: "maple-workshop", title: "J", structured: true, unresolved_blocker_ids: ["D1", "D2"] },
+      ],
+    },
+  }));
+  const layout = placeChainLane(g.components[0], g.nodes);
+  assert.equal(layout.grid[0][2], "J");
+  // Two 9px arrowheads into J must not share a pixel row, however many lines leave H.
+  const joinPorts = layout.edges.filter((e) => e.v === "J").map((e) => e.p2).sort((x, y) => x - y);
+  assert.equal(joinPorts.length, 2);
+  assert.ok(joinPorts[1] - joinPorts[0] >= CHAIN_HEAD_H, `J's ports ${joinPorts}`);
+  assertCleanRouting(b, layout, "hub and join");
+});
+
 test("Chains connector lines, arrowheads, and elbows obey all alignment rules in wide and narrow views across selection states", async () => {
   // Exercises all 4 elbow directions (tr, bl, br, tl), multi-port joins (18, 34, 50),
   // cross-project dashed links, pass-through cells, and narrow stepper branch heads.

@@ -877,7 +877,9 @@ function placeChainLane(comp, nodesMap) {
   // Port slot j holds an in-port at its top and an out-port half a slot lower, so a line turning
   // out of a card never shares a height with another line turning into the card beside it. An
   // edge straight across its row uses its target's in-port at both ends, placed below every
-  // out-port its source lists before it.
+  // out-port its source lists before it. Lines only meet across a gutter row between a card's
+  // out-ports and the in-ports of the next card to its right on that row, so each such pair
+  // shares one slot size, sized to fit both, and a busy card elsewhere never squeezes them.
   const straight = (e) => e.chanRow === null && pos.get(e.u).r === pos.get(e.v).r;
   const inSlot = new Map(), outSlot = new Map(), minSlot = new Map();
   for (const list of outs.values()) list.forEach((e, i) => { if (straight(e)) minSlot.set(e, i); });
@@ -896,10 +898,21 @@ function placeChainLane(comp, nodesMap) {
       else outSlot.set(e, next++);
     }
   }
-  const deepest = Math.max(1, ...inSlot.values(), ...Array.from(outSlot.values(), (i) => i + 0.5));
-  const step = Math.min(CHAIN_PORT_STEP, Math.floor((CHAIN_PORT_MAX - CHAIN_PORT_TOP) / deepest));
+  const leftOf = new Map(), rightOf = new Map();
+  for (const row of grid) {
+    let prev = null;
+    for (const id of row.filter(Boolean)) {
+      if (prev) { leftOf.set(id, prev); rightOf.set(prev, id); }
+      prev = id;
+    }
+  }
+  const deepOut = (id) => Math.max(0, ...(outs.get(id) ?? []).filter((e) => outSlot.has(e)).map((e) => outSlot.get(e) + 0.5));
+  const deepIn = (id) => Math.max(0, ...(ins.get(id) ?? []).map((e) => inSlot.get(e)));
+  const pairStep = (left, right) => Math.min(CHAIN_PORT_STEP, Math.floor((CHAIN_PORT_MAX - CHAIN_PORT_TOP)
+    / Math.max(1, left ? deepOut(left) : 0, right ? deepIn(right) : 0)));
   for (const e of edges) {
-    e.p2 = CHAIN_PORT_TOP + step * inSlot.get(e);
+    e.p2 = CHAIN_PORT_TOP + pairStep(leftOf.get(e.v), e.v) * inSlot.get(e);
+    const step = pairStep(e.u, rightOf.get(e.u));
     e.p1 = straight(e) ? e.p2 : CHAIN_PORT_TOP + step * outSlot.get(e) + Math.floor(step / 2);
   }
   // Vertical positions comparable across rows; a detour lane lies below every port of its row.

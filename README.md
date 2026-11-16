@@ -15,6 +15,7 @@ To add it using Herdr's sharing steps:
 
 Card headers fold and unfold; their Ask icons and held decisions' options prepare editable chat input as described in [RECIPE.md](RECIPE.md#how-it-behaves).
 The Held column groups its cards under the headings `Answer now`, `Deferred` (with a card's `until` date when it has one), and `Waiting on other work`.
+There is no Failed column: a task whose worker reported `failed:` is drawn in the Blocked column with a red `Failed` label and a red border.
 A card lists every decision its worker still has open, and answering one from the card names its key in the draft so Firstmate can close exactly that decision.
 Cards whose worker has its own copy of the project open it in the Files and Changes viewer with a `Files · Changes` button.
 Cards with a live worker terminal end in a separate Live strip with Open worker and Peek icons, where Peek opens that terminal over the current tab, and the last lines of the worker's screen, refreshed every few seconds.

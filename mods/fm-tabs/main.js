@@ -12,10 +12,12 @@ function find(node, id) {
 }
 
 // Same as the agents mod: drops a status glyph, keeps a leading bracket or quote.
+/** @param {string | null | undefined} s @returns {string} */
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}\p{Ps}\p{Pi}]+/u, "").replace(/^\[ [!.] \] /, "").trim();
 
 // A tab Herdr named (unnamed, or after its program) follows its agent's live
 // title, as the agents list does; a name the person gave stays.
+/** @param {import("herdr").TabInfo} tab @param {import("herdr").PaneInfo | undefined} lead @returns {string} */
 function label(tab, lead) {
   const prog = lead?.program?.name;
   const base = tab.named ? tab.name : prog ?? "Terminal";
@@ -42,6 +44,7 @@ export default class Tabs extends View {
   // small events per gesture: a short swipe or one smoothed notch (about
   // 25 px) switches one tab, a longer swipe keeps going a tab per 60 px, at
   // most one every 100 ms so each shows.
+  /** @param {import("gpui-kit").ScrollWheelEvent} e */
   wheel(e) {
     if (e.delta_lines) {
       if (e.delta_lines.y) run(e.delta_lines.y > 0 ? "tab.prev" : "tab.next");
@@ -96,6 +99,7 @@ export default class Tabs extends View {
     const active = shown.findIndex(tab => tab.active);
     const selected = shown[active]?.id;
     if (selected !== this.selected || active !== this.selectedIndex) {
+      /** @type {string | undefined} */
       this.selected = selected;
       this.selectedIndex = active;
       if (active >= 0) this.scroll.scroll_to_item(active);

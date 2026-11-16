@@ -691,7 +691,8 @@ function compareChainBranch(aId, aLen, bId, bLen, nodesMap, order, levelOf) {
 }
 
 // Splits a connected component into its longest forward path (main spine) and remaining
-// side-branch columns grouped by topological level. Follows strictly increasing levels so cycles never loop.
+// side-branch columns grouped by topological level, plus the per-level steps the narrow stepper
+// draws with spine nodes first. Follows strictly increasing levels so cycles never loop.
 function chainSpineLayout(comp, nodesMap) {
   const levelOf = new Map();
   for (const lg of comp?.levels ?? []) {
@@ -739,10 +740,15 @@ function chainSpineLayout(comp, nodesMap) {
     const nodes = lg.nodes.filter((n) => !spineSet.has(n.id));
     if (nodes.length) branchColumns.push({ level: lg.level, nodes });
   }
+  const steps = (comp?.levels ?? []).map((lg) => ({
+    level: lg.level,
+    nodes: [...lg.nodes].sort((a, b) => Number(spineSet.has(b.id)) - Number(spineSet.has(a.id))),
+  }));
   return {
     spine: spineIds.map((id) => nodesMap.get(id)).filter(Boolean),
     spineSet,
     branchColumns,
+    steps,
   };
 }
 
@@ -2174,20 +2180,20 @@ export default class FmBoard extends View {
     if (stacked) {
       const stepper = v_flex().id(`chain-stepper-${comp.id}`).gap(0).pl(4);
       const lineActive = this.highlight?.selectedComponent?.id === comp.id;
-      comp.levels.forEach((lg, stepIdx) => {
-        const orderedNodes = [...lg.nodes].sort((a, b) => Number(layout.spineSet.has(b.id)) - Number(layout.spineSet.has(a.id)));
+      layout.steps.forEach((step, stepIdx) => {
+        const orderedNodes = step.nodes;
         const hasWorking = orderedNodes.some((n) => n.column === "working");
         const hasSelected = orderedNodes.some((n) => n.id === this.selectedCardId);
         const hasBlocked = orderedNodes.some((n) => n.column === "blocked" || n.column === "parked" || (n.waitingIds?.length ?? 0) > 0);
         const dotColor = hasSelected ? t.accent : hasWorking ? t.working : hasBlocked ? t.blocked : t.muted;
         const rail = v_flex().w(14).flex_none().items_center()
           .child(div().w(10).h(10).rounded(5).mt(8).flex_none().bg(dotColor))
-          .when(stepIdx < comp.levels.length - 1, (e) =>
+          .when(stepIdx < layout.steps.length - 1, (e) =>
             e.child(div().w(2).flex_1().min_h(12).bg(lineActive ? t.accent : t.border)));
         const stepCards = v_flex().flex_1().min_w(0).gap(4)
-          .when(stepIdx < comp.levels.length - 1, (e) => e.pb(6))
+          .when(stepIdx < layout.steps.length - 1, (e) => e.pb(6))
           .children(orderedNodes.map((n) => this.renderChainNode(n, comp, t, true)));
-        stepper.child(h_flex().id(`chain-step-${comp.id}-${lg.level}`).gap(8).items_stretch()
+        stepper.child(h_flex().id(`chain-step-${comp.id}-${step.level}`).gap(8).items_stretch()
           .child(rail).child(stepCards));
       });
       lane.child(stepper);
@@ -2529,10 +2535,12 @@ export default class FmBoard extends View {
   matchIds() {
     if (this.viewMode === "chains") {
       const q = this.query.toLowerCase();
+      const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
       const ids = [];
       for (const comp of this.visibleChains()) {
-        const { spine, branchColumns } = chainSpineLayout(comp, this.graph.nodes);
-        for (const n of [...spine, ...branchColumns.flatMap((col) => col.nodes)]) {
+        const { spine, branchColumns, steps } = chainSpineLayout(comp, this.graph.nodes);
+        const drawn = stacked ? steps.flatMap((step) => step.nodes) : [...spine, ...branchColumns.flatMap((col) => col.nodes)];
+        for (const n of drawn) {
           if (!n.missing && n.column !== "done" && searchText(n).includes(q)) ids.push(n.id);
         }
       }

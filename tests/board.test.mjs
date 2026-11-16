@@ -1209,6 +1209,31 @@ test("Chains spine arrows light up only along the focused task's upstream and do
   assert.deepEqual(spine(), [true, true, true], "C sits on the spine, so every spine arrow is on its path");
 });
 
+test("Chains search steps through matches in the order each layout draws them", async () => {
+  // Spine R0 -> L1 -> L2; side task B1 waits on R0.
+  const records = [
+    { id: "R0", state: "queued", repo: "maple-workshop", title: "Pathfind root", structured: true, unresolved_blocker_ids: [] },
+    { id: "L1", state: "queued", repo: "maple-workshop", title: "Pathfind long 1", structured: true, unresolved_blocker_ids: ["R0"] },
+    { id: "L2", state: "queued", repo: "maple-workshop", title: "Pathfind long 2", structured: true, unresolved_blocker_ids: ["L1"] },
+    { id: "B1", state: "queued", repo: "maple-workshop", title: "Pathfind branch", structured: true, unresolved_blocker_ids: ["R0"] },
+  ];
+  const b = await board({ ui: { viewMode: "chains" }, snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  const drawnNodes = () => b.ids.filter((id) => id.startsWith("chain-node-")).map((id) => id.slice("chain-node-".length));
+  b.view.search.set_value("pathfind");
+  b.click("search-find");
+
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  assert.deepEqual(Array.from(b.view.matchIds()), ["R0", "L1", "L2", "B1"], "wide: spine track, then the side-branch track");
+  assert.deepEqual(Array.from(b.view.matchIds()), drawnNodes());
+
+  b.view.size = { width: 520, height: 800 };
+  b.redraw();
+  assert.ok(b.ids.includes("chain-stepper-chain-1"));
+  assert.deepEqual(Array.from(b.view.matchIds()), ["R0", "L1", "B1", "L2"], "narrow: step by step, top to bottom");
+  assert.deepEqual(Array.from(b.view.matchIds()), drawnNodes());
+});
+
 test("Chains view supports folding lanes, highlighting & opening card detail, vertical stepper <720px, Independent drawer, and search", async () => {
   const store = memoryStore();
   const b = await board({ store });

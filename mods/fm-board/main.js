@@ -2347,7 +2347,7 @@ export default class FmBoard extends View {
   /** @param {Record<string, `#${string}`>} t */
   renderChainLegend(t) {
     const item = (label, color, dashed = false) => h_flex().gap(6).items_center()
-      .child(div().w(16).h(0).border_t(1).border_color(color).when(dashed, (e) => e.border_dashed()))
+      .child(div().w(16).h(2).border_t(1).border_color(color).when(dashed, (e) => e.border_dashed()))
       .child(div().text_size(this.fs(10.5)).text_color(t.muted).child(label));
     return h_flex().id("chain-legend").flex_none().gap(16).items_center().px(4).flex_wrap()
       .child(item("upstream", t.working))
@@ -2372,8 +2372,10 @@ export default class FmBoard extends View {
       .border_color(c)
       .when(spec.dashed, (el) => el.border_dashed())
       .when(o < 1, (el) => el.opacity(o));
-    if (spec.kind === "hbar") return placed.left(spec.left).right(spec.right).h(0).border_t(1);
-    if (spec.kind === "vbar") return placed.left(spec.left).w(0).when(spec.h != null, (el) => el.h(spec.h)).border_l(1);
+    // Herdr paints no border on a box with no room inside it, so a 0px or 1px bar would draw nothing.
+    // Each bar is a 2px box whose 1px border is the line; it stays a border so cross-project lines can dash.
+    if (spec.kind === "hbar") return placed.left(spec.left).right(spec.right).h(2).border_t(1);
+    if (spec.kind === "vbar") return placed.left(spec.left).w(2).when(spec.h != null, (el) => el.h(spec.h)).border_l(1);
     const el = placed.left(spec.left).w(spec.w).h(spec.h);
     if (spec.cornerKind === "tr") return el.border_t(1).border_r(1).rounded_tr(CHAIN_R);
     if (spec.cornerKind === "bl") return el.border_b(1).border_l(1).rounded_bl(CHAIN_R);
@@ -2537,11 +2539,11 @@ export default class FmBoard extends View {
         const pos = layout.spineIds.indexOf(s.n.id);
         if (pos > 0) {
           const { c, o } = segColor(pos - 1);
-          rail.child(div().absolute().left(RX).top(0).h(14).w(0).border_l(1).border_color(c).when(o < 1, (e) => e.opacity(o)));
+          rail.child(div().absolute().left(RX).top(0).h(14).w(2).border_l(1).border_color(c).when(o < 1, (e) => e.opacity(o)));
         }
         if (pos < layout.spineIds.length - 1 || !isLastRow) {
           const { c, o } = pos < layout.spineIds.length - 1 ? segColor(pos) : { c: t.dim, o: 1 };
-          rail.child(div().absolute().left(RX).top(22).bottom(0).w(0).border_l(1).border_color(c).when(o < 1, (e) => e.opacity(o)));
+          rail.child(div().absolute().left(RX).top(22).bottom(0).w(2).border_l(1).border_color(c).when(o < 1, (e) => e.opacity(o)));
         }
         const [, statusColor] = this.nodeStatus(s.n, t, true);
         const rc = chainRoleColor(laneRoles?.get(s.n.id) ?? null, t);
@@ -2551,13 +2553,13 @@ export default class FmBoard extends View {
         const nextSpineIdx = layout.spineIds.findIndex((id) => (layout.levelOf.get(id) ?? 0) > s.lv);
         const { c: railC, o: railO } = nextSpineIdx > 0 ? segColor(nextSpineIdx - 1) : { c: t.dim, o: 1 };
         if (!isLastRow) {
-          rail.child(div().absolute().left(RX).top(0).bottom(0).w(0).border_l(1).border_color(railC).when(railO < 1, (e) => e.opacity(railO)));
+          rail.child(div().absolute().left(RX).top(0).bottom(0).w(2).border_l(1).border_color(railC).when(railO < 1, (e) => e.opacity(railO)));
         } else {
-          rail.child(div().absolute().left(RX).top(0).h(18).w(0).border_l(1).border_color(railC).when(railO < 1, (e) => e.opacity(railO)));
+          rail.child(div().absolute().left(RX).top(0).h(18).w(2).border_l(1).border_color(railC).when(railO < 1, (e) => e.opacity(railO)));
         }
         const cross = isCross(s.n);
         const rc = chainRoleColor(laneRoles?.get(s.n.id) ?? null, t) ?? t.dim;
-        rail.child(div().absolute().top(18).left(RX).right(0).h(0).border_t(1).border_color(rc)
+        rail.child(div().absolute().top(18).left(RX).right(0).h(2).border_t(1).border_color(rc)
           .when(cross, (e) => e.border_dashed()));
       }
 
@@ -2567,7 +2569,7 @@ export default class FmBoard extends View {
         const cross = isCross(s.n);
         const rc = chainRoleColor(laneRoles?.get(s.n.id) ?? null, t) ?? t.dim;
         content.child(div().id(`chain-stepper-conn-${s.n.id}`).relative().w(20).flex_none().when(dimLane, (e) => e.opacity(0.45))
-          .child(div().id(`chain-stepper-edge-${s.n.id}-line`).absolute().top(j.lineTop).left(0).right(j.headW).h(0)
+          .child(div().id(`chain-stepper-edge-${s.n.id}-line`).absolute().top(j.lineTop).left(0).right(j.headW).h(2)
             .border_t(1).border_color(rc).when(cross, (e) => e.border_dashed()))
           .child(svg("mods/fm-board/arrow-head.svg").id(`chain-stepper-edge-${s.n.id}-head`).absolute()
             .right(0).top(j.headTop).w(j.headW).h(j.headH).text_color(rc)));

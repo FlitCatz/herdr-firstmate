@@ -2781,6 +2781,9 @@ export default class FmBoard extends View {
     this.monoFont = String(settings()?.font_family ?? "JetBrains Mono");
     this.graph = dependencyGraph(this.cards ?? []);
     this.highlight = chainHighlight(this.graph, this.selectedCardId, this.hoveredCardId);
+    // Hover may only change colors (`highlight`); anything that changes size or position (border
+    // widths, role pills, the inspector's chain) follows the selection only (`pinned`). Otherwise a
+    // hovered element shifts under a still pointer and GPUI's paint-time hover test loops every frame.
     this.pinned = chainHighlight(this.graph, this.selectedCardId, null);
     const activeComp = this.pinned?.selectedComponent ?? (this.inspectorOpen ? (this.graph.components[0] ?? null) : null);
     // The cards drawn below record which worker screens are worth reading.

@@ -627,6 +627,43 @@ test("Scout and Task still go through the firstmate terminal path, not a Memo no
   assert.ok(!p.notes().some((n) => n.at(-1).includes("[Board memo]")));
 });
 
+test("a failed task is drawn in Blocked with a red Failed label, an ordinary blocked task has none, and no Failed column exists", async () => {
+  const makeTask = (id, state, blockedEvent, lastEvent) => ({
+    id, kind: "ship", project: `${HOME}/projects/orchard-atlas`, branch: `fm/${id}`, harness: "claude", backend: "hc",
+    mode: "no-mistakes", yolo: false, spawn_gen: "s1", remote: "origin", secondmate_projects: [],
+    paths: { home: HOME, meta: "", status_log: "", worktree: { path: "", present: false }, report: { path: "", present: false } },
+    current_state: { state, source: "status_log", detail: "tests did not pass", raw: "", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+    endpoint: { target: null, exists: false, agent_alive: "not_checked", status: "absent", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+    pr: { url: null, source: "absent", head: null },
+    hints: { pending_decision: false, blocked_event: blockedEvent, open_decisions: [], scout_report_present: false, last_event_text: lastEvent },
+    actions: { watch: "", steer: "", return_channel_note: null },
+    backlog: { id, state: "in_flight", kind: "ship", repo: "orchard-atlas", title: id },
+  });
+  const tasks = [
+    makeTask("broke-build", "failed", false, "failed [at=1]: tests did not pass"),
+    makeTask("needs-file", "blocked", true, "blocked [at=1]: waiting for a file"),
+  ];
+  const b = await board({
+    theme: { ansi1: "#cc0000" },
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records: tasks.map((x) => ({ id: x.id, state: "in_flight", kind: "ship", repo: "orchard-atlas", title: x.id, structured: true })) } },
+  });
+  const card = (id) => b.view.cards.find((c) => c.id === id);
+  assert.equal(card("broke-build").column, "blocked");
+  assert.equal(card("needs-file").column, "blocked");
+  // The card keeps its detail text, and the label is the theme's red.
+  assert.equal(card("broke-build").detail, "tests did not pass");
+  const label = b.items.find((x) => x.id === "failed-broke-build");
+  assert.equal(label?.text, "Failed");
+  assert.ok(label.calls.some((c) => c[0] === "text_color" && c[1] === "#cc0000"));
+  assert.equal(b.items.find((x) => x.id === "failed-needs-file"), undefined);
+  // A failed card also has a red border; an ordinary blocked card keeps the plain one.
+  const border = (id) => b.items.find((x) => x.id === `card-${id}`).calls.find((c) => c[0] === "border_color")?.[1];
+  assert.equal(border("broke-build"), "#cc0000");
+  assert.equal(border("needs-file"), "#808080");
+  assert.ok(b.ids.includes("col-blocked"));
+  assert.ok(!b.ids.includes("col-failed"));
+});
+
 // Asia/Seoul is UTC+9 all year, so an instant at 03:50Z reads 12:50 there on the same date.
 test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-work, Korean, and nothing when missing", async (t) => {
   const tz = process.env.TZ;

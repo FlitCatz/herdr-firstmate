@@ -26,14 +26,15 @@ The active tab has a close control, the plus button opens Herdr's new menu, and 
 
 The panel buttons select or hide their panel; the chosen panel is remembered per space.
 
-Todo, Queued, Working, Done, and Failed columns always appear.
+Todo, Queued, Working, and Done columns always appear.
 Held, Parked, Blocked, Paused, Review, and Unknown appear while they contain cards.
 The Held column draws its cards in up to three labelled groups, each with its card count and shown only while it holds a card: `Answer now`, then `Deferred`, then `Waiting on other work`.
 Each group starts with a heading strip across the column that carries its name and card count.
 The fleet snapshot's `hold_bucket` places a card: `live` is answered now, `dated` and `aged` are deferred, and `blocked` waits on other work.
 Only captain holds have a bucket: an `external` hold waits on other work, and a captain hold with no bucket is answered now.
 A deferred card that has a `hold_until` date shows it on its state row as `until <month>-<day>`, such as `until 12-01`.
-Their header dots use the theme's idle, working, blocked, done, unknown, and red colors as appropriate.
+There is no Failed column: a task whose worker reported `failed:` sits in the Blocked column, marked with a red `Failed` label on its state row and a red border (and `failed` in red on its Chains node), and keeps its detail text.
+Their header dots use the theme's idle, working, blocked, done, and unknown colors as appropriate.
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.
 The board search matches task ids and the title, note, and decision text on cards, ignoring case.
 Enter or the find icon applies it: in Kanban each column then shows only matching cards, columns and cards holding a match open even when folded, and the current match gets an accent border; in Chains only lanes holding a match are shown, open even when folded, with non-matching nodes dimmed, and the `Independent` drawer opens to list only matching tasks.

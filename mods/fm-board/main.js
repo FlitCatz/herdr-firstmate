@@ -87,7 +87,6 @@ const COLUMNS = [
   { id: "review", title: "Review", color: "done", optional: true },
   { id: "unknown", title: "Unknown", color: "unknown", optional: true },
   { id: "done", title: "Done", color: "done" },
-  { id: "failed", title: "Failed", color: "ansi1" },
 ];
 const MODES = [
   { id: "no-mistakes-prod-only", label: "Validate product changes" },
@@ -400,7 +399,8 @@ function detailPr(detail) {
 
 function columnOf(record, task) {
   const state = task?.current_state?.state;
-  if (state === "failed") return "failed";
+  // No Failed column: Firstmate reports a failure in chat and acts on it, so a failed card waits in Blocked, marked "Failed".
+  if (state === "failed") return "blocked";
   if (state === "done" || record?.state === "done") return "done";
   if (task?.hints?.pending_decision) return "parked";
   if (task?.hints?.blocked_event) return "blocked";
@@ -1067,6 +1067,8 @@ function cardsFrom(snapshot) {
     holdGroup: holdGroupOf(record),
     holdUntil: typeof record?.hold_until === "string" ? record.hold_until : null,
     column: ownColumn,
+    // The worker reported `failed:`; its card sits in Blocked and carries a red Failed label.
+    failed: task?.current_state?.state === "failed",
     // What columnOf says; column moves away from it only while the worker runs a background job.
     ownColumn,
     title: record?.title ?? task.id,
@@ -1805,7 +1807,8 @@ export default class FmBoard extends View {
     const roleBorder = role === "selected" ? t.accent : role === "upstream" ? t.working : role === "downstream" ? t.ansi6 : null;
     const pinnedBorder = pinnedRole === "selected" || pinnedRole === "upstream" || pinnedRole === "downstream";
     const borderWidth = current || pinnedBorder ? 2 : 1;
-    const borderColor = current ? t.accent : roleBorder ?? (role === "branch" ? t.muted : t.border);
+    // A failed card keeps its red border unless the card is the current search match or sits on a highlighted chain.
+    const borderColor = current ? t.accent : roleBorder ?? (role === "branch" ? t.muted : c.failed ? t.ansi1 : t.border);
     // A deferred hold shows its date when it has one.
     const until = c.column === "held" && c.holdGroup === "deferred" ? c.holdUntil : null;
     const badge = c.prWaiting ? div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.blocked).child("PR waiting") : null;
@@ -1823,8 +1826,12 @@ export default class FmBoard extends View {
       .when(c.priority !== null && c.column !== "done", (e) => e.child(div().flex_none().px(4).rounded(4).border(1)
         .border_color(c.priority === 0 ? t.foreground : t.border).text_size(this.fs(10))
         .text_color(c.priority === 0 ? t.foreground : t.muted).tooltip("Backlog priority, 0 is highest").child(`P${c.priority}`)))
-      .child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.muted).truncate()
-        .tooltip("Task state from firstmate").child(waiting ? "waiting" : c.state))
+      // The red Failed label stands in for the "failed" state text.
+      .child(c.failed
+        ? div().id(`failed-${c.id}`).flex_none().px(5).py(1).rounded(4).bg(t.ansi1 + "24").text_size(this.fs(10)).font_semibold()
+          .text_color(t.ansi1).tooltip("The worker reported failed").child("Failed")
+        : div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.muted).truncate()
+          .tooltip("Task state from firstmate").child(waiting ? "waiting" : c.state))
       // The year is left out: a deferral date is always ahead, and "until 12-01" fits a narrow card.
       .when(Boolean(until), (e) => e.child(div().id(`until-${c.id}`).flex_none().text_size(this.fs(11)).font_semibold()
         .text_color(t.muted).tooltip(`Deferred until ${until}`).child(`until ${String(until).replace(/^\d{4}-/, "")}`))));
@@ -2120,6 +2127,7 @@ export default class FmBoard extends View {
     const colDef = COLUMNS.find((k) => k.id === node.column);
     if (node.missing) return ["external", t.muted];
     if (showPrWaiting && node.prWaiting) return ["PR waiting", t.done];
+    if (node.failed) return ["failed", t.ansi1];
     if (node.column === "queued") {
       return (node.waitingIds?.length ?? 0) > 0 ? ["waiting", t.blocked] : ["ready", colDef ? t[colDef.color] : t.muted];
     }

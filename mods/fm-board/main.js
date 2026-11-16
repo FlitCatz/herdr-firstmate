@@ -792,7 +792,7 @@ function chainEdgeColor(e, roles, t) {
 // every edge. An edge whose straight path along its source row would run through a card detours
 // through a lane in the row padding instead: below the source row, or above it when the target
 // sits higher. Ports are ordered above < same row < below, and the vertical turns sharing a
-// gutter are ordered by where they lead, so lines leave and enter cards without crossing.
+// gutter are ordered by where they lead, so no two lines share a stretch of track.
 function placeChainLane(comp, nodesMap) {
   const levelOf = new Map();
   for (const lg of comp?.levels ?? []) {
@@ -870,16 +870,38 @@ function placeChainLane(comp, nodesMap) {
   // A detour lane sits half a row from the card, between its own row and the next one.
   const outSide = (e) => (e.chanRow === null ? pos.get(e.v).r - pos.get(e.u).r : e.chanRow - pos.get(e.u).r + 0.5);
   const inSide = (e) => (e.chanRow === null ? pos.get(e.u).r - pos.get(e.v).r : e.chanRow - pos.get(e.v).r + 0.5);
-  const assignPorts = (groups, side, set) => {
-    for (const list of groups.values()) {
-      const step = Math.min(CHAIN_PORT_STEP, Math.floor((CHAIN_PORT_MAX - CHAIN_PORT_TOP) / Math.max(1, list.length - 1)));
-      list.sort((a, b) => side(a) - side(b)
-        || (a.chanRow === null && side(a) > 0 ? span(b) - span(a) : span(a) - span(b)))
-        .forEach((e, i) => set(e, CHAIN_PORT_TOP + step * i));
+  const order = (side) => (a, b) => side(a) - side(b)
+    || (a.chanRow === null && side(a) > 0 ? span(b) - span(a) : span(a) - span(b));
+  for (const list of outs.values()) list.sort(order(outSide));
+  for (const list of ins.values()) list.sort(order(inSide));
+  // Port slot j holds an in-port at its top and an out-port half a slot lower, so a line turning
+  // out of a card never shares a height with another line turning into the card beside it. An
+  // edge straight across its row uses its target's in-port at both ends, placed below every
+  // out-port its source lists before it.
+  const straight = (e) => e.chanRow === null && pos.get(e.u).r === pos.get(e.v).r;
+  const inSlot = new Map(), outSlot = new Map(), minSlot = new Map();
+  for (const list of outs.values()) list.forEach((e, i) => { if (straight(e)) minSlot.set(e, i); });
+  for (const list of ins.values()) {
+    let next = 0;
+    for (const e of list) {
+      const j = Math.max(next, minSlot.get(e) ?? 0);
+      inSlot.set(e, j);
+      next = j + 1;
     }
-  };
-  assignPorts(outs, outSide, (e, p) => { e.p1 = p; });
-  assignPorts(ins, inSide, (e, p) => { e.p2 = p; });
+  }
+  for (const list of outs.values()) {
+    let next = 0;
+    for (const e of list) {
+      if (straight(e)) next = Math.max(next, inSlot.get(e));
+      else outSlot.set(e, next++);
+    }
+  }
+  const deepest = Math.max(1, ...inSlot.values(), ...Array.from(outSlot.values(), (i) => i + 0.5));
+  const step = Math.min(CHAIN_PORT_STEP, Math.floor((CHAIN_PORT_MAX - CHAIN_PORT_TOP) / deepest));
+  for (const e of edges) {
+    e.p2 = CHAIN_PORT_TOP + step * inSlot.get(e);
+    e.p1 = straight(e) ? e.p2 : CHAIN_PORT_TOP + step * outSlot.get(e) + Math.floor(step / 2);
+  }
   // Vertical positions comparable across rows; a detour lane lies below every port of its row.
   const yAt = (r, y) => r * 10000 + y;
   const turns = new Map();

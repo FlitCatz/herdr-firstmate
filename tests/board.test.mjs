@@ -2100,8 +2100,9 @@ function rasterChainLane(b, layout, cardH = 90) {
 }
 
 // The routing contract of the wide Chains grid: every edge is one unbroken line from its source
-// card's right edge at its own port to an arrowhead touching the target card at its own port,
-// no two edges share a pixel (so none overlap or cross), and no line runs inside a card.
+// card's right edge at its own port to an arrowhead touching the target card at its own port, no
+// two edges share a stretch of line (which would read as one line joining unrelated cards), and
+// no line runs inside a card. Two lines may still cross at a single pixel; returns how many do.
 function assertCleanRouting(b, layout, label) {
   const { pixels, heads, cards, rowTop, colX } = rasterChainLane(b, layout);
   for (const e of layout.edges) {
@@ -2125,15 +2126,21 @@ function assertCleanRouting(b, layout, label) {
     assert.deepEqual(heads.get(k), { right: colX(V.c), mid: rowTop[V.r] + e.p2 }, `${label}: ${k} head touches the target at its port`);
   }
   const owner = new Map();
+  let crossings = 0;
   for (const [k, set] of pixels) {
     for (const p of set) {
-      assert.ok(!owner.has(p), `${label}: ${k} and ${owner.get(p)} meet at ${p}`);
-      owner.set(p, k);
       const [px, py] = p.split(",").map(Number);
       const inside = cards.find((c) => px >= c.x0 && px < c.x1 && py >= c.y0 && py < c.y1);
       assert.ok(!inside, `${label}: ${k} runs through card ${inside?.id} at ${p}`);
+      const other = owner.get(p);
+      if (!other) { owner.set(p, k); continue; }
+      crossings++;
+      const both = (n) => set.has(n) && pixels.get(other).has(n);
+      const run = [`${px + 1},${py}`, `${px - 1},${py}`, `${px},${py + 1}`, `${px},${py - 1}`].find(both);
+      assert.ok(!run, `${label}: ${k} and ${other} share a stretch of line at ${p} and ${run}`);
     }
   }
+  return crossings;
 }
 
 test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce aligned grid and connector descriptors", async () => {
@@ -2173,14 +2180,16 @@ test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce a
   assert.deepEqual(Array.from(layout.grid[1]), [null, "orchard-theme", "orchard-icons", null, null]);
   assert.deepEqual(Array.from(layout.grid[2]), [null, "maple-skip", null, null, null]);
 
-  // Same-row outgoing/incoming edges take port 18; cross-row edges fan out at 34, 50...
+  // Ports run top to bottom in the order the lines head: straight across first, then rows below,
+  // nearest first. A line straight across its row keeps one height at both ends.
   const edge = (u, v) => layout.edges.find((e) => e.u === u && e.v === v);
-  assert.equal(edge("maple-token", "maple-card").p1, 18);
-  assert.equal(edge("maple-token", "orchard-theme").p1, 34);
-  assert.equal(edge("maple-token", "maple-skip").p1, 50);
-  assert.equal(edge("maple-panel", "maple-release").p2, 18);
-  assert.equal(edge("orchard-icons", "maple-release").p2, 34);
-  assert.equal(edge("maple-skip", "maple-release").p2, 50);
+  assert.ok(edge("maple-token", "maple-card").p1 < edge("maple-token", "orchard-theme").p1);
+  assert.ok(edge("maple-token", "orchard-theme").p1 < edge("maple-token", "maple-skip").p1);
+  assert.ok(edge("maple-panel", "maple-release").p2 < edge("orchard-icons", "maple-release").p2);
+  assert.ok(edge("orchard-icons", "maple-release").p2 < edge("maple-skip", "maple-release").p2);
+  for (const [u, v] of [["maple-token", "maple-card"], ["maple-card", "maple-panel"], ["orchard-theme", "orchard-icons"], ["maple-release", "maple-docs"]]) {
+    assert.equal(edge(u, v).p1, edge(u, v).p2, `${u} -> ${v} runs straight`);
+  }
 
   assert.equal(edge("maple-token", "orchard-theme").cross, true);
   assert.equal(edge("orchard-icons", "maple-release").cross, true);
@@ -2203,7 +2212,7 @@ test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce a
     }
   }
   assert.equal(turnsByGutter.get(2).length, 2);
-  assertCleanRouting(b, layout, "fixture");
+  assert.equal(assertCleanRouting(b, layout, "fixture"), 0);
 
   // The same graph with maple-release's blockers listed in another order still draws without crossings.
   const rg = dependencyGraph(cardsFrom({
@@ -2212,7 +2221,7 @@ test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce a
         ? { ...r, unresolved_blocker_ids: ["maple-skip", "orchard-icons", "maple-panel"] } : r)),
     },
   }));
-  assertCleanRouting(b, placeChainLane(rg.components[0], rg.nodes), "reordered blockers");
+  assert.equal(assertCleanRouting(b, placeChainLane(rg.components[0], rg.nodes), "reordered blockers"), 0);
 
   // Skip-level pass-through across empty cell (r=2, c=2) draws a horizontal bar at maple-skip's outgoing port 18.
   const pass = chainCellSpecs(layout, 2, 2);
@@ -2243,7 +2252,7 @@ test("Chains routes a skip-level edge around the cards it passes instead of thro
   ]);
   assert.deepEqual(Array.from(diamond.grid[0]), ["A", "B", "C"]);
   assert.equal(diamond.grid.length, 1);
-  assertCleanRouting(b, diamond, "diamond");
+  assert.equal(assertCleanRouting(b, diamond, "diamond"), 0);
   // A -> C has its own port on both cards, apart from B's line.
   const ac = diamond.edges.find((e) => e.u === "A" && e.v === "C");
   const bc = diamond.edges.find((e) => e.u === "B" && e.v === "C");
@@ -2269,7 +2278,7 @@ test("Chains routes a skip-level edge around the cards it passes instead of thro
   ]);
   assert.deepEqual(Array.from(branch.grid[0]), ["S0", "S1", "S2", "S3", "S4"]);
   assert.deepEqual(Array.from(branch.grid[1]), [null, "X", "Y", "Z", null]);
-  assertCleanRouting(b, branch, "branch row");
+  assert.equal(assertCleanRouting(b, branch, "branch row"), 0);
 
   // An edge with nothing in its way keeps the plain path: one line straight across at its port.
   const s01 = branch.edges.find((e) => e.u === "S0" && e.v === "S1");
@@ -2278,6 +2287,49 @@ test("Chains routes a skip-level edge around the cards it passes instead of thro
   assert.deepEqual(Array.from(s01Pieces, (s) => s.kind), ["hbar", "head"]);
   assert.equal(s01Pieces[0].top, s01.p1);
   assert.equal(s01Pieces[0].left, 0);
+});
+
+test("Chains never lets a line leaving one card run on into a line entering the card beside it", async () => {
+  const b = await board();
+  const { cardsFrom, dependencyGraph, placeChainLane } = b;
+  const lane = (deps) => {
+    const ids = [...new Set(deps.flat())];
+    const g = dependencyGraph(cardsFrom({
+      backlog: {
+        records: ids.map((id) => ({
+          id, state: "queued", repo: "maple-workshop", title: id, structured: true,
+          unresolved_blocker_ids: deps.filter(([, v]) => v === id).map(([u]) => u),
+        })),
+      },
+    }));
+    return placeChainLane(g.components[0], g.nodes);
+  };
+
+  // B -> Z turns down into Z on row 1 while X -> C turns up out of X on the same row: their
+  // horizontal pieces once shared one track and read as a nonexistent X -> Z line.
+  const turns = lane([["A", "B"], ["B", "C"], ["A", "X"], ["X", "C"], ["B", "Z"]]);
+  assert.deepEqual(Array.from(turns.grid, (row) => Array.from(row)), [["A", "B", "C"], [null, "X", "Z"]]);
+  assertCleanRouting(b, turns, "opposite turns");
+
+  // The same with detour lanes: N2 -> N5 leaves N2 up toward its lane while N0 -> N3 comes down from its lane into N3.
+  const lanes = lane([["N0", "N1"], ["N0", "N2"], ["N2", "N3"], ["N0", "N3"], ["N0", "N4"], ["N1", "N4"], ["N2", "N5"], ["N0", "N5"], ["N4", "N5"]]);
+  assert.deepEqual(Array.from(lanes.grid, (row) => Array.from(row)), [["N0", "N1", "N4", "N5"], [null, "N2", "N3", null]]);
+  assertCleanRouting(b, lanes, "opposite detours");
+
+  // Every small dependency graph keeps the contract, not just the shapes above. A fixed seed
+  // keeps the run deterministic.
+  let seed = 20261116;
+  const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  for (let run = 0; run < 400; run++) {
+    const n = 3 + Math.floor(rand() * 6);
+    const ids = Array.from({ length: n }, (_, i) => `N${i}`);
+    const deps = [];
+    for (let v = 1; v < n; v++) {
+      deps.push([ids[Math.floor(rand() * v)], ids[v]]);
+      for (let u = 0; u < v; u++) if (rand() < 0.25 && !deps.some(([a, c]) => a === ids[u] && c === ids[v])) deps.push([ids[u], ids[v]]);
+    }
+    assertCleanRouting(b, lane(deps), `graph ${JSON.stringify(deps)}`);
+  }
 });
 
 test("Chains keeps every port of a heavily blocked card on the card's edge", async () => {
@@ -2299,7 +2351,7 @@ test("Chains keeps every port of a heavily blocked card on the card's edge", asy
   for (const p of ports) assert.ok(p + (CHAIN_HEAD_H - 1) / 2 < 78, `port ${p} stays on the card edge`);
   // Arrowheads never overlap each other.
   for (let i = 1; i < ports.length; i++) assert.ok(ports[i] - ports[i - 1] >= CHAIN_HEAD_H, `ports ${ports}`);
-  assertCleanRouting(b, layout, "six blockers");
+  assert.equal(assertCleanRouting(b, layout, "six blockers"), 0);
 });
 
 test("Chains connector lines, arrowheads, and elbows obey all alignment rules in wide and narrow views across selection states", async () => {

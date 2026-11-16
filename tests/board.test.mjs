@@ -1322,26 +1322,23 @@ test("Registered checks section lists state/*.check.sh names and home-wide state
   assert.match(b.text("head-checks"), /^▾ Registered checks 0 /);
 });
 
-test("Registered checks section handles failures and >200 check truncation cleanly", async () => {
-  const many = Array.from({ length: 200 }, (_, i) => `check\x00fictional-${String(i).padStart(3, "0")}`).join("\x00");
-  const b = await board({
-    exec: async (cmd, args) => {
-      if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") {
-        return { code: 0, stdout: `last\x00\x00${many}\x00limited\x001\x00`, stderr: "" };
-      }
-      return { code: 1, stdout: "", stderr: "" };
-    },
-  });
-  assert.equal(b.ids.filter((id) => id.startsWith("check-")).length, 200);
-  assert.ok(b.text("checks-list").includes("Showing the first 200 registered checks"));
-
-  // Failed check read leaves view error unset and clears the list without stale values.
+test("Registered checks section reports a failed read instead of claiming no checks or no sweep", async () => {
   const failed = await board({
     exec: async () => ({ code: 1, stdout: "", stderr: "permission denied" }),
   });
   assert.equal(failed.view.error, null);
-  assert.equal(failed.text("checks-list"), "No registered checks");
-  assert.equal(failed.text("checks-last-sweep"), "Last sweep (all checks): Not recorded");
+  assert.equal(failed.text("checks-list"), "Could not read registered checks");
+  assert.equal(failed.text("checks-last-sweep"), "Last sweep (all checks): Could not read");
+  assert.match(failed.text("head-checks"), /^▾ Registered checks Last sweep/);
+
+  const rejected = await board({
+    exec: async (cmd, args) => {
+      if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") throw new Error("timed out");
+      return { code: 1, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal(rejected.text("checks-list"), "Could not read registered checks");
+  assert.equal(rejected.text("checks-last-sweep"), "Last sweep (all checks): Could not read");
 });
 
 // Exercise the tab bar through the same element boundary as the Board, with only

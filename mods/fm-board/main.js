@@ -50,7 +50,6 @@ const FOLDED_KEY = "folded";
 const PROJECTS = "projects";
 const COMMANDS = "commands";
 const CHECKS = "checks";
-const CHECKS_LIMIT = 200;
 // Reads only the list of state/*.check.sh filenames and the mtime of state/.last-check.
 // Never reads check scripts, check outputs, or private check state directories.
 const CHECKS_SCRIPT = [
@@ -60,14 +59,11 @@ const CHECKS_SCRIPT = [
   '  last=$(stat -f %m "$state/.last-check" 2>/dev/null || stat -c %Y "$state/.last-check" 2>/dev/null || true)',
   "fi",
   "printf 'last\\0%s\\0' \"$last\"",
-  "n=0",
   'for p in "$state"/*.check.sh; do',
   '  [ -f "$p" ] || continue',
-  `  if [ "$n" -ge ${CHECKS_LIMIT} ]; then printf 'limited\\01\\0'; break; fi`,
   '  name=${p##*/}',
   '  name=${name%.check.sh}',
   "  printf 'check\\0%s\\0' \"$name\"",
-  "  n=$((n + 1))",
   "done",
 ].join("\n");
 // AppleScript names for clipboard images, file references, and RTFD, which can carry attachments.
@@ -760,7 +756,7 @@ export default class FmBoard extends View {
     this.keys = cx.focus_handle();
     const ui = props()?.ui ?? {};
     this.cards = null; this.projects = []; this.requests = []; this.ready = null;
-    this.checks = null; this.lastCheckSweep = null; this.checksLimited = false;
+    this.checks = null; this.lastCheckSweep = null; this.checksFailed = false;
     this.error = null; this.notice = ""; this.generated = ""; this.loading = false; this.last = 0;
     /** @type {{ timer: import("gpui-kit").Task | null } | null} */
     this.activeRefresh = null;
@@ -964,7 +960,7 @@ export default class FmBoard extends View {
         this.watchers = inbox.watchers;
         this.checks = inbox.checks;
         this.lastCheckSweep = inbox.lastCheckSweep;
-        this.checksLimited = inbox.checksLimited;
+        this.checksFailed = inbox.checksFailed;
         this.error = null;
       } catch (e) {
         if (!isCurrent()) return;
@@ -1018,21 +1014,21 @@ export default class FmBoard extends View {
       ready: isReady,
       beat,
       watchers,
-      checks: checksInfo.checks,
-      lastCheckSweep: checksInfo.lastSweep,
-      checksLimited: checksInfo.limited,
+      checks: checksInfo?.checks ?? [],
+      lastCheckSweep: checksInfo?.lastSweep ?? null,
+      checksFailed: !checksInfo,
     };
   }
 
-  // Registered checks from state/*.check.sh filenames and the home-wide sweep mtime from state/.last-check.
+  // Registered checks from state/*.check.sh filenames and the home-wide sweep mtime from state/.last-check,
+  // or null when they could not be read.
   async loadChecks() {
     try {
       const r = await exec("sh", ["-c", CHECKS_SCRIPT, "checks", `${home()}/state`], { timeout: PROCESS_LIST_TIMEOUT_MS });
-      if (r?.code !== 0) return { checks: [], lastSweep: null, limited: false };
+      if (r?.code !== 0) return null;
       const fields = (r.stdout ?? "").split("\0");
       const names = [];
       let lastSweep = null;
-      let limited = false;
       for (let i = 0; i + 1 < fields.length; i += 2) {
         const kind = fields[i], value = fields[i + 1];
         if (kind === "last" && /^\d+$/.test(value)) {
@@ -1040,14 +1036,12 @@ export default class FmBoard extends View {
           if (epoch > 0) lastSweep = epoch;
         } else if (kind === "check" && value) {
           names.push(value);
-        } else if (kind === "limited") {
-          limited = true;
         }
       }
       names.sort((a, b) => a.localeCompare(b));
-      return { checks: names.map((name) => ({ name })), lastSweep, limited };
+      return { checks: names.map((name) => ({ name })), lastSweep };
     } catch {
-      return { checks: [], lastSweep: null, limited: false };
+      return null;
     }
   }
 
@@ -2277,13 +2271,15 @@ export default class FmBoard extends View {
   checksSection(t) {
     const collapsed = this.collapsed.has(CHECKS);
     const list = this.checks ?? [];
-    const sweep = this.checks === null ? "Loading…" : (localTime(this.lastCheckSweep) || "Not recorded");
+    const sweep = this.checks === null ? "Loading…"
+      : this.checksFailed ? "Could not read"
+      : (localTime(this.lastCheckSweep) || "Not recorded");
     const header = h_flex().id("head-checks").gap(8).items_center().justify_between().px(6).py(3).rounded(5).bg(t.selected)
       .cursor_pointer().hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggle(CHECKS, cx))
       .child(h_flex().flex_none().gap(6).items_center()
         .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
         .child(div().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child("Registered checks"))
-        .when(this.checks !== null, (e) => e.child(div().text_size(this.fs(11)).text_color(t.dim).child(String(list.length)))))
+        .when(this.checks !== null && !this.checksFailed, (e) => e.child(div().text_size(this.fs(11)).text_color(t.dim).child(String(list.length)))))
       .child(div().id("checks-last-sweep").min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim)
         .tooltip("Home-wide watcher check-sweep time from state/.last-check; Firstmate does not record per-check running state, last run, or result")
         .child(`Last sweep (all checks): ${sweep}`));
@@ -2293,6 +2289,8 @@ export default class FmBoard extends View {
     const rows = v_flex().id("checks-list").gap(2).max_h(110).min_h(0).flex_shrink(1).overflow_y_scroll();
     if (this.checks === null) {
       rows.child(div().px(6).text_size(this.fs(11)).text_color(t.dim).child("Loading registered checks…"));
+    } else if (this.checksFailed) {
+      rows.child(div().px(6).text_size(this.fs(11)).text_color(t.dim).child("Could not read registered checks"));
     } else if (!list.length) {
       rows.child(div().px(6).text_size(this.fs(11)).text_color(t.dim).child("No registered checks"));
     } else {
@@ -2300,9 +2298,6 @@ export default class FmBoard extends View {
         .tooltip(`Registered check file: state/${c.name}.check.sh`)
         .child(div().flex_none().w(5).h(5).rounded(2.5).bg(t.muted))
         .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11)).text_color(t.foreground).child(c.name))));
-      if (this.checksLimited) {
-        rows.child(div().px(6).text_size(this.fs(10.5)).text_color(t.dim).child(`Showing the first ${CHECKS_LIMIT} registered checks`));
-      }
     }
     return wrap.child(rows);
   }

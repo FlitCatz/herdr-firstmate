@@ -47,6 +47,8 @@ const COMPACT_INSPECTOR_SHARE = 0.35;
 const NO_CHAINS_TEXT = "No active task dependencies in the current backlog snapshot.";
 const COLLAPSED_KEY = "collapsed";
 const FOLDED_KEY = "folded";
+const VIEW_MODE_KEY = "viewMode";
+const INDEPENDENT_OPEN_KEY = "independentOpen";
 const PROJECTS = "projects";
 const COMMANDS = "commands";
 const CHECKS = "checks";
@@ -616,9 +618,11 @@ function dependencyGraph(cards) {
     const crossProjectEdges = levelGroups.flatMap((g) => g.crossProjectEdges);
     const joins = levelGroups.flatMap((g) => g.joinNodes);
     const hasCycle = memberIds.some((m) => cycleNodes.has(m));
+    const maxBlocks = Math.max(0, ...memberIds.map((m) => byId.get(m)?.blocksCount ?? 0));
     rawComponents.push({
       roots,
       depth: levelGroups.length,
+      maxBlocks,
       nodeIds: memberIds,
       levels: levelGroups,
       crossProjectEdges,
@@ -626,7 +630,7 @@ function dependencyGraph(cards) {
       hasCycle,
     });
   }
-  rawComponents.sort((a, b) => b.nodeIds.length - a.nodeIds.length || b.depth - a.depth);
+  rawComponents.sort((a, b) => b.maxBlocks - a.maxBlocks || b.depth - a.depth || b.nodeIds.length - a.nodeIds.length);
   /** @type {Map<string, any>} */
   const componentById = new Map();
   const components = rawComponents.map((comp, idx) => {
@@ -669,6 +673,76 @@ function chainHighlight(graph, selectedCardId = null, hoveredCardId = null) {
     selectedComponent: selectedComp,
     roles,
     dimmedIds,
+  };
+}
+
+// Tie-breaker for selecting the longest forward dependency spine inside a component.
+function compareChainBranch(aId, aLen, bId, bLen, nodesMap, order, levelOf) {
+  if (aLen !== bLen) return bLen - aLen;
+  if (levelOf) {
+    const levelDiff = (levelOf.get(aId) ?? 0) - (levelOf.get(bId) ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+  }
+  const blockDiff = (nodesMap.get(bId)?.blocksCount ?? 0) - (nodesMap.get(aId)?.blocksCount ?? 0);
+  if (blockDiff !== 0) return blockDiff;
+  const prioDiff = (nodesMap.get(aId)?.priority ?? Infinity) - (nodesMap.get(bId)?.priority ?? Infinity);
+  if (prioDiff !== 0) return prioDiff;
+  return (order.get(aId) ?? 0) - (order.get(bId) ?? 0);
+}
+
+// Splits a connected component into its longest forward path (main spine) and remaining
+// side-branch columns grouped by topological level. Follows strictly increasing levels so cycles never loop.
+function chainSpineLayout(comp, nodesMap) {
+  const levelOf = new Map();
+  for (const lg of comp?.levels ?? []) {
+    for (const id of lg.ids) levelOf.set(id, lg.level);
+  }
+  const order = new Map((comp?.nodeIds ?? []).map((id, i) => [id, i]));
+  /** @type {Map<string, { len: number, next: string | null }>} */
+  const memo = new Map();
+  const bestFrom = (id) => {
+    const hit = memo.get(id);
+    if (hit) return hit;
+    const lv = levelOf.get(id) ?? 0;
+    const node = nodesMap.get(id);
+    let bestNext = null;
+    let bestSub = 0;
+    for (const succId of node?.blockingIds ?? []) {
+      if (!levelOf.has(succId) || (levelOf.get(succId) ?? 0) <= lv) continue;
+      const sub = bestFrom(succId).len;
+      if (!bestNext || compareChainBranch(succId, sub, bestNext, bestSub, nodesMap, order) < 0) {
+        bestNext = succId;
+        bestSub = sub;
+      }
+    }
+    const res = { len: 1 + bestSub, next: bestNext };
+    memo.set(id, res);
+    return res;
+  };
+  let startId = comp?.nodeIds?.[0] ?? null;
+  let startLen = -1;
+  for (const id of comp?.nodeIds ?? []) {
+    const len = bestFrom(id).len;
+    if (startLen < 0 || compareChainBranch(id, len, startId, startLen, nodesMap, order, levelOf) < 0) {
+      startId = id;
+      startLen = len;
+    }
+  }
+  const spineIds = [];
+  const spineSet = new Set();
+  for (let cur = startId; cur && !spineSet.has(cur); cur = bestFrom(cur).next) {
+    spineSet.add(cur);
+    spineIds.push(cur);
+  }
+  const branchColumns = [];
+  for (const lg of comp?.levels ?? []) {
+    const nodes = lg.nodes.filter((n) => !spineSet.has(n.id));
+    if (nodes.length) branchColumns.push({ level: lg.level, nodes });
+  }
+  return {
+    spine: spineIds.map((id) => nodesMap.get(id)).filter(Boolean),
+    spineSet,
+    branchColumns,
   };
 }
 
@@ -766,6 +840,12 @@ export default class FmBoard extends View {
     this.folded = new Set(ui.folded ?? this.loadSet(FOLDED_KEY));
     this.open = new Set(ui.open ?? []); this.filter = ui.filter ?? null;
     this.chainOpen = new Set(ui.chains ?? []);
+    this.viewMode = ui.viewMode === "chains" || ui.viewMode === "kanban"
+      ? ui.viewMode
+      : (this.loadText(VIEW_MODE_KEY) === "chains" ? "chains" : "kanban");
+    this.independentOpen = typeof ui.independentOpen === "boolean"
+      ? ui.independentOpen
+      : this.loadText(INDEPENDENT_OPEN_KEY) === "true";
     /** @type {string | null} */
     this.selectedCardId = null;
     /** @type {string | null} */
@@ -838,6 +918,11 @@ export default class FmBoard extends View {
   loadSet(key) {
     try { return new Set(JSON.parse(localStorage.getItem(key) ?? "[]")); }
     catch { return new Set(); }
+  }
+
+  loadText(key) {
+    try { return localStorage.getItem(key); }
+    catch { return null; }
   }
 
   colorOf(name, t) {
@@ -1632,8 +1717,55 @@ export default class FmBoard extends View {
     this.viewer.target(source.path, source.title, cx);
   }
 
+  /** @param {"kanban" | "chains"} mode @param {import("gpui-kit").Context} cx */
+  setViewMode(mode, cx) {
+    if (mode !== "kanban" && mode !== "chains") return;
+    if (this.viewMode === mode) return;
+    this.viewMode = mode;
+    this.hoveredCardId = null;
+    if (mode === "kanban" && !this.inspectorOpen) this.selectedCardId = null;
+    if (mode === "chains") this.inspectorOpen = false;
+    try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch {}
+    cx.notify();
+  }
+
+  /** @param {string} laneKey @param {import("gpui-kit").Context} cx */
+  toggleLane(laneKey, cx) {
+    if (this.query) return;
+    if (this.revealed.delete(laneKey) && this.folded.has(laneKey)) { cx.notify(); return; }
+    if (!this.folded.delete(laneKey)) this.folded.add(laneKey);
+    try { localStorage.setItem(FOLDED_KEY, JSON.stringify([...this.folded])); } catch {}
+    cx.notify();
+  }
+
+  /** @param {import("gpui-kit").Context} cx */
+  toggleIndependent(cx) {
+    if (this.query) return;
+    this.independentOpen = !this.independentOpen;
+    try { localStorage.setItem(INDEPENDENT_OPEN_KEY, String(this.independentOpen)); } catch {}
+    cx.notify();
+  }
+
+  /** @param {string} id @param {import("gpui-kit").Context} cx */
+  selectChainNode(id, cx) {
+    if (this.selectedCardId === id) {
+      this.selectedCardId = null;
+      this.hoveredCardId = null;
+      cx.notify();
+      return;
+    }
+    this.selectedCardId = id;
+    this.revealed.add(`card:${id}`);
+    this.keys.focus();
+    cx.notify();
+  }
+
   /** @param {string} id @param {import("gpui-kit").Context} cx */
   selectChainCard(id, cx) {
+    if (this.viewMode === "chains") {
+      this.selectChainNode(id, cx);
+      return;
+    }
     if (this.selectedCardId === id && this.inspectorOpen) {
       this.clearChainSelection(cx);
       return;
@@ -1710,6 +1842,19 @@ export default class FmBoard extends View {
     if (handle && idx >= 0) handle.scroll_to_item(idx);
   }
 
+  /** @param {any} node @param {Record<string, `#${string}`>} t @param {boolean} [showPrWaiting] */
+  nodeStatus(node, t, showPrWaiting = false) {
+    const colDef = COLUMNS.find((k) => k.id === node.column);
+    if (node.missing) return ["external", t.muted];
+    if (showPrWaiting && node.prWaiting) return ["PR waiting", t.done];
+    if (node.column === "queued") {
+      return (node.waitingIds?.length ?? 0) > 0 ? ["waiting", t.blocked] : ["ready", colDef ? t[colDef.color] : t.muted];
+    }
+    const label = node.column || node.state || "unknown";
+    const color = (colDef ? t[colDef.color] : t.muted) ?? t.muted;
+    return [label, color];
+  }
+
   /** @param {any} node @param {any} comp @param {Record<string, `#${string}`>} t @param {boolean} [compact] */
   renderDagNode(node, comp, t, compact = false) {
     const id = node.id;
@@ -1727,13 +1872,7 @@ export default class FmBoard extends View {
       : role === "upstream" ? t.working
       : role === "downstream" ? t.ansi6
       : t.muted;
-    const colDef = COLUMNS.find((k) => k.id === node.column);
-    const stateLabel = node.missing ? "external"
-      : node.column === "queued" ? ((node.waitingIds?.length ?? 0) > 0 ? "waiting" : "ready")
-      : (node.column || node.state || "unknown");
-    const stateColor = node.missing ? t.muted
-      : node.column === "queued" && (node.waitingIds?.length ?? 0) > 0 ? t.blocked
-      : (colDef ? t[colDef.color] : t.muted) ?? t.muted;
+    const [stateLabel, stateColor] = this.nodeStatus(node, t, false);
     const strip = (title) => (node.project && title.startsWith(`${node.project} `) ? title.slice(node.project.length + 1) : title);
     const box = v_flex().id(`dep-node-${id}`).when(!compact, (e) => e.flex_1().min_w(160)).when(compact, (e) => e.min_w(0)).gap(3).p(compact ? 5 : 7).rounded(6)
       .bg(isSelected ? t.selected : t.background).border(isSelected || role === "upstream" || role === "downstream" ? 2 : 1)
@@ -1888,6 +2027,297 @@ export default class FmBoard extends View {
         .child(v_flex().flex_1().min_w(0).gap(4).children(lg.nodes.map((n) => this.renderDagNode(n, comp, t, true)))));
     });
     return box.child(flow);
+  }
+
+  // Unfinished dependency chains in display order, filtered by project filter and search query.
+  visibleChains() {
+    const q = this.query.toLowerCase();
+    return (this.graph?.components ?? []).filter((comp) => {
+      const activeNodes = comp.nodeIds
+        .map((id) => this.graph.nodes.get(id))
+        .filter((n) => n && !n.missing && n.column !== "done");
+      if (!activeNodes.length) return false;
+      if (this.filter && !activeNodes.some((n) => n.project === this.filter)) return false;
+      if (q && !activeNodes.some((n) => searchText(n).includes(q))) return false;
+      return true;
+    });
+  }
+
+  // Unfinished tasks without active dependencies, placed in the Independent drawer.
+  independentCards() {
+    const q = this.query.toLowerCase();
+    const order = new Map(COLUMNS.map((col, i) => [col.id, i]));
+    const rank = (c) => c.priority ?? Infinity;
+    const list = (this.cards ?? [])
+      .filter((c) => c.column !== "done" && !this.graph?.componentById?.has(c.id)
+        && (!this.filter || c.project === this.filter))
+      .sort((a, b) => (order.get(a.column) ?? 99) - (order.get(b.column) ?? 99) || rank(a) - rank(b));
+    return q ? list.filter((c) => searchText(c).includes(q)) : list;
+  }
+
+  /** @param {string} edgeId @param {string} subLabel @param {boolean} crossRepo @param {boolean} active @param {Record<string, `#${string}`>} t */
+  renderChainArrow(edgeId, subLabel, crossRepo, active, t) {
+    const color = crossRepo ? t.blocked : active ? t.accent : t.muted;
+    return v_flex().id(edgeId).flex_none().items_center().justify_center().px(2)
+      .child(div().text_size(this.fs(12)).font_semibold().text_color(color).child("->"))
+      .when(Boolean(subLabel), (e) => e.child(div().text_size(this.fs(8.5)).text_color(color).child(subLabel)));
+  }
+
+  /** @param {any} node @param {any} comp @param {Record<string, `#${string}`>} t @param {boolean} [compact] */
+  renderChainNode(node, comp, t, compact = false) {
+    const id = node.id;
+    const role = this.highlight?.roles?.get(id) ?? null;
+    const isSelected = this.selectedCardId === id;
+    const isCurrent = Boolean(this.query) && this.currentMatch === id;
+    const q = this.query.toLowerCase();
+    const queryMatches = !q || (!node.missing && searchText(node).includes(q));
+    const [statusLabel, statusColor] = this.nodeStatus(node, t, true);
+    const activeRoot = node.column === "working" && (node.waitingIds?.length ?? 0) === 0;
+    const roleBorder = isCurrent || isSelected || role === "selected" ? t.accent
+      : role === "upstream" ? t.working
+      : role === "downstream" ? t.ansi6
+      : activeRoot ? t.working
+      : role === "branch" ? t.muted
+      : t.border;
+    const borderWidth = isCurrent || isSelected || role === "upstream" || role === "downstream" || activeRoot ? 2 : 1;
+    const dimmed = (Boolean(this.selectedCardId) && !role && !isCurrent) || (Boolean(q) && !queryMatches);
+    const waiting = node.column === "queued" && (node.waitingIds?.length ?? 0) > 0;
+    const strip = (title) => (node.project && title.startsWith(`${node.project} `) ? title.slice(node.project.length + 1) : title);
+
+    const card = v_flex().id(`chain-node-${id}`).gap(4).p(7).rounded(6)
+      .bg(isSelected ? t.selected : t.background)
+      .border(borderWidth).border_color(roleBorder)
+      .when(!compact, (e) => e.w(205).flex_none())
+      .when(compact, (e) => e.flex_1().min_w(0))
+      .when(dimmed, (e) => e.opacity(0.45))
+      .when(!dimmed && waiting && !role && !isCurrent, (e) => e.opacity(0.82))
+      .cursor_pointer().hover((s) => s.bg(t.hover))
+      .tooltip(`${id}: ${node.title ?? id} · Click to highlight chain & open card detail`)
+      .on_hover((hovered, cx) => this.hoverChainCard(id, hovered, cx))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.selectChainNode(id, cx); });
+
+    const topRow = h_flex().gap(4).items_center().min_w(0)
+      .child(node.missing
+        ? div().id(`cnode-tag-${id}`).flex_none().px(4).py(1).rounded(9).border(1).border_color(t.border)
+          .text_size(this.fs(10)).text_color(t.muted).tooltip("Not on the board").child("unknown")
+        : this.projectBadge(node.project || "firstmate", t, `cnode-tag-${id}`))
+      .when(!node.missing && node.priority !== null && node.priority !== undefined && node.column !== "done", (e) =>
+        e.child(div().id(`cnode-prio-${id}`).flex_none().px(4).rounded(4).border(1)
+          .border_color(node.priority === 0 ? t.foreground : t.border)
+          .text_size(this.fs(9.5)).text_color(node.priority === 0 ? t.foreground : t.muted)
+          .child(`P${node.priority}`)))
+      .child(div().id(`cnode-status-${id}`).flex_none().px(4).py(0.5).rounded(4).bg(statusColor + "22")
+        .text_size(this.fs(10)).font_semibold().text_color(statusColor).child(statusLabel))
+      .child(div().flex_1().min_w(0));
+
+    if (role === "selected" || role === "upstream" || role === "downstream") {
+      const roleLabel = role === "selected" ? "Selected" : role === "upstream" ? "Upstream" : "Downstream";
+      const roleColor = role === "selected" ? t.accent : role === "upstream" ? t.working : t.ansi6;
+      topRow.child(div().id(`cnode-role-${id}`).flex_none().px(4).py(0.5).rounded(4).bg(roleColor + "24")
+        .text_size(this.fs(9.5)).font_semibold().text_color(roleColor).child(roleLabel));
+    }
+
+    card.child(topRow)
+      .child(div().min_w(0).text_size(this.fs(11)).font_semibold().text_color(t.foreground).child(strip(node.title ?? id)));
+
+    if (node.pr && /^https:\/\//.test(node.pr)) {
+      card.child(div().id(`cnode-pr-${id}`).text_size(this.fs(10)).text_color(t.accent).truncate()
+        .cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [node.pr]); })
+        .child(node.pr.replace("https://github.com/", "")));
+    }
+
+    if (!node.missing && this.workerLive(node)) {
+      this.shownTerminals.add(node.terminal);
+      const tail = (this.tails.get(node.terminal) ?? []).at(-1) || this.workerStatusLabel(node);
+      card.child(div().id(`cnode-live-${id}`).px(5).py(2).rounded(4).bg(t.working + "1f")
+        .font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.muted).truncate().child(tail));
+    } else if (node.background) {
+      card.child(div().px(5).py(2).rounded(4).bg(t.working + "1f")
+        .text_size(this.fs(9.5)).font_semibold().text_color(t.foreground).truncate().child(`백그라운드 실행 중: ${node.background}`));
+    } else if ((node.blocksCount ?? 0) > 0 && (node.waitingIds?.length ?? 0) === 0) {
+      card.child(div().text_size(this.fs(9.5)).font_semibold().text_color(t.working).child(`★ Root unblocker (blocks ${node.blocksCount})`));
+    } else if ((node.waitingIds?.length ?? 0) > 0) {
+      card.child(div().text_size(this.fs(9.5)).text_color(t.muted).truncate().child(`Waits on ${node.waitingIds.join(", ")}`));
+    }
+    return card;
+  }
+
+  /** @param {any} comp @param {number} idx @param {Record<string, `#${string}`>} t @param {boolean} stacked */
+  renderChainLane(comp, idx, t, stacked) {
+    const laneKey = `lane:${comp.roots?.[0] ?? comp.id}`;
+    const folded = this.folded.has(laneKey) && !this.query && !this.revealed.has(laneKey);
+    const realNodes = comp.nodeIds.map((id) => this.graph.nodes.get(id)).filter((n) => n && !n.missing && n.column !== "done");
+    const projects = [...new Set(realNodes.map((n) => n.project || "firstmate"))];
+    const workingCount = realNodes.filter((n) => n.column === "working").length;
+    const isTopChain = idx === 0;
+
+    const header = h_flex().id(`head-chain-${comp.id}`).gap(6).items_center().justify_between()
+      .px(8).py(4).rounded(5).bg(t.selected).cursor_pointer().hover((s) => s.opacity(0.8))
+      .on_click((_e, cx) => this.toggleLane(laneKey, cx))
+      .child(h_flex().flex_1().min_w(0).gap(6).items_center()
+        .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
+        .children(projects.slice(0, 3).map((p, pIdx) => this.projectBadge(p, t, `lane-tag-${comp.id}-${pIdx}`)))
+        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground)
+          .child(`Chain ${idx + 1} · ${comp.summaryLabel}`)))
+      .child(h_flex().flex_none().gap(6).items_center()
+        .when(Boolean(comp.hasCycle), (e) => e.child(div().px(5).py(0.5).rounded(4).bg(t.ansi1 + "24")
+          .text_size(this.fs(9.5)).font_semibold().text_color(t.ansi1).child("Cycle")))
+        .when(isTopChain && comp.depth > 1, (e) => e.child(div().px(5).py(0.5).rounded(4).bg(t.working + "22")
+          .border(1).border_color(t.working).text_size(this.fs(9.5)).font_semibold().text_color(t.working)
+          .child(stacked ? `${comp.depth} steps` : `Critical Path · ${comp.depth} steps`)))
+        .when(!isTopChain, (e) => e.child(div().text_size(this.fs(10)).text_color(t.dim).child(`${comp.depth} steps`)))
+        .when(!stacked && (comp.crossProjectEdges?.length ?? 0) > 0, (e) => e.child(div().px(5).py(0.5).rounded(4)
+          .bg(t.blocked + "20").border(1).border_color(t.blocked)
+          .text_size(this.fs(9.5)).font_semibold().text_color(t.blocked).child("Cross-project")))
+        .when(!stacked, (e) => e.child(div().text_size(this.fs(10)).text_color(t.dim)
+          .child(`${realNodes.length} tasks${workingCount ? ` · ${workingCount} working` : ""}`))));
+
+    const lane = v_flex().id(`chain-lane-${comp.id}`).flex_none().gap(8).p(8).rounded(8).bg(t.surface)
+      .border(1).border_color(t.border)
+      .when(isTopChain, (e) => e.border_l(3).border_color(t.working))
+      .child(header);
+    if (folded) return lane;
+
+    const layout = chainSpineLayout(comp, this.graph.nodes);
+    if (stacked) {
+      const stepper = v_flex().id(`chain-stepper-${comp.id}`).gap(0).pl(4);
+      comp.levels.forEach((lg, stepIdx) => {
+        const orderedNodes = [...lg.nodes].sort((a, b) => Number(layout.spineSet.has(b.id)) - Number(layout.spineSet.has(a.id)));
+        const hasWorking = orderedNodes.some((n) => n.column === "working");
+        const hasSelected = orderedNodes.some((n) => n.id === this.selectedCardId);
+        const hasBlocked = orderedNodes.some((n) => n.column === "blocked" || n.column === "parked" || (n.waitingIds?.length ?? 0) > 0);
+        const dotColor = hasSelected ? t.accent : hasWorking ? t.working : hasBlocked ? t.blocked : t.muted;
+        const lineActive = Boolean(this.selectedCardId) && orderedNodes.some((n) => this.highlight?.roles?.has(n.id));
+        const rail = v_flex().w(14).flex_none().items_center()
+          .child(div().w(10).h(10).rounded(5).mt(8).flex_none().bg(dotColor))
+          .when(stepIdx < comp.levels.length - 1, (e) =>
+            e.child(div().w(2).flex_1().min_h(12).bg(lineActive ? t.accent : t.border)));
+        const stepCards = v_flex().flex_1().min_w(0).gap(4)
+          .when(stepIdx < comp.levels.length - 1, (e) => e.pb(6))
+          .children(orderedNodes.map((n) => this.renderChainNode(n, comp, t, true)));
+        stepper.child(h_flex().id(`chain-step-${comp.id}-${lg.level}`).gap(8).items_stretch()
+          .child(rail).child(stepCards));
+      });
+      lane.child(stepper);
+    } else {
+      const spineRow = h_flex().id(`chain-spine-${comp.id}`).items_center().gap(4).overflow_x_scroll().py(2);
+      layout.spine.forEach((node, i) => {
+        if (i > 0) {
+          const prev = layout.spine[i - 1];
+          const cross = Boolean(prev.project && node.project && prev.project !== node.project);
+          const edgeActive = Boolean(this.highlight?.roles?.has(prev.id) && this.highlight?.roles?.has(node.id));
+          const sub = cross ? "cross-repo" : i === 1 ? "blocks" : `step ${i + 1}`;
+          spineRow.child(this.renderChainArrow(`chain-edge-${prev.id}-${node.id}`, sub, cross, edgeActive, t));
+        }
+        spineRow.child(this.renderChainNode(node, comp, t, false));
+      });
+      lane.child(spineRow);
+
+      if (layout.branchColumns.length) {
+        const branchRow = h_flex().id(`chain-branches-${comp.id}`).items_center().gap(4).overflow_x_scroll()
+          .pt(6).border_t(1).border_dashed().border_color(t.border);
+        const firstCol = layout.branchColumns[0];
+        const originIds = [...new Set(firstCol.nodes.flatMap((n) => n.waitingIds ?? []).filter((id) => layout.spineSet.has(id)))];
+        if (originIds.length) {
+          branchRow.child(v_flex().w(140).flex_none().px(6).py(4).gap(2)
+            .child(div().text_size(this.fs(10)).font_semibold().text_color(t.foreground).child("↳ Side branch"))
+            .child(div().text_size(this.fs(9.5)).text_color(t.muted).truncate().child(`from ${originIds.join(", ")}`)))
+            .child(this.renderChainArrow(`chain-branch-origin-${comp.id}`, "forks", false, false, t));
+        }
+        layout.branchColumns.forEach((col, colIdx) => {
+          if (colIdx > 0) {
+            const prevIds = new Set(layout.branchColumns[colIdx - 1].nodes.map((n) => n.id));
+            const connected = col.nodes.some((n) => (n.waitingIds ?? []).some((u) => prevIds.has(u)));
+            const cross = col.nodes.some((n) => (n.waitingIds ?? []).some((u) => {
+              const up = this.graph.nodes.get(u);
+              return prevIds.has(u) && n.project && up?.project && n.project !== up.project;
+            }));
+            branchRow.child(this.renderChainArrow(`chain-branch-edge-${comp.id}-${col.level}`,
+              cross ? "cross-repo" : connected ? "" : "then", cross, false, t));
+          }
+          branchRow.child(v_flex().gap(6).children(col.nodes.map((n) => this.renderChainNode(n, comp, t, false))));
+        });
+        const joinTargets = [...new Set(layout.branchColumns.flatMap((col) =>
+          col.nodes.flatMap((n) => (n.blockingIds ?? []).filter((d) => layout.spineSet.has(d)))))];
+        if (joinTargets.length) {
+          branchRow.child(this.renderChainArrow(`chain-branch-join-${comp.id}`, "joins", false, false, t))
+            .child(div().flex_none().px(6).py(4).rounded(5).bg(t.raised).border(1).border_color(t.border)
+              .text_size(this.fs(10)).text_color(t.muted).child(`-> ${joinTargets.join(", ")}`));
+        }
+        lane.child(branchRow);
+      }
+    }
+
+    if (this.selectedCardId && comp.nodeIds.includes(this.selectedCardId)) {
+      const selectedCard = (this.cards ?? []).find((c) => c.id === this.selectedCardId);
+      const detailWrap = v_flex().id("chain-detail").gap(6).pt(6).border_t(1).border_color(t.border)
+        .child(h_flex().gap(6).items_center().justify_between()
+          .child(div().text_size(this.fs(11)).font_semibold().text_color(t.accent).child(`Task detail · ${this.selectedCardId}`))
+          .child(this.button("chain-detail-close", "Close", t, (cx) => this.clearChainSelection(cx))));
+      if (selectedCard) detailWrap.child(this.card(selectedCard, t, false));
+      else detailWrap.child(div().text_size(this.fs(11)).text_color(t.muted).child("External blocker not in the current backlog snapshot."));
+      lane.child(detailWrap);
+    }
+    return lane;
+  }
+
+  /** @param {any[]} cards @param {Record<string, `#${string}`>} t @param {boolean} stacked */
+  renderIndependentDrawer(cards, t, stacked) {
+    const open = this.independentOpen || (Boolean(this.query) && cards.length > 0);
+    const counts = [
+      ["working", cards.filter((c) => c.column === "working").length],
+      ["ready", cards.filter((c) => c.column === "queued").length],
+      ["held", cards.filter((c) => c.column === "held").length],
+      ["paused", cards.filter((c) => c.column === "paused").length],
+      ["blocked", cards.filter((c) => c.column === "blocked" || c.column === "parked").length],
+      ["review", cards.filter((c) => c.column === "review").length],
+      ["todo", cards.filter((c) => c.column === "todo").length],
+    ].filter(([, n]) => n > 0).map(([label, n]) => `${n} ${label}`).join(" · ");
+
+    const header = h_flex().id("head-independent").gap(8).items_center().justify_between()
+      .px(6).py(4).rounded(5).bg(t.selected).cursor_pointer().hover((s) => s.opacity(0.8))
+      .on_click((_e, cx) => this.toggleIndependent(cx))
+      .child(h_flex().flex_none().gap(6).items_center()
+        .child(div().text_size(this.fs(10)).text_color(t.dim).child(open ? "▾" : "▸"))
+        .child(div().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child("Independent"))
+        .child(div().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length))))
+      .child(div().min_w(0).truncate().text_size(this.fs(10.5)).text_color(t.dim)
+        .child(counts || "No independent tasks"));
+
+    const drawer = v_flex().id("independent-drawer").flex_none().gap(8).p(8).rounded(8).bg(t.surface)
+      .border(1).border_color(t.border).child(header);
+    if (!open) return drawer;
+    if (!cards.length) {
+      return drawer.child(div().px(4).text_size(this.fs(11)).text_color(t.muted).child("No independent tasks in the current view."));
+    }
+    if (stacked) {
+      return drawer.child(v_flex().id("independent-list").gap(6).children(cards.map((c) => this.card(c, t, false))));
+    }
+    return drawer.child(h_flex().id("independent-list").flex_wrap().gap(6).items_start()
+      .children(cards.map((c) => div().w(260).min_w(220).child(this.card(c, t, false)))));
+  }
+
+  /** @param {Record<string, `#${string}`>} t @param {boolean} stacked */
+  renderChainsView(t, stacked) {
+    const chains = this.visibleChains();
+    const independent = this.independentCards();
+    const wrap = v_flex().id("chains-board").flex_1().min_h(0).gap(8).overflow_y_scrollbar();
+    if (!chains.length) {
+      if (this.query && !independent.length) {
+        return wrap.child(div().p(12).text_size(this.fs(11.5)).text_color(t.muted).child("No matching chains or tasks."));
+      }
+      if (!this.query) {
+        wrap.child(div().p(10).rounded(8).bg(t.surface).border(1).border_color(t.border)
+          .text_size(this.fs(11.5)).text_color(t.muted).child(NO_CHAINS_TEXT));
+      }
+    } else {
+      wrap.children(chains.map((comp, idx) => this.renderChainLane(comp, idx, t, stacked)));
+    }
+    if (!this.query || independent.length > 0) {
+      wrap.child(this.renderIndependentDrawer(independent, t, stacked));
+    }
+    return wrap;
   }
 
   // The terminal must still carry this task's label: hc can reuse an address.
@@ -2103,8 +2533,20 @@ export default class FmBoard extends View {
     return HOLD_GROUPS.map((g) => ({ ...g, cards: cards.filter((c) => c.holdGroup === g.id) })).filter((s) => s.cards.length);
   }
 
-  // Matching card ids in the order the board draws them: columns left to right, then down each column.
+  // Matching card ids in the order the active board view draws them.
   matchIds() {
+    if (this.viewMode === "chains") {
+      const q = this.query.toLowerCase();
+      const ids = [];
+      for (const comp of this.visibleChains()) {
+        const { spine, branchColumns } = chainSpineLayout(comp, this.graph.nodes);
+        for (const n of [...spine, ...branchColumns.flatMap((col) => col.nodes)]) {
+          if (!n.missing && n.column !== "done" && searchText(n).includes(q)) ids.push(n.id);
+        }
+      }
+      for (const c of this.independentCards()) ids.push(c.id);
+      return ids;
+    }
     return this.shownColumns().flatMap((col) => this.sections(col.id)).flatMap((s) => this.entries(s.cards))
       .flatMap((x) => (x.topic ? x.cards : [x.card])).map((c) => c.id);
   }
@@ -2128,32 +2570,46 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
-  // The top of the Kanban section: the field, the find icon, where the current match sits,
-  // and the Dependency Inspector toggle.
+  // The top of the task board: the Kanban | Chains view toggle, search field, find icon,
+  // match count, and (in Kanban) the Dependency Inspector toggle.
   searchRow(t, matches) {
     const count = !this.query ? null : matches.length ? `${this.matchAt % matches.length + 1}/${matches.length}` : "No matches";
     const chainCount = this.graph?.components?.length ?? 0;
     const toggleLabel = chainCount > 0 ? `Inspector (${chainCount})` : "Inspector";
-    return h_flex().id("kanban-search").flex_none().gap(4).items_center()
+    const chainsLabel = chainCount > 0 ? `Chains (${chainCount})` : "Chains";
+    const modeTab = (id, mode, label) => {
+      const on = this.viewMode === mode;
+      return div().id(id).flex_none().px(7).py(2.5).rounded(4).cursor_pointer()
+        .when(on, (e) => e.bg(t.background))
+        .text_size(this.fs(11)).font_semibold().text_color(on ? t.foreground : t.muted)
+        .hover((s) => s.opacity(0.85))
+        .on_click((_e, cx) => this.setViewMode(mode, cx))
+        .child(label);
+    };
+    return h_flex().id("kanban-search").flex_none().gap(4).items_center().flex_wrap()
       .on_key_down((e, cx) => {
         if (e.key === "escape" && (this.query || this.search.value())) { this.clearSearch(cx); cx.stop_propagation(); }
-        else if (e.key === "escape" && this.inspectorOpen) { this.clearChainSelection(cx); cx.stop_propagation(); }
+        else if (e.key === "escape" && (this.inspectorOpen || this.selectedCardId)) { this.clearChainSelection(cx); cx.stop_propagation(); }
       })
-      .child(div().flex_1().min_w(0).child(this.field(this.search, t)))
+      .child(h_flex().id("view-mode-toggle").flex_none().gap(2).p(2).rounded(6).bg(t.surface).border(1).border_color(t.border)
+        .child(modeTab("view-mode-kanban", "kanban", "Kanban"))
+        .child(modeTab("view-mode-chains", "chains", chainsLabel)))
+      .child(div().flex_1().min_w(120).child(this.field(this.search, t)))
       .child(div().id("search-find").flex_none().p(5).rounded(5).cursor_pointer().bg(t.raised)
         .hover((s) => s.bg(t.hover)).tooltip("Find next (Enter) · Esc clears")
         .on_click((_e, cx) => this.findNext(cx))
         .child(svg("mods/workspace-chrome/search.svg").size(this.fs(14)).text_color(t.muted)))
       .when(count !== null, (el) =>
         el.child(div().flex_none().text_size(this.fs(11)).text_color(matches.length ? t.muted : t.blocked).child(count)))
-      .child(div().id("dep-inspector-toggle").flex_none().px(7).py(3.5).rounded(5).cursor_pointer()
-        .border(1).border_color(this.inspectorOpen ? t.accent : t.border)
-        .bg(this.inspectorOpen ? t.selected : t.raised)
-        .text_size(this.fs(11)).font_semibold().text_color(this.inspectorOpen ? t.foreground : t.muted)
-        .hover((s) => s.opacity(0.85))
-        .tooltip(this.inspectorOpen ? "Close Dependency Inspector (Esc)" : "Open Dependency Inspector")
-        .on_click((_e, cx) => this.toggleInspector(cx))
-        .child(toggleLabel));
+      .when(this.viewMode === "kanban", (el) =>
+        el.child(div().id("dep-inspector-toggle").flex_none().px(7).py(3.5).rounded(5).cursor_pointer()
+          .border(1).border_color(this.inspectorOpen ? t.accent : t.border)
+          .bg(this.inspectorOpen ? t.selected : t.raised)
+          .text_size(this.fs(11)).font_semibold().text_color(this.inspectorOpen ? t.foreground : t.muted)
+          .hover((s) => s.opacity(0.85))
+          .tooltip(this.inspectorOpen ? "Close Dependency Inspector (Esc)" : "Open Dependency Inspector")
+          .on_click((_e, cx) => this.toggleInspector(cx))
+          .child(toggleLabel)));
   }
 
   cardsIn(id) {
@@ -2332,17 +2788,21 @@ export default class FmBoard extends View {
     // columns; otherwise it is the compact card. Judged on the whole width, so dragging the
     // divider keeps the split and the Board half just stacks.
     const narrowMod = modWidth - this.inspectorWidth(modWidth) < STACK_BELOW_PX;
+    const isChains = this.viewMode === "chains";
+    const inspectorShown = !isChains && this.inspectorOpen;
     const matches = this.query ? this.matchIds() : [];
     this.currentMatch = matches.length ? matches[this.matchAt % matches.length] : null;
-    const board = (stacked
-      ? v_flex().id("board").overflow_y_scrollbar().track_scroll(this.boardScroll)
-      : h_flex().id("board")).flex_1().min_h(0).gap(8);
-    board.children(this.shownColumns().map((c) => this.column(c, t, stacked)));
+    const board = isChains
+      ? this.renderChainsView(t, stacked)
+      : (stacked
+        ? v_flex().id("board").overflow_y_scrollbar().track_scroll(this.boardScroll)
+        : h_flex().id("board")).flex_1().min_h(0).gap(8)
+          .children(this.shownColumns().map((c) => this.column(c, t, stacked)));
     const root = v_flex().id("root").size_full().bg(t.canvas).px(8).pt(2.5).pb(3).gap(6)
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
       .track_focus(this.keys)
       .on_key_down((e, cx) => {
-        if (e.key === "escape" && this.inspectorOpen) { this.clearChainSelection(cx); cx.stop_propagation(); }
+        if (e.key === "escape" && (this.inspectorOpen || this.selectedCardId)) { this.clearChainSelection(cx); cx.stop_propagation(); }
       })
       .child(this.projectSection(t));
     if (this.filter) {
@@ -2352,7 +2812,7 @@ export default class FmBoard extends View {
     }
     root.child(this.frame(v_flex().flex_1().min_h(0).gap(6), t)
       .child(this.searchRow(t, matches))
-      .when(narrowMod && this.inspectorOpen, (e) => e.child(this.renderCompactInspector(activeComp, t)))
+      .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))
       .child(board).child(this.footer(t)).child(this.checksSection(t)))
       .child(this.commandSection(t));
     if (this.viewer.root) {
@@ -2367,7 +2827,7 @@ export default class FmBoard extends View {
             .on_size_change((size, cx) => { this.rightSplitWidth = size.width; cx.notify(); })
             .child(this.viewer.render(t, (px) => this.fs(px), this.viewSources(this.viewProject)))));
     }
-    if (!narrowMod && this.inspectorOpen) {
+    if (!narrowMod && inspectorShown) {
       this.splitWasOpen = true;
       return h_resizable("board-viewer-split").size_full().bg(t.canvas)
         .child(resizable_panel().size_range(280).child(root))

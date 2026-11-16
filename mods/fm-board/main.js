@@ -49,6 +49,25 @@ const COLLAPSED_KEY = "collapsed";
 const FOLDED_KEY = "folded";
 const PROJECTS = "projects";
 const COMMANDS = "commands";
+const CHECKS = "checks";
+// Reads only the list of state/*.check.sh filenames and the mtime of state/.last-check.
+// Never reads check scripts, check outputs, or private check state directories.
+const CHECKS_SCRIPT = [
+  'state="$1"',
+  // An existing state folder that cannot be listed is a failed read, not a home with no checks.
+  'if [ -d "$state" ] && ! { [ -r "$state" ] && [ -x "$state" ]; }; then exit 1; fi',
+  'last=""',
+  'if [ -e "$state/.last-check" ]; then',
+  '  last=$(stat -f %m "$state/.last-check" 2>/dev/null || stat -c %Y "$state/.last-check" 2>/dev/null || true)',
+  "fi",
+  "printf 'last\\0%s\\0' \"$last\"",
+  'for p in "$state"/*.check.sh; do',
+  '  [ -f "$p" ] || continue',
+  '  name=${p##*/}',
+  '  name=${name%.check.sh}',
+  "  printf 'check\\0%s\\0' \"$name\"",
+  "done",
+].join("\n");
 // AppleScript names for clipboard images, file references, and RTFD, which can carry attachments.
 // pbpaste and pbcopy keep only text, so other clipboards come back as plain text.
 const IMAGE_OR_FILE_CLIPBOARD_TYPE = /picture|PNG|TIFF|JPEG|GIF|PDF|BMP|jp2|heic|8BPS|icns|RTFD|furl|file|alias|«class fss »/i;
@@ -97,6 +116,15 @@ function koreaTime(iso) {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return iso;
   return new Date(ms + 9 * 3600 * 1000).toISOString().slice(11, 19);
+}
+// Formats Unix epoch seconds in the viewer's local time (MM-DD HH:MM:SS on another day).
+function localTime(epochSeconds) {
+  if (!Number.isFinite(epochSeconds) || epochSeconds <= 0) return "";
+  const d = new Date(epochSeconds * 1000);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  const day = d.toDateString() === new Date().toDateString() ? "" : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} `;
+  return `${day}${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 const base = (path) => (path ?? "").split("/").filter(Boolean).pop() ?? "";
 // The backlog writes "-" for an item with no project; such items are firstmate's own work.
@@ -730,6 +758,7 @@ export default class FmBoard extends View {
     this.keys = cx.focus_handle();
     const ui = props()?.ui ?? {};
     this.cards = null; this.projects = []; this.requests = []; this.ready = null;
+    this.checks = null; this.lastCheckSweep = null; this.checksFailed = false;
     this.error = null; this.notice = ""; this.generated = ""; this.loading = false; this.last = 0;
     /** @type {{ timer: import("gpui-kit").Task | null } | null} */
     this.activeRefresh = null;
@@ -912,6 +941,13 @@ export default class FmBoard extends View {
     });
     cx.notify();
     cx.spawn(async (cx) => {
+      const checksRead = this.loadChecks().then((info) => {
+        if (!isCurrent()) return;
+        this.checks = info?.checks ?? [];
+        this.lastCheckSweep = info?.lastSweep ?? null;
+        this.checksFailed = !info;
+        cx.notify();
+      });
       try {
         const snapshot = await this.loadSnapshot();
         if (!isCurrent()) return;
@@ -936,6 +972,7 @@ export default class FmBoard extends View {
         if (!isCurrent()) return;
         this.error = String(e?.message ?? e); // keep the last good board on screen
       }
+      await checksRead;
       if (!isCurrent()) return;
       run.timer?.cancel?.();
       this.activeRefresh = null;
@@ -980,6 +1017,31 @@ export default class FmBoard extends View {
     const beat = readyData ? readyData.wake_consumer?.beacon_age_seconds ?? null : null;
     const watchers = await this.loadWatchers();
     return { requests, ready: isReady, beat, watchers };
+  }
+
+  // Registered checks from state/*.check.sh filenames and the home-wide sweep mtime from state/.last-check,
+  // or null when they could not be read.
+  async loadChecks() {
+    try {
+      const r = await exec("sh", ["-c", CHECKS_SCRIPT, "checks", `${home()}/state`], { timeout: PROCESS_LIST_TIMEOUT_MS });
+      if (r?.code !== 0) return null;
+      const fields = (r.stdout ?? "").split("\0");
+      const names = [];
+      let lastSweep = null;
+      for (let i = 0; i + 1 < fields.length; i += 2) {
+        const kind = fields[i], value = fields[i + 1];
+        if (kind === "last" && /^\d+$/.test(value)) {
+          const epoch = Number(value);
+          if (epoch > 0) lastSweep = epoch;
+        } else if (kind === "check" && value) {
+          names.push(value);
+        }
+      }
+      names.sort((a, b) => a.localeCompare(b));
+      return { checks: names.map((name) => ({ name })), lastSweep };
+    } catch {
+      return null;
+    }
   }
 
   // Firstmate's supervision processes, read from the home's own runtime records:
@@ -2204,6 +2266,41 @@ export default class FmBoard extends View {
       .child(right);
   }
 
+  // Compact monitoring list of registered checks (state/*.check.sh) and the home-wide last sweep time.
+  checksSection(t) {
+    const collapsed = this.collapsed.has(CHECKS);
+    const list = this.checks ?? [];
+    const sweep = this.checks === null ? "Loading…"
+      : this.checksFailed ? "Could not read"
+      : (localTime(this.lastCheckSweep) || "Not recorded");
+    const header = h_flex().id("head-checks").gap(8).items_center().justify_between().px(6).py(3).rounded(5).bg(t.selected)
+      .cursor_pointer().hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggle(CHECKS, cx))
+      .child(h_flex().flex_none().gap(6).items_center()
+        .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
+        .child(div().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child("Registered checks"))
+        .when(this.checks !== null && !this.checksFailed, (e) => e.child(div().text_size(this.fs(11)).text_color(t.dim).child(String(list.length)))))
+      .child(div().id("checks-last-sweep").min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim)
+        .tooltip("Home-wide watcher check-sweep time from state/.last-check; Firstmate does not record per-check running state, last run, or result")
+        .child(`Last sweep (all checks): ${sweep}`));
+    const wrap = v_flex().id("checks-section").flex_none().gap(4).pt(6).border_t(1).border_color(t.border)
+      .child(header);
+    if (collapsed) return wrap;
+    const rows = v_flex().id("checks-list").gap(2).max_h(110).min_h(0).flex_shrink(1).overflow_y_scroll();
+    if (this.checks === null) {
+      rows.child(div().px(6).text_size(this.fs(11)).text_color(t.dim).child("Loading registered checks…"));
+    } else if (this.checksFailed) {
+      rows.child(div().px(6).text_size(this.fs(11)).text_color(t.dim).child("Could not read registered checks"));
+    } else if (!list.length) {
+      rows.child(div().px(6).text_size(this.fs(11)).text_color(t.dim).child("No registered checks"));
+    } else {
+      rows.children(list.map((c) => h_flex().id(`check-${c.name}`).gap(6).px(6).py(1).items_center().min_w(0)
+        .tooltip(`Registered check file: state/${c.name}.check.sh`)
+        .child(div().flex_none().w(5).h(5).rounded(2.5).bg(t.muted))
+        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11)).text_color(t.foreground).child(c.name))));
+    }
+    return wrap.child(rows);
+  }
+
   render(_cx) {
     this.readFontScale(this.size?.width);
     const names = this.projectNames();
@@ -2256,7 +2353,7 @@ export default class FmBoard extends View {
     root.child(this.frame(v_flex().flex_1().min_h(0).gap(6), t)
       .child(this.searchRow(t, matches))
       .when(narrowMod && this.inspectorOpen, (e) => e.child(this.renderCompactInspector(activeComp, t)))
-      .child(board).child(this.footer(t)))
+      .child(board).child(this.footer(t)).child(this.checksSection(t)))
       .child(this.commandSection(t));
     if (this.viewer.root) {
       this.splitWasOpen = true;

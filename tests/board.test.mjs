@@ -3,9 +3,15 @@
 // The fixture is fictional but has the shape fm-fleet-snapshot.sh really prints, and the first
 // test holds it to that shape: a fixture field the real snapshot does not have once hid a bug.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import vm from "node:vm";
+
+const runFile = promisify(execFile);
 
 const root = new URL("..", import.meta.url);
 const snapshotFile = new URL("tests/fixtures/snapshot.json", root).pathname;
@@ -1231,6 +1237,149 @@ test("Herdr check initializes a renderable Board without commands, reads, watche
   assert.deepEqual(b.initEffects, []);
   assert.equal(b.view.cards, null);
   assert.ok(b.ids.includes("root"));
+});
+
+test("Registered checks section lists state/*.check.sh names and home-wide state/.last-check sweep time in viewer local time", async (t) => {
+  const tempHome = await mkdtemp(join(tmpdir(), "fm-board-checks-"));
+  const stateDir = join(tempHome, "state");
+  await mkdir(stateDir, { recursive: true });
+  t.after(() => rm(tempHome, { recursive: true, force: true }));
+
+  // Fictional checks only; include a non-check file, a directory ending in .check.sh, and private check output
+  // that must be ignored and never read.
+  await writeFile(join(stateDir, "gamma-digest.check.sh"), "#!/bin/sh\necho SECRET_CHECK_OUTPUT\n");
+  await writeFile(join(stateDir, "alpha-audit.check.sh"), "#!/bin/sh\necho SECRET_CHECK_OUTPUT\n");
+  await writeFile(join(stateDir, "beta-sync.check.sh"), "#!/bin/sh\nexit 0\n");
+  await writeFile(join(stateDir, ".alpha-audit-output"), "SECRET_PRIVATE_STATE\n");
+  await writeFile(join(stateDir, "notes.txt"), "not a check\n");
+  await mkdir(join(stateDir, "ignored-dir.check.sh"));
+
+  const sweepDate = new Date("2026-11-10T03:05:09Z");
+  await writeFile(join(stateDir, ".last-check"), "");
+  await utimes(join(stateDir, ".last-check"), sweepDate, sweepDate);
+
+  const tz = process.env.TZ;
+  t.after(() => { if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz; });
+
+  const realChecksExec = async (cmd, args) => {
+    if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") {
+      // Substitute tempHome/state for the fictional HOME/state path.
+      const res = await runFile("sh", ["-c", args[1], "checks", stateDir], { encoding: "utf8" });
+      return { code: 0, stdout: res.stdout, stderr: res.stderr };
+    }
+    return { code: 1, stdout: "", stderr: "" };
+  };
+
+  // Viewer in Asia/Seoul (UTC+9): 2026-11-10T03:05:09Z -> 11-10 12:05:09.
+  process.env.TZ = "Asia/Seoul";
+  const store = memoryStore();
+  const b = await board({ exec: realChecksExec, store });
+  assert.ok(b.ids.includes("checks-section"));
+  assert.ok(b.ids.indexOf("checks-section") > b.ids.indexOf("board"), "registered checks belong in the monitoring area, not cards");
+  assert.deepEqual(
+    b.ids.filter((id) => id.startsWith("check-")),
+    ["check-alpha-audit", "check-beta-sync", "check-gamma-digest"],
+  );
+  assert.equal(b.text("check-alpha-audit"), "alpha-audit");
+  assert.equal(b.text("check-beta-sync"), "beta-sync");
+  assert.equal(b.text("check-gamma-digest"), "gamma-digest");
+  assert.match(b.text("head-checks"), /^▾ Registered checks 3 /);
+  assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): 11-10 12:05:09");
+  // Ensure no check script contents or private state file contents leaked into the rendered tree.
+  const allText = b.items.map((x) => x.text).join(" ");
+  assert.ok(!allText.includes("SECRET_CHECK_OUTPUT"));
+  assert.ok(!allText.includes("SECRET_PRIVATE_STATE"));
+  assert.ok(!allText.includes("ignored-dir"));
+  // No per-check running, last-run, or result fields are rendered on check rows or cards.
+  assert.ok(!b.text("card-maple-preview-screen").includes("alpha-audit"));
+
+  // Viewer in UTC sees the same instant formatted in UTC local time (03:05:09), and today omits MM-DD.
+  process.env.TZ = "UTC";
+  assert.equal(b.redraw().find((x) => x.id === "checks-last-sweep")?.text, "Last sweep (all checks): 11-10 03:05:09");
+  const now = new Date();
+  const todaySweep = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 7, 8, 9));
+  await utimes(join(stateDir, ".last-check"), todaySweep, todaySweep);
+  await b.reload();
+  assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): 07:08:09");
+
+  // Collapsing the section hides rows, keeps Last sweep visible in the header, and saves state.
+  b.click("head-checks");
+  assert.ok(!b.ids.includes("checks-list"));
+  assert.ok(!b.ids.includes("check-alpha-audit"));
+  assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): 07:08:09");
+  assert.deepEqual(JSON.parse(store.getItem("collapsed")), ["checks"]);
+  b.click("head-checks");
+  assert.ok(b.ids.includes("check-alpha-audit"));
+
+  // Missing state/.last-check shows Not recorded; empty checks shows No registered checks.
+  await rm(join(stateDir, ".last-check"));
+  await rm(join(stateDir, "alpha-audit.check.sh"));
+  await rm(join(stateDir, "beta-sync.check.sh"));
+  await rm(join(stateDir, "gamma-digest.check.sh"));
+  await b.reload();
+  assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): Not recorded");
+  assert.equal(b.text("checks-list"), "No registered checks");
+  assert.match(b.text("head-checks"), /^▾ Registered checks 0 /);
+});
+
+test("Registered checks section reports a failed read instead of claiming no checks or no sweep", async () => {
+  const failed = await board({
+    exec: async () => ({ code: 1, stdout: "", stderr: "permission denied" }),
+  });
+  assert.equal(failed.view.error, null);
+  assert.equal(failed.text("checks-list"), "Could not read registered checks");
+  assert.equal(failed.text("checks-last-sweep"), "Last sweep (all checks): Could not read");
+  assert.match(failed.text("head-checks"), /^▾ Registered checks Last sweep/);
+
+  const rejected = await board({
+    exec: async (cmd, args) => {
+      if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") throw new Error("timed out");
+      return { code: 1, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal(rejected.text("checks-list"), "Could not read registered checks");
+  assert.equal(rejected.text("checks-last-sweep"), "Last sweep (all checks): Could not read");
+});
+
+test("Registered checks section reports an unlistable state folder as a failed read", { skip: process.getuid?.() === 0 && "root can list any folder" }, async (t) => {
+  const tempHome = await mkdtemp(join(tmpdir(), "fm-board-checks-"));
+  const stateDir = join(tempHome, "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(join(stateDir, "fictional-probe.check.sh"), "#!/bin/sh\nexit 0\n");
+  await writeFile(join(stateDir, ".last-check"), "");
+  await chmod(stateDir, 0o000);
+  t.after(async () => { await chmod(stateDir, 0o755); await rm(tempHome, { recursive: true, force: true }); });
+  const b = await board({
+    exec: async (cmd, args) => {
+      if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") {
+        try {
+          const res = await runFile("sh", ["-c", args[1], "checks", stateDir], { encoding: "utf8" });
+          return { code: 0, stdout: res.stdout, stderr: res.stderr };
+        } catch (e) {
+          return { code: e.code ?? 1, stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
+        }
+      }
+      return { code: 1, stdout: "", stderr: "" };
+    },
+  });
+  // The folder holds a registered check and a sweep record, so "none" or "not recorded" would be false.
+  assert.equal(b.text("checks-list"), "Could not read registered checks");
+  assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): Could not read");
+});
+
+test("Registered checks section is read even when the first refresh fails before the inbox", async () => {
+  const b = await board({
+    registryFails: true,
+    exec: async (cmd, args) => {
+      if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") {
+        return { code: 0, stdout: "last\x00\x00check\x00fictional-sweep\x00", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal(b.view.error, "registry unreadable");
+  assert.deepEqual(b.ids.filter((id) => id.startsWith("check-")), ["check-fictional-sweep"]);
+  assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): Not recorded");
 });
 
 // Exercise the tab bar through the same element boundary as the Board, with only

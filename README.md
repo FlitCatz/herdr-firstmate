@@ -25,6 +25,8 @@ Hovering or clicking a card in a dependency chain marks its upstream (`Upstream`
 
 The Commands section's Memo button saves what is typed in the field as a Firstmate inbox note that asks Firstmate to file it in the backlog without starting work. Unlike Scout and Task it never types into the Firstmate terminal, so a note jotted while Firstmate is stopped on a usage limit is still written to disk at once and shows in the Projects list as a pending request.
 
+A footer below the columns shows supervision watcher status and the latest refresh time, followed by a collapsible Registered checks section that lists `state/*.check.sh` filenames alongside the home-wide `state/.last-check` sweep time in local time (`Last sweep (all checks)`). Per-check running state, last-run time, and results are not recorded by Firstmate and are not displayed, and the Board never reads check scripts, outputs, or private check state directories.
+
 The preview uses fictional projects and tasks.
 
-`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, tab behavior, folder-watch cleanup, and check-mode side-effect guards; it needs only Node.js, not Herdr.
+`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, registered checks, tab behavior, folder-watch cleanup, and check-mode side-effect guards; it needs only Node.js, not Herdr.

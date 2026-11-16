@@ -13,7 +13,7 @@ When the panel is shown it takes two thirds of the row and the active-tab pane o
 
 The tab bar sits on the chrome background and shows tabs plus Board, Files, and Changes panel buttons.
 
-The board shows project rows above the Kanban section, which holds a search field with a find icon above the task columns, a footer with update and watcher status, and command controls below.
+The board shows project rows above the Kanban section, which holds a search field with a find icon above the task columns, a footer with update and watcher status, a collapsible Registered checks section below the footer, and command controls below.
 Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a three-letter abbreviation and a color of its own: a project gets the first palette color no other project holds when it is first seen and keeps it when others are added or removed, and its color is freed once a successful read finds it in neither the registry nor any card, so projects get distinct colors while free palette colors remain.
 When none is free, or local storage cannot be used, a project takes a color derived from its name and keeps it even after a color is freed; a project with a chosen color keeps its automatic color reserved for when Auto is chosen again; in those cases two projects can share a color.
 Each Board copy's text follows Herdr's terminal font size and grows with that copy's width.
@@ -105,6 +105,7 @@ Smooth wheel gestures accumulate and debounce small events, while each wheel not
 Invalid saved panel data falls back to an empty per-space panel history.
 Controls highlight on hover, and project badges and several buttons have explanatory tooltips.
 The board watches the home's state and data folders and has a 30-second refresh fallback; each refresh is bounded by a 15-second deadline (showing `Update failed` on timeout while keeping the last board on screen so later refreshes can still run), and its footer `Updated` time is displayed in Korea time; clicking it, or the `Update failed` notice, refreshes immediately.
+Below the footer, the collapsible Registered checks section lists one row per `state/*.check.sh` file (named from the filename) and shows the home-wide last check-sweep timestamp from `state/.last-check` in the viewer's local time, labeled `Last sweep (all checks)` (or `Not recorded` when absent). Per-check running state, per-check last-run time, and check results are not recorded by Firstmate, so the board does not display per-check values and never reads check scripts, outputs, or private check state directories.
 
 ## Built from
 
@@ -121,7 +122,7 @@ Its Peek icon runs Herdr's `terminal.peek` command.
 Card drafts use macOS `pbpaste` and `pbcopy` to save clipboard text to a temporary file and restore it around Herdr's `terminal.paste` action; they verify terminal focus before pasting and leave Enter to the owner.
 They first read the clipboard types with `osascript`; plain text is restored as is, and rich text such as HTML, RTF, or a web archive is restored as plain text with its formatting dropped.
 If the clipboard holds an image, files, or RTFD, which can carry attachments, or holds no plain text at all, nothing is inserted, the clipboard is left untouched, and a notice asks you to paste it first.
-It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, `/bin/ps` to list processes for the cards' background job rows, and `open` for folders or review URLs.
+It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, `/bin/ps` to list processes for the cards' background job rows, `sh` with `stat` to list `state/*.check.sh` filenames and read the `state/.last-check` mtime (bounded by a 3-second timeout, without reading file contents), and `open` for folders or review URLs.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
 The viewer cancels its pending folder watch when its root changes or it closes.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.
@@ -158,7 +159,7 @@ The layout and mods expect Herdr's shipped `workspace-chrome`, `spaces`, `agents
 
 Both mod folders pass `herdr-app check`.
 
-`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files · Changes` button, the Held groups, and the open decisions with their answer drafts.
+`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files · Changes` button, the Held groups, the open decisions with their answer drafts, and the Registered checks section.
 
 The layout opens with the configured Firstmate home, displays the board and panel controls, and switching spaces restores each space's selected panel.
 

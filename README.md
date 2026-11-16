@@ -1,6 +1,7 @@
 # Firstmate for Herdr
 
 A Herdr layout with a Firstmate task board, read-only Files and Changes viewer, and tab bar with a Board button.
+Requires Herdr 0.1.16 or later.
 It requires a Firstmate installation and home containing its `bin/`, `data/`, `state/`, and `projects/` folders, plus `hc` and the usual Unix command-line tools.
 
 To add it using Herdr's sharing steps:
@@ -26,4 +27,4 @@ The Commands section's Memo button saves what is typed in the field as a Firstma
 
 The preview uses fictional projects and tasks.
 
-`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape; it needs only Node.js, not Herdr.
+`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, tab behavior, folder-watch cleanup, and check-mode side-effect guards; it needs only Node.js, not Herdr.

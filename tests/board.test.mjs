@@ -62,16 +62,18 @@ function drawn(tree) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {} } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
+  const initEffects = [];
   const scrolled = [];
   const focused = [];
   const cx = {
-    notify() {}, stop_propagation() {}, spawn(fn) { pending.push(fn(cx)); }, timer: { every() {}, after() {} },
+    notify() {}, stop_propagation() {}, spawn(fn) { initEffects.push("spawn"); pending.push(fn(cx)); },
+    timer: { every() { initEffects.push("timer"); }, after() { initEffects.push("timer"); } },
     focus_handle() { const handle = { focus() { focused.push(handle); }, is_focused: () => focused.at(-1) === handle, release: () => true }; return handle; },
   };
   const input = () => { let text = ""; return { on() {}, value: () => text, set_value(v) { text = v; } }; };
@@ -81,10 +83,12 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     h_resizable: element, resizable_panel: element, InputState: { new: input },
     ScrollHandle: { new: () => { const handle = { scroll_to_item(idx) { scrolled.push({ handle, idx }); } }; return handle; } },
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
-    props: () => ({ home: HOME, snapshot_file: snapshotFile, collapsed: [], ui }),
+    props: () => ({ home: HOME, ...(preview ? { snapshot_file: snapshotFile } : {}), collapsed: [], ui }),
+    checking: () => checkMode,
     theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
     localStorage: store,
     readTextFile: async (file) => {
+      initEffects.push("read");
       if (file === snapshotFile) return customSnapshot ? JSON.stringify(customSnapshot) : readFile(file, "utf8");
       if (file === `${HOME}/data/projects.md`) {
         if (registry.fails) throw new Error("registry unreadable");
@@ -93,8 +97,8 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
       throw new Error(`no such file: ${file}`);
     },
     // By default no helper program exists here, and the Board treats every one as failed.
-    exec,
-    watchFolder: async () => {}, pickFolder: async () => null,
+    exec: (...args) => { initEffects.push("exec"); return exec(...args); },
+    watchFolder: () => { initEffects.push("watch"); return new Promise(() => {}); }, pickFolder: async () => null,
   };
   const { FmBoard, cardsFrom, dependencyGraph, chainHighlight, waitingLabel, blocksLabel } = vm.runInNewContext(
     `${source}\n({ FmBoard, cardsFrom, dependencyGraph, chainHighlight, waitingLabel, blocksLabel })`,
@@ -102,7 +106,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   );
   const view = new FmBoard();
   view.init({}, cx);
-  await Promise.all(pending);
+  await Promise.all(preview ? pending : pending.slice(0, 1));
   if (!registryFails) assert.equal(view.error, null);
   const drafts = [], opened = [];
   view.insertCardText = (text) => drafts.push(text);
@@ -141,7 +145,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     return redraw();
   };
   return {
-    view, registry, reload, cardsFrom, dependencyGraph, chainHighlight, waitingLabel, blocksLabel,
+    view, registry, reload, cardsFrom, dependencyGraph, chainHighlight, waitingLabel, blocksLabel, initEffects,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
     click, hover, keyDown, scrolled, focused, drafts, opened, redraw,
@@ -1088,7 +1092,7 @@ test("refresh bounds exec timeouts, clears loading after deadline, ignores stale
     h_resizable: element, resizable_panel: element, InputState: { new: input },
     ScrollHandle: { new: () => ({ scroll_to_item() {} }) },
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
-    props: () => ({ home: HOME, collapsed: [] }),
+    props: () => ({ home: HOME, collapsed: [] }), checking: () => false,
     theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
     localStorage: { getItem: () => null, setItem() {} },
     readTextFile: async (file) => {
@@ -1218,4 +1222,214 @@ test("refresh bounds exec timeouts, clears loading after deadline, ignores stale
   assert.deepEqual([...view.cards.map((c) => c.id)], ["T5"]);
   assert.equal(view.ready, true);
   assert.equal(JSON.stringify(view.watchers), JSON.stringify([{ role: "Watcher", pid: "12345", up: null }]));
+});
+
+
+test("Herdr check initializes a renderable Board without commands, reads, watches, or timers", async () => {
+  const b = await board({ checkMode: true, preview: false,
+    exec: async () => ({ code: 0, stdout: JSON.stringify(snapshot), stderr: "" }) });
+  assert.deepEqual(b.initEffects, []);
+  assert.equal(b.view.cards, null);
+  assert.ok(b.ids.includes("root"));
+});
+
+// Exercise the tab bar through the same element boundary as the Board, with only
+// Herdr's native APIs replaced. Time is explicit so wheel gestures are deterministic.
+async function tabs({ saved = null, checkMode = false, spaceList = [], paneList = [], rootLayout = null } = {}) {
+  const source = (await readFile(new URL("mods/fm-tabs/main.js", root), "utf8"))
+    .replace(/^import .*;$/gm, "").replace("export default class Tabs", "class Tabs");
+  const actions = [], scrolls = [], storage = [];
+  let now = 1000;
+  const scope = {
+    View: class {}, div: element, svg: element, image: element, h_flex: element,
+    ScrollHandle: { new: () => { const handle = { scroll_to_item(idx) { scrolls.push({ handle, idx }); } }; return handle; } },
+    spaces: () => spaceList, panes: () => paneList, layout: () => rootLayout,
+    run: (action, args) => actions.push({ action, args }), openOverlay() {},
+    theme: () => new Proxy({}, { get: () => "#808080" }), window: () => ({}),
+    shared: () => ["files", "changes"], settings: () => ({ zoom: 1 }),
+    checking: () => checkMode, Date: { now: () => now },
+    localStorage: { getItem(key) { storage.push(["get", key]); return saved; }, setItem(...args) { storage.push(["set", ...args]); } },
+  };
+  const Tabs = vm.runInNewContext(`${source}\nTabs`, scope);
+  const view = new Tabs();
+  view.init();
+  let tree, items;
+  const redraw = () => { tree = view.render(); items = drawn(tree); return items; };
+  redraw();
+  const handler = (id, name) => {
+    const node = id ? items.find((x) => x.id === id) : tree.node;
+    const callback = node?.calls.find((c) => c[0] === name)?.[1];
+    assert.equal(typeof callback, "function", `${id ?? "tab bar"} has no ${name}`);
+    return callback;
+  };
+  return {
+    view, actions, storage, redraw,
+    get scrolls() {
+      const handle = items.find((x) => x.id === "tab-scroll")?.calls.find((c) => c[0] === "track_scroll")?.[1];
+      return scrolls.map((s) => s.handle === handle ? s.idx : `other handle at ${s.idx}`);
+    },
+    text: (id) => items.find((x) => x.id === id)?.text,
+    click(id) { items.find((x) => x.id === id).click(); },
+    wheel(delta, at, extra = {}) { now = at; handler(null, "on_scroll_wheel")({ delta: { x: 0, y: delta }, touch_phase: "moved", ...extra }); },
+    resize(id) { handler(id, "on_size_change")({}, { notify() {} }); },
+    scrollHandle: () => items.find((x) => x.id === "tab-scroll")?.calls.find((c) => c[0] === "track_scroll")?.[1],
+  };
+}
+
+for (const saved of ["{broken", "null", "[]", "42", '"text"']) {
+  test(`tabs recover from invalid saved panels: ${saved}`, async () => {
+    const spaceList = [{ id: "s1", active: true, tabs: [] }];
+    const rootLayout = { children: [{ id: "panel", hidden: false }, { id: "panel-body", active: "board" }] };
+    const t = await tabs({ saved, spaceList, rootLayout });
+    assert.equal(t.text("panel-board"), "Board");
+    assert.deepEqual(t.storage.filter(([op]) => op === "set"), [["set", "panels", '{"s1":"board"}']]);
+  });
+}
+
+test("tabs keep the Board control and restore Board as a saved panel", async () => {
+  const t = await tabs({ saved: '{"s1":"board"}', spaceList: [{ id: "s1", active: true, tabs: [] }],
+    rootLayout: { children: [{ id: "panel", hidden: true }, { id: "panel-body", active: "files" }] } });
+  assert.deepEqual(t.actions.map((x) => x.action), ["layout.select", "layout.show"]);
+  assert.equal(t.actions[0].args.child, "board");
+  assert.equal(t.text("panel-files"), "Files");
+  assert.equal(t.text("panel-changes"), "Changes");
+  t.click("panel-board");
+  assert.equal(t.actions.at(-2).args.child, "board");
+  assert.equal(t.actions.at(-1).action, "layout.show");
+});
+
+test("Herdr check renders tabs without reading or saving panels or changing the layout", async () => {
+  const t = await tabs({ checkMode: true, saved: '{"s1":"board"}', spaceList: [{ id: "s1", active: true, tabs: [] }],
+    rootLayout: { children: [{ id: "panel", hidden: false }, { id: "panel-body", active: "files" }] } });
+  assert.deepEqual(t.storage, []);
+  assert.deepEqual(t.actions, []);
+  assert.equal(t.text("panel-board"), "Board");
+});
+
+test("tabs accumulate small wheel events and limit a continuous gesture to one step per 100ms", async () => {
+  const t = await tabs();
+  for (let i = 0; i < 10; i++) t.wheel(2, 1000 + i * 2);
+  assert.deepEqual(t.actions.map((x) => x.action), ["tab.prev"]);
+  t.wheel(60, 1040);
+  assert.equal(t.actions.length, 1);
+  t.wheel(1, 1120);
+  assert.equal(t.actions.length, 2);
+  t.wheel(-20, 1240);
+  assert.equal(t.actions.at(-1).action, "tab.next", "turning starts a new gesture");
+  t.wheel(19, 1600);
+  assert.equal(t.actions.length, 3, "a pause discards the old gesture's remainder");
+  t.wheel(1, 1610);
+  assert.equal(t.actions.length, 4);
+  t.wheel(19, 1700, { touch_phase: "started" });
+  assert.equal(t.actions.length, 4);
+  t.wheel(1, 1720);
+  assert.equal(t.actions.length, 5);
+});
+
+test("tabs switch once per wheel notch and ignore horizontal-only line scrolling", async () => {
+  const t = await tabs();
+  t.wheel(0, 1000, { delta_lines: { x: 0, y: 1 } });
+  t.wheel(0, 1001, { delta_lines: { x: 0, y: -1 } });
+  t.wheel(60, 1002, { delta_lines: { x: 1, y: 0 } });
+  assert.deepEqual(t.actions.map((x) => x.action), ["tab.prev", "tab.next"]);
+});
+
+test("tabs follow useful live agent titles, preserving explicit names and filtering terminal noise", async () => {
+  const tab = { id: "t1", name: "tb1", named: false, active: true };
+  const lead = { tab: "t1", terminal: "term1", title: "✳ Fix parser", program: { name: "Claude", key: "claude", agent: true } };
+  const t = await tabs({ spaceList: [{ id: "s1", active: true, tabs: [tab] }], paneList: [lead] });
+  const cases = [
+    [false, "tb1", "✳ Fix parser", "Fix parser"],
+    [false, "tb1", "[ ! ] Fix parser", "Fix parser"],
+    [true, "Claude", "✳ New session title", "New session title"],
+    [true, "My task", "✳ New session title", "My task"],
+    [false, "tb1", "/repo/project", "Claude"],
+    [false, "tb1", "~/project", "Claude"],
+    [false, "tb1", "C:\\project", "Claude"],
+    [false, "tb1", "✳ /repo/project", "Claude"],
+    [false, "tb1", "user@host", "Claude"],
+    [false, "tb1", "term1", "Claude"],
+    [false, "tb1", "CLAUDE", "Claude"],
+    [false, "tb1", "", "Claude"],
+  ];
+  for (const [named, name, title, want] of cases) {
+    Object.assign(tab, { named, name }); lead.title = title; t.redraw();
+    assert.equal(t.text("tab-t1"), want, title);
+  }
+  lead.program.agent = false; lead.title = "shell prompt"; t.redraw();
+  assert.equal(t.text("tab-t1"), "Claude");
+  lead.program = null; t.redraw();
+  assert.equal(t.text("tab-t1"), "Terminal");
+});
+
+test("tabs scroll the active item into view on selection, reorder, and size changes", async () => {
+  const list = [{ id: "t1", named: false, active: false }, { id: "t2", named: false, active: true }];
+  const t = await tabs({ spaceList: [{ id: "s1", active: true, tabs: list }] });
+  assert.ok(t.scrollHandle(), "the tab strip must track the handle that receives the scroll");
+  assert.deepEqual(t.scrolls, [1]);
+  t.redraw();
+  assert.deepEqual(t.scrolls, [1], "unchanged selection does not trigger another render-time scroll");
+  t.resize("tab-t1"); t.resize("tab-t2"); t.resize("tab-scroll");
+  assert.deepEqual(t.scrolls, [1, 1, 1, 1]);
+  list[0].active = true; list[1].active = false; t.redraw();
+  assert.equal(t.scrolls.at(-1), 0);
+  list.reverse(); t.redraw();
+  assert.equal(t.scrolls.at(-1), 1, "moving the same active tab updates its scroll index");
+  list.length = 0; t.redraw();
+  assert.equal(t.scrolls.at(-1), 1, "an empty strip never scrolls to -1");
+});
+
+async function folderViewer() {
+  const source = (await readFile(new URL("mods/fm-board/viewer.js", root), "utf8"))
+    .replace(/^import .*;$/gm, "").replace("export class FolderViewer", "class FolderViewer");
+  const watches = [], commands = [], pending = [];
+  const cx = { notify() {}, spawn(fn) { const task = fn(cx); pending.push(task); return task; } };
+  const scope = {
+    watchFolder(root) {
+      let resolve;
+      const promise = new Promise((r) => { resolve = r; });
+      const watch = { root, active: true, cancelled: false, finish() { watch.active = false; resolve([]); } };
+      promise.cancel = () => { watch.cancelled = true; watch.finish(); };
+      watches.push(watch);
+      return promise;
+    },
+    exec: async (cmd, args, opts) => { commands.push({ cmd, args, opts }); return { code: cmd === "sh" ? 0 : 1, stdout: "", stderr: "" }; },
+  };
+  const FolderViewer = vm.runInNewContext(`${source}\nFolderViewer`, scope);
+  const view = new FolderViewer();
+  const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  return { view, cx, watches, commands, flush, pending };
+}
+
+test("switching viewer roots cancels the old watch without cancelling or refreshing the new root", async () => {
+  const v = await folderViewer();
+  v.view.target("/first", "First", v.cx);
+  await v.flush();
+  v.view.target("/second", "Second", v.cx);
+  assert.equal(v.watches[0].cancelled, true);
+  await v.flush();
+  assert.deepEqual(v.watches.filter((w) => w.active).map((w) => w.root), ["/second"]);
+  const before = v.commands.length;
+  v.watches.at(-1).finish();
+  await v.flush();
+  assert.ok(v.commands.length > before, "changes in the new root still refresh the viewer");
+  assert.ok(v.commands.slice(before).every((c) => c.cmd === "sh" ? c.args.at(-1) === "/second" : c.opts.cwd === "/second"));
+  assert.deepEqual(v.watches.filter((w) => w.active).map((w) => w.root), ["/second"]);
+  v.view.close(v.cx);
+  await Promise.all(v.pending);
+});
+
+test("closing a viewer cancels its watch and prevents a resumed loop from rearming it", async () => {
+  const v = await folderViewer();
+  v.view.target("/first", "First", v.cx);
+  await v.flush();
+  v.view.target("/first", "Renamed", v.cx);
+  assert.equal(v.watches.length, 1, "the same root keeps its existing watch");
+  v.view.close(v.cx);
+  assert.equal(v.watches[0].cancelled, true);
+  await v.flush();
+  assert.equal(v.watches.filter((w) => w.active).length, 0);
+  assert.equal(v.watches.length, 1);
+  assert.equal(v.view.root, null);
+  await Promise.all(v.pending);
 });

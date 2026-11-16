@@ -38,6 +38,7 @@ export class FolderViewer {
   constructor() { this.root = null; this.label = ""; this.tab = "files"; this.gen = 0; this.reset(); }
 
   reset() {
+    this.folderWatch?.cancel(); this.folderWatch = null;
     this.code?.release?.();
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
     this.file = null; this.code = null; this.fileError = null; this.error = null; this.loading = false; this.limited = false;
@@ -59,7 +60,14 @@ export class FolderViewer {
     const gen = this.gen, root = this.root;
     cx.spawn(async (cx) => {
       // A tree too large to watch throws here; the Board's timer still refreshes it.
-      try { while (this.gen === gen) { await watchFolder(root); if (this.gen === gen) this.refresh(cx); } } catch {}
+      try {
+        while (this.gen === gen) {
+          const watch = this.folderWatch = watchFolder(root);
+          try { await watch; }
+          finally { if (this.folderWatch === watch) this.folderWatch = null; }
+          if (this.gen === gen) this.refresh(cx);
+        }
+      } catch {}
     });
   }
 

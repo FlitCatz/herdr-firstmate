@@ -13,7 +13,7 @@ When the panel is shown it takes two thirds of the row and the active-tab pane o
 
 The tab bar sits on the chrome background and shows tabs plus Board, Files, and Changes panel buttons.
 
-The board shows project rows above the Kanban section, which holds a search field with a find icon above the task columns, a footer with update and watcher status, a collapsible Registered checks section below the footer, and command controls below.
+The board shows project rows above the task section, which holds a `Kanban | Chains` view toggle and search field with a find icon above the task board (either Kanban columns or Chains swimlanes), a footer with update and watcher status, a collapsible Registered checks section below the footer, and command controls below.
 Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a three-letter abbreviation and a color of its own: a project gets the first palette color no other project holds when it is first seen and keeps it when others are added or removed, and its color is freed once a successful read finds it in neither the registry nor any card, so projects get distinct colors while free palette colors remain.
 When none is free, or local storage cannot be used, a project takes a color derived from its name and keeps it even after a color is freed; a project with a chosen color keeps its automatic color reserved for when Auto is chosen again; in those cases two projects can share a color.
 Each Board copy's text follows Herdr's terminal font size and grows with that copy's width.
@@ -35,9 +35,9 @@ Only captain holds have a bucket: an `external` hold waits on other work, and a 
 A deferred card that has a `hold_until` date shows it on its state row as `until <month>-<day>`, such as `until 12-01`.
 Their header dots use the theme's idle, working, blocked, done, unknown, and red colors as appropriate.
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.
-The Kanban search matches task ids and the title, note, and decision text on cards, ignoring case.
-Enter or the find icon applies it: each column then shows only matching cards, columns and cards holding a match open even when folded, and the current match gets an accent border.
-Pressing Enter or the icon again steps through the matches with an `n/m` count; fold and collapse clicks on Kanban cards and columns do nothing while a search is set.
+The board search matches task ids and the title, note, and decision text on cards, ignoring case.
+Enter or the find icon applies it: in Kanban each column then shows only matching cards, columns and cards holding a match open even when folded, and the current match gets an accent border; in Chains only lanes holding a match are shown, open even when folded, with non-matching nodes dimmed, and the `Independent` drawer opens to list only matching tasks.
+Pressing Enter or the icon again steps through the matches with an `n/m` count; fold and collapse clicks on cards, columns, lanes, and the `Independent` drawer do nothing while a search is set.
 Esc, or Enter or the icon with an empty field, restores the full board and the remembered folds.
 
 Cards show their project, priority when present, the task's state, and available detail.
@@ -50,6 +50,10 @@ Cards in every column show `★ Blocks N →` when downstream tasks wait on them
 Hovering a card in a chain marks its upstream, selected, and downstream cards without dimming other work; clicking a dependency badge or the toolbar `Inspector` toggle selects the chain, dims unrelated cards, and opens the Dependency Inspector showing the whole connected chain (upstream, downstream, parallel branches, and cross-project joins) grouped by level (`L0`, `L1`, …).
 The Dependency Inspector uses the right-hand `h_resizable` split slot only when the Board half beside it would still be at least 720px wide (about 1,090px for the whole Board); on narrower boards it pins a compact chain card between the search row and the columns instead, so the columns never squeeze unstacked beside it. Dragging the split divider keeps the split, and the Board half stacks its columns once it measures below 720px.
 Clicking a node in the inspector highlights that task, clears a project filter or search that hides it, shows its card, topic group, and column open for now without changing the saved folds, and scrolls its column's list to the card (or to its Held group), or scrolls the stacked board to its column on narrow boards; pressing `Esc` or clicking `Close` clears the selection and closes the inspector.
+The `Kanban | Chains` toggle beside the search field switches between Kanban (the default) and the Chains view, remembering the chosen mode locally.
+The Chains view groups unfinished tasks (`column !== "done"`) by connected dependency component into collapsible swimlanes ordered by most-blocking and deepest chain first: each node shows its project badge, priority, status, PR link, and compact live indicator; wide boards (`>= 720px`) draw the longest dependency path left to right with `->` connectors and any side branches on a second track below it, while narrower boards switch each lane to a vertical stepper.
+Clicking a lane header folds or unfolds that lane, hovering or clicking a node highlights its upstream and downstream nodes, and clicking a node opens the same card detail used in Kanban (including Ask, Live strip, Held/open decision answering, `Open worker`, and `Files · Changes`; `Esc` or `Close` clears the selection).
+Unfinished tasks with no dependencies are placed in a collapsible `Independent` drawer at the bottom (collapsed by default and remembered locally), and search filtering applies in both Kanban and Chains views.
 Held decisions with the same explicit topic share a question and options; in the Held column a topic box is drawn inside each group that holds one of its cards.
 A card lists every decision its worker's status log still holds open, from the snapshot's `hints.open_decisions`, oldest first: the decision's verb (`needs-decision` or `blocked`) and key, its text up to 240 characters, and its options when the text has them.
 A detail line that would only repeat one of those decisions is left out.
@@ -90,7 +94,7 @@ The command lines are only read to find these jobs; the board does not log or sa
 The Projects list shows up to about 260px of rows and scrolls with the mouse wheel beyond that, so every project is reachable.
 Project rows can be expanded to show details, a project filter, color choices that replace the automatic color, a folder button, and a removal request.
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
-Folded sections and cards, collapsed columns, and project colors, automatic and chosen, are remembered locally.
+Folded sections, lanes, and cards, collapsed columns, the `Independent` drawer state, the `Kanban | Chains` view mode, and project colors, automatic and chosen, are remembered locally.
 Command buttons submit Bearings, Ahoy, Stow, Quiet, Quiet off, AFK, or Update commands to the verified Firstmate terminal; the Scout and Task fields also submit requests there.
 On each insertion or send, the board asks `home/bin/fm-inbox.sh ready` to inspect the session lock and uses its PID only when the lock is held by a live harness.
 It matches that PID to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.

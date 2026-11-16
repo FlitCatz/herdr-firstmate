@@ -7,7 +7,7 @@
 // installation and operational home; the other props support preview fixtures.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel, ScrollHandle } from "gpui-base";
-import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals } from "herdr";
+import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals, checking } from "herdr";
 import { FolderViewer } from "./viewer.js";
 
 // Board text follows the terminal font size and grows as the Board widens. The sizes below
@@ -788,7 +788,7 @@ export default class FmBoard extends View {
     this.query = (ui.search ?? "").trim(); this.matchAt = 0;
     this.search.on("submit", (_e, cx) => this.findNext(cx));
     this.viewer = new FolderViewer(); this.viewProject = null;
-    if (!home()) return;
+    if (checking() || !home()) return;
     // props.ui.view (testing): open the viewer on that project's local copy.
     if (ui.view) this.openView(ui.view, { path: `${home()}/projects/${ui.view}`, title: `${ui.view} · local copy` }, cx);
     if (ui.viewTab) this.viewer.tab = ui.viewTab;

@@ -100,6 +100,9 @@ A failed save keeps the text in the field.
 
 The tab bar marks working tabs with a spinner, blocked and done tabs with status dots, and zoomed tabs with a `Z` suffix.
 Idle tabs have no activity marker.
+Tabs without a custom name follow useful live agent session titles, and the active tab scrolls into view when selection or tab sizes change.
+Smooth wheel gestures accumulate and debounce small events, while each wheel notch switches one tab.
+Invalid saved panel data falls back to an empty per-space panel history.
 Controls highlight on hover, and project badges and several buttons have explanatory tooltips.
 The board watches the home's state and data folders and has a 30-second refresh fallback; each refresh is bounded by a 15-second deadline (showing `Update failed` on timeout while keeping the last board on screen so later refreshes can still run), and its footer `Updated` time is displayed in Korea time; clicking it, or the `Update failed` notice, refreshes immediately.
 
@@ -109,9 +112,9 @@ The board watches the home's state and data folders and has a 30-second refresh 
 
 The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-board` mod. Its `home` prop is the path to the Firstmate home; set it before using the layout.
 
-`fm-tabs` is based on Herdr's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, and `settings`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` icon.
+`fm-tabs` is based on Herdr 0.1.16's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, `settings`, and `checking`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` icon.
 
-`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, and `terminals` from `herdr`.
+`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, and `checking` from `herdr`.
 It draws Herdr's shipped `files` folder icon and `workspace-chrome` search, terminal, and layers icons.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals and `hc read` to read live worker screens for the card lines.
 Its Peek icon runs Herdr's `terminal.peek` command.
@@ -120,8 +123,10 @@ They first read the clipboard types with `osascript`; plain text is restored as 
 If the clipboard holds an image, files, or RTFD, which can carry attachments, or holds no plain text at all, nothing is inserted, the clipboard is left untouched, and a notice asks you to paste it first.
 It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, `/bin/ps` to list processes for the cards' background job rows, and `open` for folders or review URLs.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
+The viewer cancels its pending folder watch when its root changes or it closes.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.
 Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews.
+During `herdr-app check`, the Board skips startup reads, helper commands, watches, and refresh timers, and the tab bar skips panel persistence and layout commands.
 
 ## Watch out
 

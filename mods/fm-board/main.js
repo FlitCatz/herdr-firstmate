@@ -939,6 +939,13 @@ export default class FmBoard extends View {
     });
     cx.notify();
     cx.spawn(async (cx) => {
+      const checksRead = this.loadChecks().then((info) => {
+        if (!isCurrent()) return;
+        this.checks = info?.checks ?? [];
+        this.lastCheckSweep = info?.lastSweep ?? null;
+        this.checksFailed = !info;
+        cx.notify();
+      });
       try {
         const snapshot = await this.loadSnapshot();
         if (!isCurrent()) return;
@@ -958,14 +965,12 @@ export default class FmBoard extends View {
         this.ready = inbox.ready;
         this.beat = inbox.beat;
         this.watchers = inbox.watchers;
-        this.checks = inbox.checks;
-        this.lastCheckSweep = inbox.lastCheckSweep;
-        this.checksFailed = inbox.checksFailed;
         this.error = null;
       } catch (e) {
         if (!isCurrent()) return;
         this.error = String(e?.message ?? e); // keep the last good board on screen
       }
+      await checksRead;
       if (!isCurrent()) return;
       run.timer?.cancel?.();
       this.activeRefresh = null;
@@ -1008,16 +1013,8 @@ export default class FmBoard extends View {
     const readyData = ready.code === 0 ? JSON.parse(ready.stdout) : null;
     const isReady = readyData ? readyData.can_receive : null;
     const beat = readyData ? readyData.wake_consumer?.beacon_age_seconds ?? null : null;
-    const [watchers, checksInfo] = await Promise.all([this.loadWatchers(), this.loadChecks()]);
-    return {
-      requests,
-      ready: isReady,
-      beat,
-      watchers,
-      checks: checksInfo?.checks ?? [],
-      lastCheckSweep: checksInfo?.lastSweep ?? null,
-      checksFailed: !checksInfo,
-    };
+    const watchers = await this.loadWatchers();
+    return { requests, ready: isReady, beat, watchers };
   }
 
   // Registered checks from state/*.check.sh filenames and the home-wide sweep mtime from state/.last-check,

@@ -1341,6 +1341,21 @@ test("Registered checks section reports a failed read instead of claiming no che
   assert.equal(rejected.text("checks-last-sweep"), "Last sweep (all checks): Could not read");
 });
 
+test("Registered checks section is read even when the first refresh fails before the inbox", async () => {
+  const b = await board({
+    registryFails: true,
+    exec: async (cmd, args) => {
+      if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") {
+        return { code: 0, stdout: "last\x00\x00check\x00fictional-sweep\x00", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal(b.view.error, "registry unreadable");
+  assert.deepEqual(b.ids.filter((id) => id.startsWith("check-")), ["check-fictional-sweep"]);
+  assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): Not recorded");
+});
+
 // Exercise the tab bar through the same element boundary as the Board, with only
 // Herdr's native APIs replaced. Time is explicit so wheel gestures are deterministic.
 async function tabs({ saved = null, checkMode = false, spaceList = [], paneList = [], rootLayout = null } = {}) {

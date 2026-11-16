@@ -669,7 +669,6 @@ function chainHighlight(graph, selectedCardId = null, hoveredCardId = null) {
     }
   }
   return {
-    component: focusComp ?? selectedComp,
     selectedComponent: selectedComp,
     roles,
     dimmedIds,
@@ -1587,7 +1586,7 @@ export default class FmBoard extends View {
       }
       if (pinnedRole === "upstream" || pinnedRole === "selected" || pinnedRole === "downstream") {
         const roleLabel = pinnedRole === "upstream" ? "Upstream" : pinnedRole === "selected" ? "Selected" : "Downstream";
-        const roleColor = role === "upstream" ? t.working : role === "selected" ? t.accent : role === "downstream" ? t.ansi6 : t.muted;
+        const roleColor = pinnedRole === "upstream" ? t.working : pinnedRole === "selected" ? t.accent : t.ansi6;
         depRow.child(div().id(`hl-${c.id}`).flex_none().px(5).py(1).rounded(4).bg(roleColor + "24")
           .text_size(this.fs(10)).font_semibold().text_color(roleColor).child(roleLabel));
       }
@@ -1868,9 +1867,9 @@ export default class FmBoard extends View {
       : pinnedRole === "upstream" ? "Upstream"
       : pinnedRole === "downstream" ? "Downstream"
       : pinnedRole === "branch" ? "Branch" : null;
-    const roleColor = isSelected || role === "selected" ? t.accent
-      : role === "upstream" ? t.working
-      : role === "downstream" ? t.ansi6
+    const roleColor = isSelected || pinnedRole === "selected" ? t.accent
+      : pinnedRole === "upstream" ? t.working
+      : pinnedRole === "downstream" ? t.ansi6
       : t.muted;
     const [stateLabel, stateColor] = this.nodeStatus(node, t, false);
     const strip = (title) => (node.project && title.startsWith(`${node.project} `) ? title.slice(node.project.length + 1) : title);
@@ -2113,10 +2112,7 @@ export default class FmBoard extends View {
 
     if (pinnedRole === "selected" || pinnedRole === "upstream" || pinnedRole === "downstream") {
       const roleLabel = pinnedRole === "selected" ? "Selected" : pinnedRole === "upstream" ? "Upstream" : "Downstream";
-      const roleColor = isSelected || role === "selected" ? t.accent
-        : role === "upstream" ? t.working
-        : role === "downstream" ? t.ansi6
-        : t.muted;
+      const roleColor = pinnedRole === "selected" ? t.accent : pinnedRole === "upstream" ? t.working : t.ansi6;
       topRow.child(div().id(`cnode-role-${id}`).flex_none().px(4).py(0.5).rounded(4).bg(roleColor + "24")
         .text_size(this.fs(9.5)).font_semibold().text_color(roleColor).child(roleLabel));
     }
@@ -2786,7 +2782,7 @@ export default class FmBoard extends View {
     this.graph = dependencyGraph(this.cards ?? []);
     this.highlight = chainHighlight(this.graph, this.selectedCardId, this.hoveredCardId);
     this.pinned = chainHighlight(this.graph, this.selectedCardId, null);
-    const activeComp = this.highlight?.selectedComponent ?? (this.inspectorOpen ? (this.highlight?.component ?? this.graph.components[0] ?? null) : null);
+    const activeComp = this.pinned?.selectedComponent ?? (this.inspectorOpen ? (this.graph.components[0] ?? null) : null);
     // The cards drawn below record which worker screens are worth reading.
     this.shownTerminals = new Set();
     const boardWidth = this.size?.width ?? Infinity;

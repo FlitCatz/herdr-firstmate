@@ -1868,7 +1868,7 @@ test("hovering never changes layout geometry in Kanban, Inspector, or Chains vie
   b.hover("dep-node-K4", true);
   assert.deepEqual(geometry(b.items), beforeInspector, "Inspector hover on downstream node must not shrink border or alter role pill");
   assert.equal(borderColorOf(b, "dep-node-K4"), theme.accent, "Inspector hover still changes border color");
-  assert.equal(textColorOf(b, "dep-role-K4"), theme.accent, "Inspector hover still changes role pill color");
+  assert.equal(textColorOf(b, "dep-role-K4"), theme.ansi6, "a role pill keeps the legend color of its Downstream label while hovered");
   b.hover("dep-node-K2", true);
   assert.deepEqual(geometry(b.items), beforeInspector, "Inspector hover on upstream node must not shrink border or alter role pill");
   assert.equal(borderColorOf(b, "dep-node-K2"), theme.accent);
@@ -1899,8 +1899,44 @@ test("hovering never changes layout geometry in Kanban, Inspector, or Chains vie
   chains.hover("chain-node-K4", true);
   assert.deepEqual(geometry(chains.items), afterClickChains, "Chains hover after selection must not shrink border or alter role pill");
   assert.equal(borderColorOf(chains, "chain-node-K4"), theme.accent);
-  assert.equal(textColorOf(chains, "cnode-role-K4"), theme.accent);
+  assert.equal(textColorOf(chains, "cnode-role-K4"), theme.ansi6, "a role pill keeps the legend color of its Downstream label while hovered");
   chains.hover("chain-node-K4", false);
+});
+
+test("hovering a card from another chain never swaps the chain an open inspector shows after its selection leaves every chain", async () => {
+  const records = [
+    { id: "A1", state: "in_flight", repo: "maple-workshop", title: "A1 Root", structured: true, unresolved_blocker_ids: [] },
+    { id: "A2", state: "queued", repo: "maple-workshop", title: "A2 Leaf", structured: true, unresolved_blocker_ids: ["A1"] },
+    { id: "B1", state: "in_flight", repo: "orchard-atlas", title: "B1 Root", structured: true, unresolved_blocker_ids: [] },
+    { id: "B2", state: "queued", repo: "orchard-atlas", title: "B2 Middle", structured: true, unresolved_blocker_ids: ["B1"] },
+    { id: "B3", state: "queued", repo: "orchard-atlas", title: "B3 Leaf", structured: true, unresolved_blocker_ids: ["B2"] },
+    { id: "X", state: "queued", repo: "maple-workshop", title: "X Waiter", structured: true, unresolved_blocker_ids: ["Y"] },
+    { id: "Y", state: "in_flight", repo: "maple-workshop", title: "Y Blocker", structured: true, unresolved_blocker_ids: [] },
+  ];
+  const snapshot = { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } };
+  const b = await board({ snapshot });
+  // Wide enough for unstacked columns, too narrow to split: the inspector is the compact card above them.
+  b.view.size = { width: 1000, height: 800 };
+  b.view.splitWasOpen = false;
+  b.view.rightSplitWidth = 0;
+  b.redraw();
+  b.click("waits-X");
+  assert.equal(b.view.selectedCardId, "X");
+  assert.ok(b.ids.includes("dep-inspector-compact"));
+
+  // Y finishes: X no longer waits on anything and leaves every chain, while the inspector stays open.
+  records.find((r) => r.id === "X").unresolved_blocker_ids = [];
+  records.find((r) => r.id === "Y").state = "done";
+  await b.reload();
+  assert.equal(b.view.inspectorOpen, true);
+  assert.equal(b.view.graph.componentById.has("X"), false);
+  const shownChain = b.view.graph.components[0];
+  const otherChain = b.view.graph.components.find((comp) => comp.id !== shownChain.id);
+  const hoverId = otherChain.nodeIds.find((id) => b.ids.includes(`card-${id}`));
+  const before = geometry(b.items);
+  b.hover(`card-${hoverId}`, true);
+  assert.deepEqual(geometry(b.items), before, "hovering a card from another chain must not re-lay out the compact inspector");
+  b.hover(`card-${hoverId}`, false);
 });
 
 async function folderViewer() {

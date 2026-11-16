@@ -53,22 +53,45 @@ function element() {
 // Every drawn element that has an id, in drawing order, with the text drawn inside it.
 function drawn(tree) {
   const out = [];
-  const walk = (kid) => {
+  const walk = (kid, collectIds) => {
     if (kid === null || kid === undefined) return "";
     if (typeof kid !== "object") return String(kid);
     const { id, click, hover, keyDown, kids, calls } = kid.node;
-    const entry = id === null ? null : { id, click, hover, keyDown, calls, text: "" };
+    const childIds = [];
+    if (id !== null && collectIds) collectIds.push(id);
+    const entry = id === null ? null : { id, click, hover, keyDown, calls, childIds, text: "" };
     if (entry) out.push(entry);
-    const text = kids.map(walk).filter(Boolean).join(" ");
+    const text = kids.map((k) => walk(k, entry ? childIds : collectIds)).filter(Boolean).join(" ");
     if (entry) entry.text = text;
     return text;
   };
-  walk(tree);
+  walk(tree, null);
   return out;
 }
 
+const LAYOUT_CALLS = new Set([
+  "border", "border_t", "border_r", "border_b", "border_l",
+  "p", "px", "py", "pt", "pr", "pb", "pl",
+  "gap", "gap_x", "gap_y",
+  "w", "h", "size", "size_full", "min_w", "min_h", "max_w", "max_h",
+  "flex_1", "flex_none", "flex_shrink", "flex_wrap",
+  "items_center", "items_start", "items_stretch", "justify_between", "justify_center",
+]);
+
+function geometry(items) {
+  const map = {};
+  for (const item of items) {
+    map[item.id] = {
+      calls: item.calls.filter(([name]) => LAYOUT_CALLS.has(name)),
+      childIds: item.childIds,
+      text: item.text,
+    };
+  }
+  return map;
+}
+
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
@@ -83,7 +106,9 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     focus_handle() { const handle = { focus() { focused.push(handle); }, is_focused: () => focused.at(-1) === handle, release: () => true }; return handle; },
   };
   const input = () => { let text = ""; return { on() {}, value: () => text, set_value(v) { text = v; } }; };
-  const theme = new Proxy({}, { get: () => "#808080" });
+  const theme = customTheme
+    ? new Proxy(customTheme, { get: (target, k) => (k in target ? target[k] : "#808080") })
+    : new Proxy({}, { get: () => "#808080" });
   const scope = {
     View: class {}, div: element, svg: element, v_flex: element, h_flex: element, Input: { new: element },
     h_resizable: element, resizable_panel: element, InputState: { new: input },
@@ -844,17 +869,18 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   b.view.size = { width: 1280, height: 800 };
   b.redraw();
 
-  // Hovering a chain card highlights upstream, selected, and downstream without dimming unrelated cards.
+  // Hovering a chain card highlights upstream, selected, and downstream by role/color without adding pills or dimming unrelated cards.
   b.hover("card-K3", true);
-  assert.equal(b.text("hl-K2"), "Upstream");
-  assert.equal(b.text("hl-K3"), "Selected");
-  assert.equal(b.text("hl-K4"), "Downstream");
-  assert.equal(b.text("hl-K6"), "Downstream");
+  assert.equal(b.view.highlight.roles.get("K2"), "upstream");
+  assert.equal(b.view.highlight.roles.get("K3"), "selected");
+  assert.equal(b.view.highlight.roles.get("K4"), "downstream");
+  assert.equal(b.view.highlight.roles.get("K6"), "downstream");
+  assert.ok(!b.ids.includes("hl-K3"), "hover must not insert role pills");
   assert.equal(b.view.highlight.dimmedIds.size, 0);
   const u1HoverCalls = b.items.find((x) => x.id === "card-U1").calls;
   assert.ok(!u1HoverCalls.some((c) => c[0] === "opacity" && c[1] === 0.35), "hover alone must not dim unrelated cards");
   b.hover("card-K3", false);
-  assert.ok(!b.ids.includes("hl-K3"));
+  assert.equal(b.view.highlight.roles.size, 0);
 
   // Clicking a badge opens the Dependency Inspector in the wide split and dims unrelated cards.
   // Escape travels the keyboard's focus path, so picking a chain moves the keyboard onto the Board.
@@ -1776,6 +1802,141 @@ test("tabs scroll the active item into view on selection, reorder, and size chan
   assert.equal(t.scrolls.at(-1), 1, "moving the same active tab updates its scroll index");
   list.length = 0; t.redraw();
   assert.equal(t.scrolls.at(-1), 1, "an empty strip never scrolls to -1");
+});
+
+test("hovering never changes layout geometry in Kanban, Inspector, or Chains view while still changing colors, and clicking still changes geometry", async () => {
+  const records = [
+    { id: "K2", state: "in_flight", repo: "maple-workshop", title: "K2 Root Blocker", structured: true, unresolved_blocker_ids: [] },
+    { id: "K3", state: "queued", hold_kind: "captain", hold_bucket: "blocked", hold_reason: "Wait for K2 | A: Proceed | B: Hold", repo: "maple-workshop", title: "K3 Held Step", structured: true, unresolved_blocker_ids: ["K2"] },
+    { id: "K4", state: "queued", repo: "orchard-atlas", title: "K4 Cross-Project Join", structured: true, unresolved_blocker_ids: ["K3"] },
+    { id: "K6", state: "queued", repo: "orchard-atlas", title: "K6 Downstream Leaf", structured: true, unresolved_blocker_ids: ["K4"] },
+    { id: "U1", state: "queued", repo: "maple-workshop", title: "U1 Unrelated Task", structured: true, unresolved_blocker_ids: [] },
+  ];
+  const tasks = [
+    {
+      id: "K2", kind: "ship", project: `${HOME}/projects/maple-workshop`, branch: "fm/K2", harness: "codex", backend: "hc",
+      mode: "no-mistakes", yolo: false, spawn_gen: "s1", remote: "origin", secondmate_projects: [],
+      paths: { home: HOME, meta: "", status_log: "", worktree: { path: "", present: false }, report: { path: "", present: false } },
+      current_state: { state: "working", source: "pane", detail: "building", raw: "building", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+      endpoint: { target: null, exists: false, agent_alive: "not_checked", status: "absent", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+      pr: { url: null, source: "absent", head: null },
+      hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: "working [at=1]: building" },
+      actions: { watch: "", steer: "", return_channel_note: null },
+      backlog: { id: "K2", state: "in_flight", kind: "ship", repo: "maple-workshop", title: "K2 Root Blocker" },
+    },
+  ];
+  const theme = {
+    accent: "#112233",
+    working: "#223344",
+    ansi6: "#334455",
+    border: "#445566",
+    muted: "#556677",
+    selected: "#667788",
+  };
+  const borderColorOf = (b, id) => b.items.find((x) => x.id === id)?.calls.findLast((c) => c[0] === "border_color")?.[1];
+  const textColorOf = (b, id) => b.items.find((x) => x.id === id)?.calls.findLast((c) => c[0] === "text_color")?.[1];
+
+  // (a) Kanban: hover a card below an upstream card in the same column (K4 sits above K6 in Queued).
+  const b = await board({
+    theme,
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records } },
+  });
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  const queuedCards = b.items.find((x) => x.id === "col-queued").childIds;
+  assert.ok(b.ids.indexOf("card-K4") < b.ids.indexOf("card-K6"), "K4 sits above K6 in Queued");
+  assert.ok(queuedCards.length > 0);
+  const beforeKanban = geometry(b.items);
+  assert.equal(borderColorOf(b, "card-K6"), theme.border);
+  b.hover("card-K6", true);
+  assert.deepEqual(geometry(b.items), beforeKanban, "Kanban hover must not change layout geometry");
+  assert.equal(borderColorOf(b, "card-K6"), theme.accent, "Kanban hover still changes hovered border color");
+  assert.equal(borderColorOf(b, "card-K4"), theme.working, "Kanban hover still changes upstream border color");
+  b.hover("card-K6", false);
+  assert.equal(borderColorOf(b, "card-K6"), theme.border);
+
+  // Clicking still changes geometry (border width 1 -> 2 and role pills appear).
+  b.click("blocks-K3");
+  assert.notDeepEqual(geometry(b.items), beforeKanban, "clicking a badge must still change geometry");
+  assert.equal(b.text("hl-K3"), "Selected");
+  assert.equal(b.text("hl-K4"), "Downstream");
+
+  // (b) Inspector: self-shrink case after a badge click — hovering an upstream or downstream node keeps geometry equal.
+  const beforeInspector = geometry(b.items);
+  assert.equal(borderColorOf(b, "dep-node-K4"), theme.ansi6);
+  assert.equal(textColorOf(b, "dep-role-K4"), theme.ansi6);
+  b.hover("dep-node-K4", true);
+  assert.deepEqual(geometry(b.items), beforeInspector, "Inspector hover on downstream node must not shrink border or alter role pill");
+  assert.equal(borderColorOf(b, "dep-node-K4"), theme.accent, "Inspector hover still changes border color");
+  assert.equal(textColorOf(b, "dep-role-K4"), theme.ansi6, "a role pill keeps the legend color of its Downstream label while hovered");
+  b.hover("dep-node-K2", true);
+  assert.deepEqual(geometry(b.items), beforeInspector, "Inspector hover on upstream node must not shrink border or alter role pill");
+  assert.equal(borderColorOf(b, "dep-node-K2"), theme.accent);
+  b.hover("dep-node-K2", false);
+
+  // (c) Chains view: hover a spine node before and after clicking another spine node.
+  const chains = await board({
+    theme,
+    ui: { viewMode: "chains" },
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records } },
+  });
+  chains.view.size = { width: 1280, height: 800 };
+  chains.redraw();
+  const beforeChains = geometry(chains.items);
+  assert.equal(borderColorOf(chains, "chain-node-K4"), theme.border);
+  chains.hover("chain-node-K4", true);
+  assert.deepEqual(geometry(chains.items), beforeChains, "Chains hover must not change layout geometry");
+  assert.equal(borderColorOf(chains, "chain-node-K4"), theme.accent, "Chains hover still changes hovered node border color");
+  assert.equal(borderColorOf(chains, "chain-node-K3"), theme.working, "Chains hover still changes upstream node border color");
+  assert.equal(borderColorOf(chains, "chain-node-K6"), theme.ansi6, "Chains hover still changes downstream node border color");
+  chains.hover("chain-node-K4", false);
+
+  // Clicking a spine node changes geometry (pills + detail panel), and hovering a downstream node afterwards does not.
+  chains.click("chain-node-K3");
+  assert.notDeepEqual(geometry(chains.items), beforeChains, "clicking a Chains node must still change geometry");
+  assert.equal(chains.text("cnode-role-K4"), "Downstream");
+  const afterClickChains = geometry(chains.items);
+  chains.hover("chain-node-K4", true);
+  assert.deepEqual(geometry(chains.items), afterClickChains, "Chains hover after selection must not shrink border or alter role pill");
+  assert.equal(borderColorOf(chains, "chain-node-K4"), theme.accent);
+  assert.equal(textColorOf(chains, "cnode-role-K4"), theme.ansi6, "a role pill keeps the legend color of its Downstream label while hovered");
+  chains.hover("chain-node-K4", false);
+});
+
+test("hovering a card from another chain never swaps the chain an open inspector shows after its selection leaves every chain", async () => {
+  const records = [
+    { id: "A1", state: "in_flight", repo: "maple-workshop", title: "A1 Root", structured: true, unresolved_blocker_ids: [] },
+    { id: "A2", state: "queued", repo: "maple-workshop", title: "A2 Leaf", structured: true, unresolved_blocker_ids: ["A1"] },
+    { id: "B1", state: "in_flight", repo: "orchard-atlas", title: "B1 Root", structured: true, unresolved_blocker_ids: [] },
+    { id: "B2", state: "queued", repo: "orchard-atlas", title: "B2 Middle", structured: true, unresolved_blocker_ids: ["B1"] },
+    { id: "B3", state: "queued", repo: "orchard-atlas", title: "B3 Leaf", structured: true, unresolved_blocker_ids: ["B2"] },
+    { id: "X", state: "queued", repo: "maple-workshop", title: "X Waiter", structured: true, unresolved_blocker_ids: ["Y"] },
+    { id: "Y", state: "in_flight", repo: "maple-workshop", title: "Y Blocker", structured: true, unresolved_blocker_ids: [] },
+  ];
+  const snapshot = { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } };
+  const b = await board({ snapshot });
+  // Wide enough for unstacked columns, too narrow to split: the inspector is the compact card above them.
+  b.view.size = { width: 1000, height: 800 };
+  b.view.splitWasOpen = false;
+  b.view.rightSplitWidth = 0;
+  b.redraw();
+  b.click("waits-X");
+  assert.equal(b.view.selectedCardId, "X");
+  assert.ok(b.ids.includes("dep-inspector-compact"));
+
+  // Y finishes: X no longer waits on anything and leaves every chain, while the inspector stays open.
+  records.find((r) => r.id === "X").unresolved_blocker_ids = [];
+  records.find((r) => r.id === "Y").state = "done";
+  await b.reload();
+  assert.equal(b.view.inspectorOpen, true);
+  assert.equal(b.view.graph.componentById.has("X"), false);
+  const shownChain = b.view.graph.components[0];
+  const otherChain = b.view.graph.components.find((comp) => comp.id !== shownChain.id);
+  const hoverId = otherChain.nodeIds.find((id) => b.ids.includes(`card-${id}`));
+  const before = geometry(b.items);
+  b.hover(`card-${hoverId}`, true);
+  assert.deepEqual(geometry(b.items), before, "hovering a card from another chain must not re-lay out the compact inspector");
+  b.hover(`card-${hoverId}`, false);
 });
 
 async function folderViewer() {

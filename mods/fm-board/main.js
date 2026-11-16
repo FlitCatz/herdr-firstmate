@@ -54,6 +54,8 @@ const CHECKS = "checks";
 // Never reads check scripts, check outputs, or private check state directories.
 const CHECKS_SCRIPT = [
   'state="$1"',
+  // An existing state folder that cannot be listed is a failed read, not a home with no checks.
+  'if [ -d "$state" ] && ! { [ -r "$state" ] && [ -x "$state" ]; }; then exit 1; fi',
   'last=""',
   'if [ -e "$state/.last-check" ]; then',
   '  last=$(stat -f %m "$state/.last-check" 2>/dev/null || stat -c %Y "$state/.last-check" 2>/dev/null || true)',

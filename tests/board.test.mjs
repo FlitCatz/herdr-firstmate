@@ -4,7 +4,7 @@
 // test holds it to that shape: a fixture field the real snapshot does not have once hid a bug.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -1339,6 +1339,32 @@ test("Registered checks section reports a failed read instead of claiming no che
   });
   assert.equal(rejected.text("checks-list"), "Could not read registered checks");
   assert.equal(rejected.text("checks-last-sweep"), "Last sweep (all checks): Could not read");
+});
+
+test("Registered checks section reports an unlistable state folder as a failed read", { skip: process.getuid?.() === 0 && "root can list any folder" }, async (t) => {
+  const tempHome = await mkdtemp(join(tmpdir(), "fm-board-checks-"));
+  const stateDir = join(tempHome, "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(join(stateDir, "fictional-probe.check.sh"), "#!/bin/sh\nexit 0\n");
+  await writeFile(join(stateDir, ".last-check"), "");
+  await chmod(stateDir, 0o000);
+  t.after(async () => { await chmod(stateDir, 0o755); await rm(tempHome, { recursive: true, force: true }); });
+  const b = await board({
+    exec: async (cmd, args) => {
+      if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") {
+        try {
+          const res = await runFile("sh", ["-c", args[1], "checks", stateDir], { encoding: "utf8" });
+          return { code: 0, stdout: res.stdout, stderr: res.stderr };
+        } catch (e) {
+          return { code: e.code ?? 1, stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
+        }
+      }
+      return { code: 1, stdout: "", stderr: "" };
+    },
+  });
+  // The folder holds a registered check and a sweep record, so "none" or "not recorded" would be false.
+  assert.equal(b.text("checks-list"), "Could not read registered checks");
+  assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): Could not read");
 });
 
 test("Registered checks section is read even when the first refresh fails before the inbox", async () => {

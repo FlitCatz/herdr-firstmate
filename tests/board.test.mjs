@@ -1178,6 +1178,37 @@ test("Chains view puts the most-blocking chain first while the Kanban Inspector 
   assert.ok(kanban.view.highlight.selectedComponent.nodeIds.includes("J"), "Inspector opens the largest chain by default");
 });
 
+test("Chains spine arrows light up only along the focused task's upstream and downstream path", async () => {
+  // Spine A -> B -> C -> D; side task X waits on A only.
+  const records = [
+    { id: "A", state: "queued", repo: "maple-workshop", title: "Step A", structured: true, unresolved_blocker_ids: [] },
+    { id: "B", state: "queued", repo: "maple-workshop", title: "Step B", structured: true, unresolved_blocker_ids: ["A"] },
+    { id: "C", state: "queued", repo: "maple-workshop", title: "Step C", structured: true, unresolved_blocker_ids: ["B"] },
+    { id: "D", state: "queued", repo: "maple-workshop", title: "Step D", structured: true, unresolved_blocker_ids: ["C"] },
+    { id: "X", state: "queued", repo: "maple-workshop", title: "Side X", structured: true, unresolved_blocker_ids: ["A"] },
+  ];
+  const b = await board({ ui: { viewMode: "chains" }, snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  b.view.size = { width: 1280, height: 800 };
+  const arrows = new Map();
+  const draw = b.view.renderChainArrow.bind(b.view);
+  b.view.renderChainArrow = (edgeId, subLabel, crossRepo, active, t) => {
+    arrows.set(edgeId, active);
+    return draw(edgeId, subLabel, crossRepo, active, t);
+  };
+  const spine = () => ["chain-edge-A-B", "chain-edge-B-C", "chain-edge-C-D"].map((id) => arrows.get(id));
+
+  b.redraw();
+  assert.deepEqual(spine(), [false, false, false]);
+
+  b.click("chain-node-X");
+  assert.equal(b.view.selectedCardId, "X");
+  assert.deepEqual(spine(), [false, false, false], "X's path only touches A, so no spine arrow is on it");
+
+  b.click("chain-node-X");
+  b.click("chain-node-C");
+  assert.deepEqual(spine(), [true, true, true], "C sits on the spine, so every spine arrow is on its path");
+});
+
 test("Chains view supports folding lanes, highlighting & opening card detail, vertical stepper <720px, Independent drawer, and search", async () => {
   const store = memoryStore();
   const b = await board({ store });

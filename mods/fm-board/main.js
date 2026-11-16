@@ -2197,7 +2197,8 @@ export default class FmBoard extends View {
         if (i > 0) {
           const prev = layout.spine[i - 1];
           const cross = Boolean(prev.project && node.project && prev.project !== node.project);
-          const edgeActive = Boolean(this.highlight?.roles?.has(prev.id) && this.highlight?.roles?.has(node.id));
+          const onFocusPath = (nid) => { const r = this.highlight?.roles?.get(nid); return Boolean(r) && r !== "branch"; };
+          const edgeActive = onFocusPath(prev.id) && onFocusPath(node.id);
           const sub = cross ? "cross-repo" : i === 1 ? "blocks" : `step ${i + 1}`;
           spineRow.child(this.renderChainArrow(`chain-edge-${prev.id}-${node.id}`, sub, cross, edgeActive, t));
         }

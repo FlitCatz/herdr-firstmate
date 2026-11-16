@@ -74,6 +74,7 @@ const LAYOUT_CALLS = new Set([
   "p", "px", "py", "pt", "pr", "pb", "pl",
   "gap", "gap_x", "gap_y",
   "w", "h", "size", "size_full", "min_w", "min_h", "max_w", "max_h",
+  "top", "left", "right", "bottom", "absolute", "relative",
   "flex_1", "flex_none", "flex_shrink", "flex_wrap",
   "items_center", "items_start", "items_stretch", "justify_between", "justify_center",
 ]);
@@ -131,8 +132,13 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     exec: (...args) => { initEffects.push("exec"); return exec(...args); },
     watchFolder: () => { initEffects.push("watch"); return new Promise(() => {}); }, pickFolder: async () => null,
   };
-  const { FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout, waitingLabel, blocksLabel } = vm.runInNewContext(
-    `${source}\n({ FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout, waitingLabel, blocksLabel })`,
+  const {
+    FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout,
+    chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor,
+    CHAIN_CARD_W, CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
+    waitingLabel, blocksLabel,
+  } = vm.runInNewContext(
+    `${source}\n({ FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout, chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor, CHAIN_CARD_W, CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H, waitingLabel, blocksLabel })`,
     scope,
   );
   const view = new FmBoard();
@@ -176,7 +182,10 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     return redraw();
   };
   return {
-    view, registry, reload, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout, waitingLabel, blocksLabel, initEffects,
+    view, registry, reload, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout,
+    chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor,
+    CHAIN_CARD_W, CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
+    waitingLabel, blocksLabel, initEffects,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
     click, hover, keyDown, scrolled, focused, drafts, opened, redraw,
@@ -1125,25 +1134,40 @@ test("Chains view groups components, orders lanes by most blocking / deepest fir
   b.view.size = { width: 1280, height: 800 };
   b.click("view-mode-chains");
 
+  // Always-visible static legend renders at the top of Chains view.
+  assert.ok(b.ids.includes("chain-legend"));
+  assert.ok(b.text("chain-legend").includes("upstream"));
+  assert.ok(b.text("chain-legend").includes("selected"));
+  assert.ok(b.text("chain-legend").includes("downstream"));
+  assert.ok(b.text("chain-legend").includes("cross-project"));
+
   // Two connected components from the extended fixture:
   // chain-1: maple-theme-tokens (blocks 4, depth 4) with branch orchard-theme-sync
   // chain-2: orchard-map-labels (blocks 1, depth 2)
   const lanes = b.ids.filter((id) => id.startsWith("chain-lane-"));
   assert.deepEqual(lanes, ["chain-lane-chain-1", "chain-lane-chain-2"]);
+  assert.ok(b.text("head-chain-chain-1").includes("CHAIN 1"));
+  assert.ok(b.text("head-chain-chain-1").includes("CRITICAL PATH"));
+  assert.ok(b.text("head-chain-chain-1").includes("CROSS-PROJECT"));
   assert.ok(b.text("head-chain-chain-1").includes("maple-theme-tokens → maple-release-bundle"));
+  assert.ok(b.text("head-chain-chain-2").includes("CHAIN 2"));
   assert.ok(b.text("head-chain-chain-2").includes("orchard-map-labels → orchard-label-polish"));
 
-  // Longest path spine runs left-to-right with -> connectors; side branch sits on the second track.
+  // Longest path spine runs left-to-right with positioned line + SVG arrowhead connectors; side branch sits on row 1.
   const spineItems = b.items.find((x) => x.id === "chain-spine-chain-1");
   assert.ok(spineItems, "main spine track drawn");
-  const spineText = spineItems.text;
-  assert.ok(spineText.includes("->"), "spine uses -> connectors");
+  assert.ok(b.ids.includes("chain-edge-maple-theme-tokens-maple-card-layout-line"));
+  assert.ok(b.ids.includes("chain-edge-maple-theme-tokens-maple-card-layout-head"));
+  assert.ok(b.ids.includes("chain-edge-maple-theme-tokens-orchard-theme-sync-corner-tr"));
+  assert.ok(b.ids.includes("chain-edge-maple-theme-tokens-orchard-theme-sync-corner-bl"));
   const spineOrder = ["chain-node-maple-theme-tokens", "chain-node-maple-card-layout", "chain-node-maple-panel-polish", "chain-node-maple-release-bundle"]
     .map((id) => b.ids.indexOf(id));
   assert.ok(spineOrder.every((idx, i) => idx >= 0 && (i === 0 || idx > spineOrder[i - 1])), `spine order: ${spineOrder}`);
 
   assert.ok(b.ids.includes("chain-branches-chain-1"), "side branch rendered on second track");
   const branchText = b.text("chain-branches-chain-1");
+  assert.ok(branchText.includes("SIDE BRANCH"));
+  assert.ok(branchText.includes("forks from theme-tokens"));
   assert.ok(branchText.includes("Sync map colors with tokens"));
   assert.ok(b.ids.indexOf("chain-branches-chain-1") > b.ids.indexOf("chain-spine-chain-1"));
 
@@ -1151,7 +1175,7 @@ test("Chains view groups components, orders lanes by most blocking / deepest fir
   assert.equal(b.text("cnode-tag-maple-theme-tokens"), b.text("ptag-maple-workshop"));
   assert.equal(b.text("cnode-prio-maple-theme-tokens"), "P0");
   assert.equal(b.text("cnode-status-maple-theme-tokens"), "working");
-  assert.equal(b.text("cnode-pr-maple-theme-tokens"), "FlitCatz/maple-workshop/pull/42");
+  assert.equal(b.text("cnode-pr-maple-theme-tokens"), "maple-workshop#42");
   assert.equal(b.text("cnode-status-maple-card-layout"), "waiting");
 
   // chainSpineLayout unit check: longest path beats shorter branch, and ties break cleanly.
@@ -1170,7 +1194,8 @@ test("Chains view groups components, orders lanes by most blocking / deepest fir
   const g = dependencyGraph(customCards);
   const layout = chainSpineLayout(g.components[0], g.nodes);
   assert.deepEqual(Array.from(layout.spine, (n) => n.id), ["R0", "L1", "L2", "L3"]);
-  assert.deepEqual(Array.from(layout.branchColumns, (c) => Array.from(c.nodes, (n) => n.id)), [["B1"]]);
+  // Each level lists its spine node first, then the side branches at that level.
+  assert.deepEqual(Array.from(layout.steps, (st) => Array.from(st.nodes, (n) => n.id)), [["R0"], ["L1", "B1"], ["L2"], ["L3"]]);
 });
 
 test("Chains view puts the most-blocking chain first while the Kanban Inspector keeps largest-chain-first order", async () => {
@@ -1193,8 +1218,8 @@ test("Chains view puts the most-blocking chain first while the Kanban Inspector 
   chains.redraw();
   const heads = chains.ids.filter((id) => id.startsWith("head-chain-"));
   assert.equal(heads.length, 2);
-  assert.ok(chains.text(heads[0]).includes("Chain 1 · X0"), chains.text(heads[0]));
-  assert.ok(chains.text(heads[1]).includes("Chain 2 · R1"), chains.text(heads[1]));
+  assert.ok(chains.text(heads[0]).includes("CHAIN 1") && chains.text(heads[0]).includes("X0"), chains.text(heads[0]));
+  assert.ok(chains.text(heads[1]).includes("CHAIN 2") && chains.text(heads[1]).includes("R1"), chains.text(heads[1]));
 
   const kanban = await board({ snapshot });
   kanban.view.size = { width: 1280, height: 800 };
@@ -1204,7 +1229,7 @@ test("Chains view puts the most-blocking chain first while the Kanban Inspector 
   assert.ok(kanban.view.highlight.selectedComponent.nodeIds.includes("J"), "Inspector opens the largest chain by default");
 });
 
-test("Chains spine arrows light up only along the focused task's upstream and downstream path", async () => {
+test("Chains spine edges light up only along the focused task's upstream and downstream path", async () => {
   // Spine A -> B -> C -> D; side task X waits on A only.
   const records = [
     { id: "A", state: "queued", repo: "maple-workshop", title: "Step A", structured: true, unresolved_blocker_ids: [] },
@@ -1213,26 +1238,46 @@ test("Chains spine arrows light up only along the focused task's upstream and do
     { id: "D", state: "queued", repo: "maple-workshop", title: "Step D", structured: true, unresolved_blocker_ids: ["C"] },
     { id: "X", state: "queued", repo: "maple-workshop", title: "Side X", structured: true, unresolved_blocker_ids: ["A"] },
   ];
-  const b = await board({ ui: { viewMode: "chains" }, snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
-  b.view.size = { width: 1280, height: 800 };
-  const arrows = new Map();
-  const draw = b.view.renderChainArrow.bind(b.view);
-  b.view.renderChainArrow = (edgeId, subLabel, crossRepo, active, t) => {
-    arrows.set(edgeId, active);
-    return draw(edgeId, subLabel, crossRepo, active, t);
+  const theme = {
+    dim: "#777777",
+    working: "#e5c07b",
+    accent: "#61afef",
+    ansi6: "#56b6c2",
+    border: "#3a404b",
+    muted: "#9aa1ad",
   };
-  const spine = () => ["chain-edge-A-B", "chain-edge-B-C", "chain-edge-C-D"].map((id) => arrows.get(id));
+  const b = await board({ theme, ui: { viewMode: "chains" }, snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  b.view.size = { width: 1280, height: 800 };
+  const lineStyle = (edge) => {
+    const el = b.items.find((x) => x.id === `chain-edge-${edge}-line`);
+    return {
+      color: el.calls.findLast((c) => c[0] === "border_color")?.[1],
+      opacity: el.calls.findLast((c) => c[0] === "opacity")?.[1] ?? 1,
+    };
+  };
 
   b.redraw();
-  assert.deepEqual(spine(), [false, false, false]);
+  assert.deepEqual(["A-B", "B-C", "C-D"].map(lineStyle), [
+    { color: theme.dim, opacity: 1 },
+    { color: theme.dim, opacity: 1 },
+    { color: theme.dim, opacity: 1 },
+  ]);
 
   b.click("chain-node-X");
   assert.equal(b.view.selectedCardId, "X");
-  assert.deepEqual(spine(), [false, false, false], "X's path only touches A, so no spine arrow is on it");
+  assert.deepEqual(lineStyle("A-X"), { color: theme.working, opacity: 1 }, "A -> X is on X's upstream path");
+  assert.deepEqual(["A-B", "B-C", "C-D"].map(lineStyle), [
+    { color: theme.dim, opacity: 0.4 },
+    { color: theme.dim, opacity: 0.4 },
+    { color: theme.dim, opacity: 0.4 },
+  ], "off-path spine edges dim when X is selected");
 
   b.click("chain-node-X");
   b.click("chain-node-C");
-  assert.deepEqual(spine(), [true, true, true], "C sits on the spine, so every spine arrow is on its path");
+  assert.deepEqual(lineStyle("A-B"), { color: theme.working, opacity: 1 });
+  assert.deepEqual(lineStyle("B-C"), { color: theme.working, opacity: 1 });
+  assert.deepEqual(lineStyle("C-D"), { color: theme.ansi6, opacity: 1 });
+  assert.deepEqual(lineStyle("A-X"), { color: theme.dim, opacity: 0.4 });
 });
 
 test("Chains search steps through matches in the order each layout draws them", async () => {
@@ -1262,7 +1307,17 @@ test("Chains search steps through matches in the order each layout draws them", 
 
 test("Chains view supports folding lanes, highlighting & opening card detail, vertical stepper <720px, Independent drawer, and search", async () => {
   const store = memoryStore();
-  const b = await board({ store });
+  const theme = {
+    accent: "#61afef",
+    working: "#e5c07b",
+    ansi6: "#56b6c2",
+    border: "#3a404b",
+    dim: "#6b7280",
+    selected: "#323844",
+    background: "#1e2127",
+  };
+  const b = await board({ store, theme });
+  const borderColorOf = (id) => b.items.find((x) => x.id === id)?.calls.findLast((c) => c[0] === "border_color")?.[1];
   b.view.size = { width: 1280, height: 800 };
   b.click("view-mode-chains");
 
@@ -1283,13 +1338,13 @@ test("Chains view supports folding lanes, highlighting & opening card detail, ve
   b.click("head-independent");
   assert.ok(!b.ids.includes("independent-list"));
 
-  // Clicking a node highlights upstream & downstream and opens the same Kanban card detail.
+  // Clicking a node highlights upstream & downstream by color only and opens the same Kanban card detail.
   b.click("chain-node-maple-card-layout");
   assert.equal(b.view.selectedCardId, "maple-card-layout");
-  assert.equal(b.text("cnode-role-maple-theme-tokens"), "Upstream");
-  assert.equal(b.text("cnode-role-maple-card-layout"), "Selected");
-  assert.equal(b.text("cnode-role-maple-panel-polish"), "Downstream");
-  assert.equal(b.text("cnode-role-maple-release-bundle"), "Downstream");
+  assert.equal(borderColorOf("chain-node-maple-theme-tokens"), theme.working);
+  assert.equal(borderColorOf("chain-node-maple-card-layout"), theme.accent);
+  assert.equal(borderColorOf("chain-node-maple-panel-polish"), theme.ansi6);
+  assert.equal(borderColorOf("chain-node-maple-release-bundle"), theme.ansi6);
   assert.ok(b.ids.includes("chain-detail"));
   assert.ok(b.ids.includes("card-maple-card-layout"));
   assert.ok(b.ids.includes("blocks-maple-card-layout"));
@@ -1891,15 +1946,19 @@ test("hovering never changes layout geometry in Kanban, Inspector, or Chains vie
   assert.equal(borderColorOf(chains, "chain-node-K6"), theme.ansi6, "Chains hover still changes downstream node border color");
   chains.hover("chain-node-K4", false);
 
-  // Clicking a spine node changes geometry (pills + detail panel), and hovering a downstream node afterwards does not.
+  // Clicking a spine node opens the detail panel (changing geometry), while border width stays 1px and hovering afterwards never shifts geometry.
+  const borderWidthOf = (b, id) => b.items.find((x) => x.id === id)?.calls.findLast((c) => c[0] === "border")?.[1];
+  assert.equal(borderWidthOf(chains, "chain-node-K4"), 1);
   chains.click("chain-node-K3");
   assert.notDeepEqual(geometry(chains.items), beforeChains, "clicking a Chains node must still change geometry");
-  assert.equal(chains.text("cnode-role-K4"), "Downstream");
+  assert.equal(borderWidthOf(chains, "chain-node-K3"), 1, "selected Chains card keeps 1px hairline border");
+  assert.equal(borderColorOf(chains, "chain-node-K4"), theme.ansi6);
+  assert.ok(chains.ids.includes("chain-legend"));
   const afterClickChains = geometry(chains.items);
   chains.hover("chain-node-K4", true);
-  assert.deepEqual(geometry(chains.items), afterClickChains, "Chains hover after selection must not shrink border or alter role pill");
+  assert.deepEqual(geometry(chains.items), afterClickChains, "Chains hover after selection must not change layout geometry");
   assert.equal(borderColorOf(chains, "chain-node-K4"), theme.accent);
-  assert.equal(textColorOf(chains, "cnode-role-K4"), theme.ansi6, "a role pill keeps the legend color of its Downstream label while hovered");
+  assert.equal(borderWidthOf(chains, "chain-node-K4"), 1);
   chains.hover("chain-node-K4", false);
 });
 
@@ -1992,4 +2051,515 @@ test("closing a viewer cancels its watch and prevents a resumed loop from rearmi
   assert.equal(v.watches.length, 1);
   assert.equal(v.view.root, null);
   await Promise.all(v.pending);
+});
+
+// Rasterizes every connector piece the wide Chains grid draws into 1px cells per edge, with every
+// card a fixed height, so routing checks see what a reader sees: the pixels each line covers.
+function rasterChainLane(b, layout, cardH = 90) {
+  const { chainGutterSpecs, chainCellSpecs, CHAIN_CARD_W: W, CHAIN_GUT: G, CHAIN_R: R } = b;
+  const rowTop = [], rowH = [];
+  let y = 0;
+  layout.grid.forEach((_, r) => { rowTop.push(y); rowH.push(cardH + layout.rowPad[r]); y += rowH[r]; });
+  const colX = (c) => c * (W + G);
+  const pixels = new Map(), heads = new Map();
+  const mark = (e, px, py) => {
+    const k = `${e.u}->${e.v}`;
+    if (!pixels.has(k)) pixels.set(k, new Set());
+    pixels.get(k).add(`${px},${py}`);
+  };
+  const draw = (spec, r, x0, w) => {
+    const top = rowTop[r], h = rowH[r];
+    const yOf = (size) => (spec.top != null ? top + spec.top : top + h - spec.bottom - size);
+    if (spec.kind === "head") {
+      heads.set(`${spec.edge.u}->${spec.edge.v}`, { right: x0 + w - spec.right, mid: top + spec.top + (spec.h - 1) / 2 });
+    } else if (spec.kind === "hbar") {
+      for (let px = x0 + spec.left; px < x0 + w - spec.right; px++) mark(spec.edge, px, yOf(1));
+    } else if (spec.kind === "vbar") {
+      const y1 = spec.top != null ? top + spec.top : top + h - spec.bottom - spec.h;
+      const y2 = spec.h != null ? y1 + spec.h : top + h - spec.bottom;
+      for (let py = y1; py < y2; py++) mark(spec.edge, x0 + spec.left, py);
+    } else {
+      const L = x0 + spec.left, T = yOf(R + 1);
+      for (let i = 0; i <= R; i++) {
+        mark(spec.edge, L + i, spec.cornerKind[0] === "t" ? T : T + R);
+        mark(spec.edge, spec.cornerKind[1] === "l" ? L : L + R, T + i);
+      }
+    }
+  };
+  layout.grid.forEach((row, r) => {
+    for (let c = 0; c < layout.cols; c++) {
+      for (const spec of chainCellSpecs(layout, r, c)) draw(spec, r, colX(c), W);
+      if (c < layout.cols - 1) for (const spec of chainGutterSpecs(layout, r, c)) draw(spec, r, colX(c) + W, G);
+    }
+  });
+  const cards = [];
+  layout.grid.forEach((row, r) => row.forEach((id, c) => {
+    if (id) cards.push({ id, x0: colX(c), x1: colX(c) + W, y0: rowTop[r], y1: rowTop[r] + cardH });
+  }));
+  return { pixels, heads, cards, rowTop, colX };
+}
+
+// The routing contract of the wide Chains grid: every edge is one unbroken line from its source
+// card's right edge at its own port to an arrowhead touching the target card at its own port, no
+// two edges share a stretch of line (which would read as one line joining unrelated cards), and
+// no line runs inside a card. Two lines may still cross at a single pixel; returns how many do.
+function assertCleanRouting(b, layout, label) {
+  const { pixels, heads, cards, rowTop, colX } = rasterChainLane(b, layout);
+  for (const e of layout.edges) {
+    const k = `${e.u}->${e.v}`;
+    const U = layout.pos.get(e.u), V = layout.pos.get(e.v);
+    const set = pixels.get(k) ?? new Set();
+    const start = `${colX(U.c) + b.CHAIN_CARD_W},${rowTop[U.r] + e.p1}`;
+    const end = `${colX(V.c) - b.CHAIN_HEAD_W - 1},${rowTop[V.r] + e.p2}`;
+    assert.ok(set.has(start), `${label}: ${k} leaves its source at port ${e.p1}`);
+    assert.ok(set.has(end), `${label}: ${k} reaches its head at port ${e.p2}`);
+    const seen = new Set([start]);
+    const queue = [start];
+    while (queue.length) {
+      const [px, py] = queue.pop().split(",").map(Number);
+      for (const n of [`${px + 1},${py}`, `${px - 1},${py}`, `${px},${py + 1}`, `${px},${py - 1}`]) {
+        if (set.has(n) && !seen.has(n)) { seen.add(n); queue.push(n); }
+      }
+    }
+    assert.ok(seen.has(end), `${label}: ${k} is one unbroken line`);
+    assert.equal(seen.size, set.size, `${label}: ${k} draws no stray pieces`);
+    assert.deepEqual(heads.get(k), { right: colX(V.c), mid: rowTop[V.r] + e.p2 }, `${label}: ${k} head touches the target at its port`);
+  }
+  const owner = new Map();
+  let crossings = 0;
+  for (const [k, set] of pixels) {
+    for (const p of set) {
+      const [px, py] = p.split(",").map(Number);
+      const inside = cards.find((c) => px >= c.x0 && px < c.x1 && py >= c.y0 && py < c.y1);
+      assert.ok(!inside, `${label}: ${k} runs through card ${inside?.id} at ${p}`);
+      const other = owner.get(p);
+      if (!other) { owner.set(p, k); continue; }
+      crossings++;
+      const both = (n) => set.has(n) && pixels.get(other).has(n);
+      const run = [`${px + 1},${py}`, `${px - 1},${py}`, `${px},${py + 1}`, `${px},${py - 1}`].find(both);
+      assert.ok(!run, `${label}: ${k} and ${other} share a stretch of line at ${p} and ${run}`);
+    }
+  }
+  return crossings;
+}
+
+test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce aligned grid and connector descriptors", async () => {
+  const b = await board();
+  const {
+    cardsFrom, dependencyGraph,
+    chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs,
+    CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
+  } = b;
+
+  // chainJoint keeps an odd head height centered on the 1px line slot [y, y+1] across every port height.
+  assert.equal(CHAIN_HEAD_H % 2, 1);
+  for (const y of [18, 34, 50, 66]) {
+    const j = chainJoint(y);
+    assert.equal(j.lineTop, y);
+    assert.equal(j.lineH, 1);
+    assert.equal(j.headW, CHAIN_HEAD_W);
+    assert.equal(j.headH, CHAIN_HEAD_H);
+    assert.equal(j.headTop + j.headH / 2, j.lineTop + 0.5, `joint centered at port ${y}`);
+  }
+
+  // Fork + cross-project side branch + join + skip-level pass-through.
+  const fixtureRecords = [
+        { id: "maple-token", state: "in_flight", repo: "maple-workshop", title: "Token", priority: "0", structured: true, unresolved_blocker_ids: [] },
+        { id: "maple-card", state: "queued", repo: "maple-workshop", title: "Card", priority: "1", structured: true, unresolved_blocker_ids: ["maple-token"] },
+        { id: "maple-panel", state: "queued", repo: "maple-workshop", title: "Panel", priority: "1", structured: true, unresolved_blocker_ids: ["maple-card"] },
+        { id: "maple-release", state: "queued", repo: "maple-workshop", title: "Release", priority: "0", structured: true, unresolved_blocker_ids: ["maple-panel", "orchard-icons", "maple-skip"] },
+        { id: "maple-docs", state: "queued", repo: "maple-workshop", title: "Docs", priority: "2", structured: true, unresolved_blocker_ids: ["maple-release"] },
+        { id: "orchard-theme", state: "queued", repo: "orchard-atlas", title: "Theme", priority: "2", structured: true, unresolved_blocker_ids: ["maple-token"] },
+        { id: "orchard-icons", state: "queued", repo: "orchard-atlas", title: "Icons", priority: "2", structured: true, unresolved_blocker_ids: ["orchard-theme"] },
+        { id: "maple-skip", state: "queued", repo: "maple-workshop", title: "Skip", priority: "3", structured: true, unresolved_blocker_ids: ["maple-token"] },
+  ];
+  const g = dependencyGraph(cardsFrom({ backlog: { records: fixtureRecords } }));
+  const layout = placeChainLane(g.components[0], g.nodes);
+  assert.equal(layout.cols, 5);
+  assert.deepEqual(Array.from(layout.grid[0]), ["maple-token", "maple-card", "maple-panel", "maple-release", "maple-docs"]);
+  assert.deepEqual(Array.from(layout.grid[1]), [null, "orchard-theme", "orchard-icons", null, null]);
+  assert.deepEqual(Array.from(layout.grid[2]), [null, "maple-skip", null, null, null]);
+
+  // Ports run top to bottom in the order the lines head: straight across first, then rows below,
+  // nearest first. A line straight across its row keeps one height at both ends.
+  const edge = (u, v) => layout.edges.find((e) => e.u === u && e.v === v);
+  assert.ok(edge("maple-token", "maple-card").p1 < edge("maple-token", "orchard-theme").p1);
+  assert.ok(edge("maple-token", "orchard-theme").p1 < edge("maple-token", "maple-skip").p1);
+  assert.ok(edge("maple-panel", "maple-release").p2 < edge("orchard-icons", "maple-release").p2);
+  assert.ok(edge("orchard-icons", "maple-release").p2 < edge("maple-skip", "maple-release").p2);
+  for (const [u, v] of [["maple-token", "maple-card"], ["maple-card", "maple-panel"], ["orchard-theme", "orchard-icons"], ["maple-release", "maple-docs"]]) {
+    assert.equal(edge(u, v).p1, edge(u, v).p2, `${u} -> ${v} runs straight`);
+  }
+
+  assert.equal(edge("maple-token", "orchard-theme").cross, true);
+  assert.equal(edge("orchard-icons", "maple-release").cross, true);
+  assert.equal(edge("maple-token", "maple-card").cross, false);
+
+  // Every vertical turn sharing a gutter gets its own x, with room for an (R + 1) elbow on its left
+  // and for an elbow plus a visible line before the arrowhead on its right.
+  const turnsByGutter = new Map();
+  for (const e of layout.edges) {
+    const U = layout.pos.get(e.u), V = layout.pos.get(e.v);
+    if (U.r === V.r && e.p1 === e.p2) continue;
+    if (!turnsByGutter.has(V.c - 1)) turnsByGutter.set(V.c - 1, []);
+    turnsByGutter.get(V.c - 1).push(e.x);
+  }
+  for (const xs of turnsByGutter.values()) {
+    assert.equal(new Set(xs).size, xs.length, `distinct turn x in a gutter: ${xs}`);
+    for (const x of xs) {
+      assert.ok(x - CHAIN_R >= 1, `elbow at ${x} stays inside the gutter`);
+      assert.ok(x + CHAIN_R + 1 < CHAIN_GUT - CHAIN_HEAD_W, `line after the elbow at ${x} is visible before the head`);
+    }
+  }
+  assert.equal(turnsByGutter.get(2).length, 2);
+  assert.equal(assertCleanRouting(b, layout, "fixture"), 0);
+
+  // The same graph with maple-release's blockers listed in another order still draws without crossings.
+  const rg = dependencyGraph(cardsFrom({
+    backlog: {
+      records: fixtureRecords.map((r) => (r.id === "maple-release"
+        ? { ...r, unresolved_blocker_ids: ["maple-skip", "orchard-icons", "maple-panel"] } : r)),
+    },
+  }));
+  assert.equal(assertCleanRouting(b, placeChainLane(rg.components[0], rg.nodes), "reordered blockers"), 0);
+
+  // Skip-level pass-through across empty cell (r=2, c=2) draws a horizontal bar at maple-skip's outgoing port 18.
+  const pass = chainCellSpecs(layout, 2, 2);
+  assert.equal(pass.length, 1);
+  assert.equal(pass[0].top, edge("maple-skip", "maple-release").p1);
+
+  // Intermediate vertical pass-through in gutter (r=1, g=2) for maple-skip (row 2 -> row 0).
+  const midVbars = chainGutterSpecs(layout, 1, 2).filter((s) => s.kind === "vbar" && s.edge.u === "maple-skip");
+  assert.equal(midVbars.length, 1);
+  assert.equal(midVbars[0].top, 0);
+  assert.equal(midVbars[0].bottom, 0);
+  assert.equal(midVbars[0].left, edge("maple-skip", "maple-release").x);
+});
+
+test("Chains routes a skip-level edge around the cards it passes instead of through them", async () => {
+  const b = await board();
+  const { cardsFrom, dependencyGraph, placeChainLane, chainGutterSpecs, chainCellSpecs } = b;
+  const lane = (records) => {
+    const g = dependencyGraph(cardsFrom({ backlog: { records: records.map((r) => ({ state: "queued", repo: "maple-workshop", structured: true, ...r })) } }));
+    return placeChainLane(g.components[0], g.nodes);
+  };
+
+  // Diamond on one row: A -> B -> C, and C also waits on A.
+  const diamond = lane([
+    { id: "A", title: "A", unresolved_blocker_ids: [] },
+    { id: "B", title: "B", unresolved_blocker_ids: ["A"] },
+    { id: "C", title: "C", unresolved_blocker_ids: ["B", "A"] },
+  ]);
+  assert.deepEqual(Array.from(diamond.grid[0]), ["A", "B", "C"]);
+  assert.equal(diamond.grid.length, 1);
+  assert.equal(assertCleanRouting(b, diamond, "diamond"), 0);
+  // A -> C has its own port on both cards, apart from B's line.
+  const ac = diamond.edges.find((e) => e.u === "A" && e.v === "C");
+  const bc = diamond.edges.find((e) => e.u === "B" && e.v === "C");
+  assert.notEqual(ac.p2, bc.p2);
+  // Within B's column A -> C only runs through the padding below B's card, never at a port height.
+  const underB = chainCellSpecs(diamond, 0, 1).filter((s) => s.edge === ac);
+  assert.equal(underB.length, 1);
+  assert.equal(underB[0].top, null);
+  assert.ok(underB[0].bottom >= 0 && underB[0].bottom < diamond.rowPad[0], "lane sits in the row padding");
+  // The only row is the last one, yet it keeps padding for the lane.
+  assert.ok(diamond.rowPad[0] > 0);
+
+  // Side branch X -> Y -> Z on row 1, plus X -> Z (same row, past Y) and X -> S3 (up to the spine, past Y).
+  const branch = lane([
+    { id: "S0", title: "S0", unresolved_blocker_ids: [] },
+    { id: "S1", title: "S1", unresolved_blocker_ids: ["S0"] },
+    { id: "S2", title: "S2", unresolved_blocker_ids: ["S1"] },
+    { id: "S3", title: "S3", unresolved_blocker_ids: ["S2", "X"] },
+    { id: "S4", title: "S4", unresolved_blocker_ids: ["S3"] },
+    { id: "X", title: "X", unresolved_blocker_ids: ["S0"] },
+    { id: "Y", title: "Y", unresolved_blocker_ids: ["X"] },
+    { id: "Z", title: "Z", unresolved_blocker_ids: ["Y", "X"] },
+  ]);
+  assert.deepEqual(Array.from(branch.grid[0]), ["S0", "S1", "S2", "S3", "S4"]);
+  assert.deepEqual(Array.from(branch.grid[1]), [null, "X", "Y", "Z", null]);
+  assert.equal(assertCleanRouting(b, branch, "branch row"), 0);
+
+  // An edge with nothing in its way keeps the plain path: one line straight across at its port.
+  const s01 = branch.edges.find((e) => e.u === "S0" && e.v === "S1");
+  assert.equal(s01.p1, s01.p2);
+  const s01Pieces = chainGutterSpecs(branch, 0, 0).filter((s) => s.edge === s01);
+  assert.deepEqual(Array.from(s01Pieces, (s) => s.kind), ["hbar", "head"]);
+  assert.equal(s01Pieces[0].top, s01.p1);
+  assert.equal(s01Pieces[0].left, 0);
+});
+
+test("Chains never lets a line leaving one card run on into a line entering the card beside it", async () => {
+  const b = await board();
+  const { cardsFrom, dependencyGraph, placeChainLane } = b;
+  const lane = (deps) => {
+    const ids = [...new Set(deps.flat())];
+    const g = dependencyGraph(cardsFrom({
+      backlog: {
+        records: ids.map((id) => ({
+          id, state: "queued", repo: "maple-workshop", title: id, structured: true,
+          unresolved_blocker_ids: deps.filter(([, v]) => v === id).map(([u]) => u),
+        })),
+      },
+    }));
+    return placeChainLane(g.components[0], g.nodes);
+  };
+
+  // B -> Z turns down into Z on row 1 while X -> C turns up out of X on the same row: their
+  // horizontal pieces once shared one track and read as a nonexistent X -> Z line.
+  const turns = lane([["A", "B"], ["B", "C"], ["A", "X"], ["X", "C"], ["B", "Z"]]);
+  assert.deepEqual(Array.from(turns.grid, (row) => Array.from(row)), [["A", "B", "C"], [null, "X", "Z"]]);
+  assertCleanRouting(b, turns, "opposite turns");
+
+  // The same with detour lanes: N2 -> N5 leaves N2 up toward its lane while N0 -> N3 comes down from its lane into N3.
+  const lanes = lane([["N0", "N1"], ["N0", "N2"], ["N2", "N3"], ["N0", "N3"], ["N0", "N4"], ["N1", "N4"], ["N2", "N5"], ["N0", "N5"], ["N4", "N5"]]);
+  assert.deepEqual(Array.from(lanes.grid, (row) => Array.from(row)), [["N0", "N1", "N4", "N5"], [null, "N2", "N3", null]]);
+  assertCleanRouting(b, lanes, "opposite detours");
+
+  // Every small dependency graph keeps the contract, not just the shapes above. A fixed seed
+  // keeps the run deterministic.
+  let seed = 20261116;
+  const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  for (let run = 0; run < 400; run++) {
+    const n = 3 + Math.floor(rand() * 6);
+    const ids = Array.from({ length: n }, (_, i) => `N${i}`);
+    const deps = [];
+    for (let v = 1; v < n; v++) {
+      deps.push([ids[Math.floor(rand() * v)], ids[v]]);
+      for (let u = 0; u < v; u++) if (rand() < 0.25 && !deps.some(([a, c]) => a === ids[u] && c === ids[v])) deps.push([ids[u], ids[v]]);
+    }
+    assertCleanRouting(b, lane(deps), `graph ${JSON.stringify(deps)}`);
+  }
+});
+
+test("Chains keeps every port of a heavily blocked card on the card's edge", async () => {
+  const b = await board();
+  const { cardsFrom, dependencyGraph, placeChainLane, CHAIN_HEAD_H } = b;
+  const roots = ["B0", "B1", "B2", "B3", "B4", "B5"];
+  const g = dependencyGraph(cardsFrom({
+    backlog: {
+      records: [
+        ...roots.map((id) => ({ id, state: "queued", repo: "maple-workshop", title: id, structured: true, unresolved_blocker_ids: [] })),
+        { id: "T", state: "queued", repo: "maple-workshop", title: "T", structured: true, unresolved_blocker_ids: roots },
+      ],
+    },
+  }));
+  const layout = placeChainLane(g.components[0], g.nodes);
+  const ports = layout.edges.map((e) => e.p2).sort((x, y) => x - y);
+  assert.equal(ports.length, 6);
+  // A card with no PR or live strip is about 78px tall; each arrowhead must end above that.
+  for (const p of ports) assert.ok(p + (CHAIN_HEAD_H - 1) / 2 < 78, `port ${p} stays on the card edge`);
+  // Arrowheads never overlap each other.
+  for (let i = 1; i < ports.length; i++) assert.ok(ports[i] - ports[i - 1] >= CHAIN_HEAD_H, `ports ${ports}`);
+  assert.equal(assertCleanRouting(b, layout, "six blockers"), 0);
+});
+
+test("Chains keeps a join's arrowheads apart even when a card elsewhere in the lane unblocks many", async () => {
+  const b = await board();
+  const { cardsFrom, dependencyGraph, placeChainLane, CHAIN_HEAD_H } = b;
+  const fan = ["D1", "D2", "D3", "D4", "D5", "D6", "D7"];
+  const g = dependencyGraph(cardsFrom({
+    backlog: {
+      records: [
+        { id: "H", state: "queued", repo: "maple-workshop", title: "H", structured: true, unresolved_blocker_ids: [] },
+        ...fan.map((id) => ({ id, state: "queued", repo: "maple-workshop", title: id, structured: true, unresolved_blocker_ids: ["H"] })),
+        { id: "J", state: "queued", repo: "maple-workshop", title: "J", structured: true, unresolved_blocker_ids: ["D1", "D2"] },
+      ],
+    },
+  }));
+  const layout = placeChainLane(g.components[0], g.nodes);
+  assert.equal(layout.grid[0][2], "J");
+  // Two 9px arrowheads into J must not share a pixel row, however many lines leave H.
+  const joinPorts = layout.edges.filter((e) => e.v === "J").map((e) => e.p2).sort((x, y) => x - y);
+  assert.equal(joinPorts.length, 2);
+  assert.ok(joinPorts[1] - joinPorts[0] >= CHAIN_HEAD_H, `J's ports ${joinPorts}`);
+  assertCleanRouting(b, layout, "hub and join");
+});
+
+test("Chains keeps a join's arrowheads apart when the card beside it unblocks many", async () => {
+  const b = await board();
+  const { cardsFrom, dependencyGraph, placeChainLane, CHAIN_HEAD_H } = b;
+  const fan = ["D1", "D2", "D3", "D4", "D5", "D6", "D7"];
+  const g = dependencyGraph(cardsFrom({
+    backlog: {
+      records: [
+        { id: "H", state: "queued", repo: "maple-workshop", title: "H", structured: true, unresolved_blocker_ids: [] },
+        { id: "X", state: "queued", repo: "maple-workshop", title: "X", structured: true, unresolved_blocker_ids: [] },
+        ...fan.map((id) => ({
+          id, state: "queued", repo: "maple-workshop", title: id, structured: true,
+          priority: id === "D1" ? "0" : "2", unresolved_blocker_ids: id === "D1" ? ["H", "X"] : ["H"],
+        })),
+      ],
+    },
+  }));
+  const layout = placeChainLane(g.components[0], g.nodes);
+  // H sits directly left of D1 on the spine and sends six more lines out past it.
+  assert.deepEqual(Array.from(layout.grid[0]), ["H", "D1"]);
+  const joinPorts = layout.edges.filter((e) => e.v === "D1").map((e) => e.p2).sort((x, y) => x - y);
+  assert.equal(joinPorts.length, 2);
+  assert.ok(joinPorts[1] - joinPorts[0] >= CHAIN_HEAD_H, `D1's ports ${joinPorts}`);
+  // Every line still leaves H on the card's edge, above the bottom of even a ~78px card.
+  for (const e of layout.edges.filter((x) => x.u === "H")) assert.ok(e.p1 < 78, `H -> ${e.v} leaves at ${e.p1}`);
+  assertCleanRouting(b, layout, "hub beside join");
+});
+
+test("Chains connector lines, arrowheads, and elbows obey all alignment rules in wide and narrow views across selection states", async () => {
+  // Exercises all 4 elbow directions (tr, bl, br, tl), multi-port joins (18, 34, 50),
+  // cross-project dashed links, pass-through cells, and narrow stepper branch heads.
+  const records = [
+    { id: "maple-token", state: "in_flight", repo: "maple-workshop", title: "Token", priority: "0", structured: true, unresolved_blocker_ids: [] },
+    { id: "maple-card", state: "queued", repo: "maple-workshop", title: "Card", priority: "1", structured: true, unresolved_blocker_ids: ["maple-token"] },
+    { id: "maple-panel", state: "queued", repo: "maple-workshop", title: "Panel", priority: "1", structured: true, unresolved_blocker_ids: ["maple-card"] },
+    { id: "maple-release", state: "queued", repo: "maple-workshop", title: "Release", priority: "0", structured: true, unresolved_blocker_ids: ["maple-panel", "orchard-icons", "maple-skip"] },
+    { id: "orchard-theme", state: "queued", repo: "orchard-atlas", title: "Theme", priority: "2", structured: true, unresolved_blocker_ids: ["maple-token"] },
+    { id: "orchard-icons", state: "queued", repo: "orchard-atlas", title: "Icons", priority: "2", structured: true, unresolved_blocker_ids: ["orchard-theme"] },
+    { id: "maple-skip", state: "queued", repo: "maple-workshop", title: "Skip", priority: "3", structured: true, unresolved_blocker_ids: ["maple-token"] },
+  ];
+  const theme = {
+    accent: "#61afef",
+    working: "#e5c07b",
+    ansi6: "#56b6c2",
+    border: "#3a404b",
+    dim: "#6b7280",
+    muted: "#9aa1ad",
+    selected: "#323844",
+    background: "#1e2127",
+    surface: "#252931",
+  };
+  const b = await board({
+    theme,
+    ui: { viewMode: "chains" },
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } },
+  });
+  const call = (el, name) => el?.calls?.findLast((c) => c[0] === name)?.[1];
+  const hasCall = (el, name) => Boolean(el?.calls?.some((c) => c[0] === name));
+  const parentOf = (id) => b.items.find((p) => p.childIds.includes(id));
+
+  const comp = b.view.visibleChains()[0];
+  const layout = b.placeChainLane(comp, b.view.graph.nodes);
+  const R = b.CHAIN_R;
+
+  const assertWideAlignment = () => {
+    for (const e of layout.edges) {
+      const key = `${e.u}-${e.v}`;
+      const line = b.items.find((x) => x.id === `chain-edge-${key}-line`);
+      const head = b.items.find((x) => x.id === `chain-edge-${key}-head`);
+      assert.ok(line, `missing line for ${key}`);
+      assert.ok(head, `missing head for ${key}`);
+
+      const lineTop = call(line, "top");
+      const headTop = call(head, "top");
+      const headH = call(head, "h");
+      const headW = call(head, "w");
+      assert.equal(headH % 2, 1, `${key} head height must be odd`);
+      assert.equal(headTop + headH / 2, lineTop + 0.5, `${key} head tip centered on line`);
+      assert.equal(call(head, "right"), 0, `${key} head touches card left edge`);
+      assert.equal(call(line, "right"), headW, `${key} line stops at head left edge`);
+      assert.ok(hasCall(head, "absolute"), `${key} head must be absolute`);
+      assert.ok(hasCall(line, "absolute"), `${key} line must be absolute`);
+
+      const pLine = parentOf(line.id);
+      const pHead = parentOf(head.id);
+      assert.ok(pLine && pHead && pLine.id === pHead.id, `${key} line and head share parent`);
+      assert.ok(hasCall(pLine, "relative"), `${key} parent is relative`);
+
+      const U = layout.pos.get(e.u), V = layout.pos.get(e.v);
+      if (U.r !== V.r) {
+        const down = V.r > U.r;
+        const outKind = down ? "tr" : "br";
+        const inKind = down ? "bl" : "tl";
+        const cOut = b.items.find((x) => x.id === `chain-edge-${key}-corner-${outKind}`);
+        const cIn = b.items.find((x) => x.id === `chain-edge-${key}-corner-${inKind}`);
+        const outHbar = b.items.find((x) => x.id === `chain-edge-${key}-hbar-${U.r}-${V.c - 1}`);
+        const outVbar = b.items.find((x) => x.id === `chain-edge-${key}-vbar-${U.r}`);
+        const inVbar = b.items.find((x) => x.id === `chain-edge-${key}-vbar-${V.r}`);
+        assert.ok(cOut && cIn && outHbar && outVbar && inVbar, `${key} cross-row segments present`);
+
+        for (const [kind, corner, hbar, vbar] of [[outKind, cOut, outHbar, outVbar], [inKind, cIn, line, inVbar]]) {
+          assert.equal(call(corner, "w"), R + 1, `${key} ${kind} width is R+1`);
+          assert.equal(call(corner, "h"), R + 1, `${key} ${kind} height is R+1`);
+          assert.equal(call(corner, "top") + (kind[0] === "t" ? 0 : R), call(hbar, "top"), `${key} ${kind} horizontal slot matches bar`);
+          assert.equal(call(corner, "left") + (kind[1] === "l" ? 0 : R), call(vbar, "left"), `${key} ${kind} vertical slot matches bar`);
+        }
+      }
+      if (e.cross) assert.ok(hasCall(line, "border_dashed"), `${key} cross-project line is dashed`);
+    }
+  };
+
+  const assertNarrowAlignment = () => {
+    const spineSet = new Set(layout.spineIds);
+    for (const id of comp.nodeIds) {
+      if (spineSet.has(id)) continue;
+      const line = b.items.find((x) => x.id === `chain-stepper-edge-${id}-line`);
+      const head = b.items.find((x) => x.id === `chain-stepper-edge-${id}-head`);
+      assert.ok(line && head, `stepper connector for branch ${id}`);
+      const lineTop = call(line, "top");
+      const headTop = call(head, "top");
+      const headH = call(head, "h");
+      assert.equal(headH % 2, 1);
+      assert.equal(headTop + headH / 2, lineTop + 0.5);
+      assert.equal(call(head, "right"), 0);
+      assert.equal(call(line, "right"), call(head, "w"));
+      assert.ok(hasCall(head, "absolute"));
+      const pLine = parentOf(line.id);
+      const pHead = parentOf(head.id);
+      assert.ok(pLine && pHead && pLine.id === pHead.id);
+      assert.ok(hasCall(pLine, "relative"));
+    }
+  };
+
+  // Wide view: unselected, hovered, and selected states all keep exact connector geometry.
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  assertWideAlignment();
+  const wideGeomBefore = geometry(b.items.filter((x) => x.id.startsWith("chain-edge-") || x.id.startsWith("chain-node-")));
+
+  b.hover("chain-node-orchard-icons", true);
+  assert.deepEqual(geometry(b.items.filter((x) => x.id.startsWith("chain-edge-") || x.id.startsWith("chain-node-"))), wideGeomBefore);
+  assertWideAlignment();
+  b.hover("chain-node-orchard-icons", false);
+
+  b.click("chain-node-orchard-icons");
+  assert.deepEqual(geometry(b.items.filter((x) => x.id.startsWith("chain-edge-") || x.id.startsWith("chain-node-"))), wideGeomBefore);
+  assertWideAlignment();
+
+  // Narrow view (<720px): selected and unselected both align cleanly.
+  b.view.size = { width: 520, height: 800 };
+  b.redraw();
+  assertNarrowAlignment();
+  b.click("chain-node-orchard-icons"); // deselect
+  assertNarrowAlignment();
+});
+
+test("Chains dims every connector piece of an unselected chain, including lines across empty cells", async () => {
+  const records = [
+    { id: "maple-token", state: "queued", repo: "maple-workshop", title: "Token", structured: true, unresolved_blocker_ids: [] },
+    { id: "maple-card", state: "queued", repo: "maple-workshop", title: "Card", structured: true, unresolved_blocker_ids: ["maple-token"] },
+    { id: "maple-panel", state: "queued", repo: "maple-workshop", title: "Panel", structured: true, unresolved_blocker_ids: ["maple-card"] },
+    { id: "maple-skip", state: "queued", repo: "maple-workshop", title: "Skip", structured: true, unresolved_blocker_ids: ["maple-token"] },
+    { id: "maple-release", state: "queued", repo: "maple-workshop", title: "Release", structured: true, unresolved_blocker_ids: ["maple-panel", "maple-skip"] },
+    { id: "pine-a", state: "queued", repo: "maple-workshop", title: "Pine A", structured: true, unresolved_blocker_ids: [] },
+    { id: "pine-b", state: "queued", repo: "maple-workshop", title: "Pine B", structured: true, unresolved_blocker_ids: ["pine-a"] },
+  ];
+  const b = await board({
+    ui: { viewMode: "chains" },
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } },
+  });
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  const parentOf = (id) => b.items.find((p) => p.childIds.includes(id));
+  // Opacity multiplies down the tree, so what a piece shows is the product along its ancestors.
+  const shown = (item) => {
+    let o = 1;
+    for (let el = item; el; el = parentOf(el.id)) o *= el.calls.findLast((c) => c[0] === "opacity")?.[1] ?? 1;
+    return o;
+  };
+  const maplePieces = () => b.items.filter((x) => x.id.startsWith("chain-edge-maple-"));
+  assert.ok(b.ids.includes("chain-edge-maple-skip-maple-release-pass-1-2"), "maple-skip's line crosses an empty cell");
+  for (const piece of maplePieces()) assert.equal(shown(piece), 1, `${piece.id} at full strength before any selection`);
+
+  b.click("chain-node-pine-a");
+  const pieces = maplePieces();
+  assert.ok(pieces.length > 0);
+  for (const piece of pieces) assert.ok(shown(piece) <= 0.45, `${piece.id} is dimmed with its chain (${shown(piece)})`);
 });

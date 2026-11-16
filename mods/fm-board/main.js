@@ -670,6 +670,7 @@ function chainHighlight(graph, selectedCardId = null, hoveredCardId = null) {
   }
   return {
     selectedComponent: selectedComp,
+    focusComponent: focusComp,
     roles,
     dimmedIds,
   };
@@ -689,9 +690,8 @@ function compareChainBranch(aId, aLen, bId, bLen, nodesMap, order, levelOf) {
   return (order.get(aId) ?? 0) - (order.get(bId) ?? 0);
 }
 
-// Splits a connected component into its longest forward path (main spine) and remaining
-// side-branch columns grouped by topological level, plus the per-level steps the narrow stepper
-// draws with spine nodes first. Follows strictly increasing levels so cycles never loop.
+// Splits a connected component into its longest forward path (main spine) and the per-level
+// steps, spine node first, in the order both Chains layouts draw them. Follows strictly increasing levels so cycles never loop.
 function chainSpineLayout(comp, nodesMap) {
   const levelOf = new Map();
   for (const lg of comp?.levels ?? []) {
@@ -734,21 +734,296 @@ function chainSpineLayout(comp, nodesMap) {
     spineSet.add(cur);
     spineIds.push(cur);
   }
-  const branchColumns = [];
-  for (const lg of comp?.levels ?? []) {
-    const nodes = lg.nodes.filter((n) => !spineSet.has(n.id));
-    if (nodes.length) branchColumns.push({ level: lg.level, nodes });
-  }
   const steps = (comp?.levels ?? []).map((lg) => ({
     level: lg.level,
     nodes: [...lg.nodes].sort((a, b) => Number(spineSet.has(b.id)) - Number(spineSet.has(a.id))),
   }));
   return {
     spine: spineIds.map((id) => nodesMap.get(id)).filter(Boolean),
-    spineSet,
-    branchColumns,
     steps,
   };
+}
+
+const CHAIN_CARD_W = 200;
+const CHAIN_GUT = 44;
+const CHAIN_PORT_TOP = 18;
+const CHAIN_PORT_STEP = 16;
+// Lowest port a card offers, so every arrowhead stays on the edge of even the shortest (~78px) card.
+const CHAIN_PORT_MAX = 66;
+const CHAIN_R = 6;
+const CHAIN_ROW_PAD = 12;
+const CHAIN_LANE_GAP = 4;
+const CHAIN_HEAD_W = 6;
+const CHAIN_HEAD_H = 9;
+
+// Single source of truth for horizontal-line and arrowhead vertical alignment:
+// a 1px top border occupies [y, y+1] (center y+0.5), so an odd-height head places
+// its tip row directly on the line.
+function chainJoint(y) {
+  return {
+    lineTop: y,
+    lineH: 1,
+    headTop: y - (CHAIN_HEAD_H - 1) / 2,
+    headW: CHAIN_HEAD_W,
+    headH: CHAIN_HEAD_H,
+  };
+}
+
+function chainShortId(id) {
+  return String(id ?? "").replace(/^[a-z]+-/, "");
+}
+
+function chainRoleColor(role, t) {
+  if (role === "selected") return t.accent;
+  if (role === "upstream") return t.working;
+  if (role === "downstream") return t.ansi6;
+  return null;
+}
+
+function chainEdgeColor(e, roles, t) {
+  if (!roles || !roles.size) return { c: t.dim, o: 1 };
+  const ru = roles.get(e.u), rv = roles.get(e.v);
+  if (ru === "upstream" && (rv === "upstream" || rv === "selected")) return { c: t.working, o: 1 };
+  if ((ru === "selected" || ru === "downstream") && rv === "downstream") return { c: t.ansi6, o: 1 };
+  return { c: t.dim, o: 0.4 };
+}
+
+// Places a component onto a level grid (spine on row 0, side branches on rows >= 1) and routes
+// every edge. An edge whose straight path along its source row would run through a card detours
+// through a lane in the row padding instead: below the source row, or above it when the target
+// sits higher. Ports are ordered above < same row < below, and the vertical turns sharing a
+// gutter are ordered by where they lead, so no two lines share a stretch of track.
+function placeChainLane(comp, nodesMap) {
+  const levelOf = new Map();
+  for (const lg of comp?.levels ?? []) {
+    for (const id of lg.ids) levelOf.set(id, lg.level);
+  }
+  const ids = comp?.nodeIds ?? [];
+  if (!ids.length) return { grid: [], pos: new Map(), edges: [], cols: 0, spineIds: [], levelOf, steps: [], rowPad: [] };
+  const minLv = Math.min(...ids.map((id) => levelOf.get(id) ?? 0));
+  const maxLv = Math.max(...ids.map((id) => levelOf.get(id) ?? 0));
+  const cols = maxLv - minLv + 1;
+  const pos = new Map();
+  const grid = [];
+  const put = (id, r) => {
+    const c = (levelOf.get(id) ?? 0) - minLv;
+    while (grid.length <= r) grid.push(Array(cols).fill(null));
+    grid[r][c] = id;
+    pos.set(id, { r, c });
+  };
+  const { spine, steps } = chainSpineLayout(comp, nodesMap);
+  const spineIds = spine.map((n) => n.id);
+  for (const id of spineIds) put(id, 0);
+  const rest = ids
+    .filter((id) => !pos.has(id))
+    .sort((a, b) => (levelOf.get(a) ?? 0) - (levelOf.get(b) ?? 0));
+  for (const id of rest) {
+    const n = nodesMap.get(id);
+    const c = (levelOf.get(id) ?? 0) - minLv;
+    const upRow = (n?.waitingIds ?? []).map((u) => pos.get(u)?.r).find((r) => r > 0 && !grid[r]?.[c]);
+    let r = upRow ?? 1;
+    while (grid[r]?.[c]) r++;
+    put(id, r);
+  }
+  const edges = [];
+  for (const id of ids) {
+    const n = nodesMap.get(id);
+    for (const u of n?.waitingIds ?? []) {
+      if (!pos.has(u)) continue;
+      const U = pos.get(u), V = pos.get(id);
+      if (U.c >= V.c) continue;
+      const up = nodesMap.get(u);
+      const cross = Boolean(n?.project && up?.project && n.project !== up.project);
+      const blocked = grid[U.r].slice(U.c + 1, V.c).some(Boolean);
+      edges.push({
+        u, v: id, cross, p1: CHAIN_PORT_TOP, p2: CHAIN_PORT_TOP, x: null, x0: null,
+        chanRow: blocked ? (V.r < U.r ? U.r - 1 : U.r) : null, chan: null,
+      });
+    }
+  }
+  const span = (e) => pos.get(e.v).c - pos.get(e.u).c;
+  // Wider detours take lower lanes so narrower ones nest inside them; equal spans take lanes in
+  // the reverse of their port order, which keeps their turns out of each other's way.
+  const lanes = new Map();
+  for (const e of [...edges].reverse().sort((a, b) => span(b) - span(a))) {
+    if (e.chanRow === null) continue;
+    const from = pos.get(e.u).c, to = pos.get(e.v).c - 1;
+    if (!lanes.has(e.chanRow)) lanes.set(e.chanRow, []);
+    const rowLanes = lanes.get(e.chanRow);
+    let i = rowLanes.findIndex((used) => used.every(([a, b]) => to < a || from > b));
+    if (i < 0) i = rowLanes.push([]) - 1;
+    rowLanes[i].push([from, to]);
+    e.chan = CHAIN_R + CHAIN_LANE_GAP * i;
+  }
+  const rowPad = grid.map((_, r) => {
+    const n = lanes.get(r)?.length ?? 0;
+    return r < grid.length - 1 || n ? CHAIN_ROW_PAD + CHAIN_LANE_GAP * Math.max(0, n - 1) : 0;
+  });
+  const outs = new Map(), ins = new Map();
+  for (const e of edges) {
+    if (!outs.has(e.u)) outs.set(e.u, []);
+    outs.get(e.u).push(e);
+    if (!ins.has(e.v)) ins.set(e.v, []);
+    ins.get(e.v).push(e);
+  }
+  // Where an edge heads from its card, in rows: negative above, 0 straight across, positive below.
+  // A detour lane sits half a row from the card, between its own row and the next one.
+  const outSide = (e) => (e.chanRow === null ? pos.get(e.v).r - pos.get(e.u).r : e.chanRow - pos.get(e.u).r + 0.5);
+  const inSide = (e) => (e.chanRow === null ? pos.get(e.u).r - pos.get(e.v).r : e.chanRow - pos.get(e.v).r + 0.5);
+  const order = (side) => (a, b) => side(a) - side(b)
+    || (a.chanRow === null && side(a) > 0 ? span(b) - span(a) : span(a) - span(b));
+  for (const list of outs.values()) list.sort(order(outSide));
+  for (const list of ins.values()) list.sort(order(inSide));
+  // Port slot j holds an in-port at its top and an out-port half a slot lower, so a line turning
+  // out of a card never shares a height with another line turning into the card beside it. An
+  // edge straight across its row uses its target's in-port at both ends, placed below every
+  // out-port its source lists before it. Lines only meet across a gutter row between a card's
+  // out-ports and the in-ports of the next card to its right on that row, so the slot size comes
+  // from that right card's in-ports alone, keeping its arrowheads apart however many lines leave
+  // its neighbour; out-ports past its deepest in-port share whatever room is left below it.
+  const straight = (e) => e.chanRow === null && pos.get(e.u).r === pos.get(e.v).r;
+  const inSlot = new Map(), outSlot = new Map(), minSlot = new Map();
+  for (const list of outs.values()) list.forEach((e, i) => { if (straight(e)) minSlot.set(e, i); });
+  for (const list of ins.values()) {
+    let next = 0;
+    for (const e of list) {
+      const j = Math.max(next, minSlot.get(e) ?? 0);
+      inSlot.set(e, j);
+      next = j + 1;
+    }
+  }
+  for (const list of outs.values()) {
+    let next = 0;
+    for (const e of list) {
+      if (straight(e)) next = Math.max(next, inSlot.get(e));
+      else outSlot.set(e, next++);
+    }
+  }
+  const rightOf = new Map();
+  for (const row of grid) {
+    let prev = null;
+    for (const id of row.filter(Boolean)) {
+      if (prev) rightOf.set(prev, id);
+      prev = id;
+    }
+  }
+  const room = CHAIN_PORT_MAX - CHAIN_PORT_TOP;
+  const deepOut = (id) => Math.max(0, ...(outs.get(id) ?? []).filter((e) => outSlot.has(e)).map((e) => outSlot.get(e) + 0.5));
+  const deepIn = (id) => Math.max(0, ...(ins.get(id) ?? []).map((e) => inSlot.get(e)));
+  const inStep = (id) => Math.max(Math.min(CHAIN_HEAD_H, Math.floor(room / Math.max(1, deepIn(id)))),
+    Math.min(CHAIN_PORT_STEP, Math.floor(room / (deepIn(id) + 0.5))));
+  const outPort = (e) => {
+    const right = rightOf.get(e.u);
+    const paired = Boolean(right && ins.has(right));
+    const step = paired ? inStep(right) : CHAIN_PORT_STEP;
+    const deep = paired ? deepIn(right) : 0;
+    const i = outSlot.get(e);
+    if (i < deep) return CHAIN_PORT_TOP + step * i + Math.floor(step / 2);
+    const last = CHAIN_PORT_TOP + step * deep;
+    const gap = Math.max(2, Math.min(step, Math.floor((CHAIN_PORT_MAX - last) / (deepOut(e.u) - deep))));
+    return last + gap * (i - deep) + Math.floor(gap / 2);
+  };
+  for (const e of edges) {
+    e.p2 = CHAIN_PORT_TOP + inStep(e.v) * inSlot.get(e);
+    e.p1 = straight(e) ? e.p2 : outPort(e);
+  }
+  // Vertical positions comparable across rows; a detour lane lies below every port of its row.
+  const yAt = (r, y) => r * 10000 + y;
+  const turns = new Map();
+  const addTurn = (g, from, to, set) => {
+    if (!turns.has(g)) turns.set(g, []);
+    turns.get(g).push({ key: from < to ? [0, -to] : [1, to], set });
+  };
+  for (const e of edges) {
+    const U = pos.get(e.u), V = pos.get(e.v);
+    let from = yAt(U.r, e.p1);
+    if (e.chanRow !== null) {
+      const lane = yAt(e.chanRow, 9000 - e.chan);
+      addTurn(U.c, from, lane, (x) => { e.x0 = x; });
+      from = lane;
+    }
+    const to = yAt(V.r, e.p2);
+    if (from !== to) addTurn(V.c - 1, from, to, (x) => { e.x = x; });
+  }
+  const minX = CHAIN_R + 1, maxX = CHAIN_GUT - CHAIN_HEAD_W - CHAIN_R - 1;
+  for (const list of turns.values()) {
+    list.sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1])
+      .forEach((tn, i) => tn.set(minX + Math.round(((maxX - minX) * (i + 1)) / (list.length + 1))));
+  }
+  return { grid, pos, edges, cols, spineIds, levelOf, steps, rowPad };
+}
+
+// Computes pure geometry descriptors for every connector piece in gutter (r, g). A slot is
+// { top } for a card port or { bottom } for a detour lane in the row padding.
+function chainGutterSpecs(layout, r, g) {
+  const out = [];
+  const R = CHAIN_R, C = CHAIN_R + 1;
+  for (const e of layout.edges) {
+    const U = layout.pos.get(e.u), V = layout.pos.get(e.v);
+    if (!(g >= U.c && g < V.c)) continue;
+    const add = (kind, id, geo) => out.push({ kind, id: `chain-edge-${e.u}-${e.v}-${id}`, top: null, bottom: null, ...geo, dashed: e.cross, edge: e });
+    const enter = (left) => {
+      const j = chainJoint(e.p2);
+      add("hbar", "line", { top: j.lineTop, left, right: j.headW });
+      add("head", "head", { top: j.headTop, right: 0, w: j.headW, h: j.headH });
+    };
+    // Runs in from the gutter's left edge at slot a on row ra, turns at x, and leaves toward the
+    // right edge at slot b on row rb through exit(), with an (R + 1) elbow at each bend.
+    const turn = (pre, x, ra, a, rb, b, exit) => {
+      if (r < Math.min(ra, rb) || r > Math.max(ra, rb)) return;
+      const down = rb > ra || (rb === ra && (b.bottom != null || (a.bottom == null && b.top > a.top)));
+      const hang = (s) => (s.bottom == null ? { top: s.top } : { bottom: s.bottom - R });
+      const sit = (s) => (s.bottom == null ? { top: s.top - R } : { bottom: s.bottom });
+      const below = (s) => (s.bottom == null ? { t: s.top + C } : { b: s.bottom - R });
+      const above = (s) => (s.bottom == null ? { t: s.top - R } : { b: s.bottom + C });
+      const corner = (kind, left, at) => add("corner", `${pre}corner-${kind}`, { cornerKind: kind, left, ...at, w: C, h: C });
+      if (r === ra) {
+        add("hbar", `${pre}hbar-${r}-${g}`, { ...a, left: 0, right: CHAIN_GUT - x + R });
+        corner(down ? "tr" : "br", x - R, down ? hang(a) : sit(a));
+      }
+      const from = r === ra && down ? below(a) : r === rb && !down ? below(b) : { t: 0 };
+      const to = r === rb && down ? above(b) : r === ra && !down ? above(a) : { b: 0 };
+      const geo = from.t == null ? { bottom: to.b, h: from.b - to.b }
+        : to.t == null ? { top: from.t, bottom: to.b } : { top: from.t, h: to.t - from.t };
+      if (geo.h == null || geo.h > 0) add("vbar", `${pre}vbar-${r}`, { left: x, h: null, ...geo });
+      if (r === rb) {
+        corner(down ? "bl" : "tl", x, down ? sit(b) : hang(b));
+        exit();
+      }
+    };
+    const last = g === V.c - 1;
+    const port1 = { top: e.p1 }, port2 = { top: e.p2 }, lane = { bottom: e.chan };
+    if (e.chanRow === null) {
+      if (!last) {
+        if (r === U.r) add("hbar", `hbar-${r}-${g}`, { ...port1, left: 0, right: 0 });
+      } else if (U.r === V.r && e.p1 === e.p2) {
+        if (r === U.r) enter(0);
+      } else {
+        turn("", e.x, U.r, port1, V.r, port2, () => enter(e.x + C));
+      }
+    } else if (g === U.c) {
+      turn("out-", e.x0, U.r, port1, e.chanRow, lane, () => add("hbar", `chan-${r}-${g}`, { ...lane, left: e.x0 + C, right: 0 }));
+    } else if (last) {
+      turn("", e.x, e.chanRow, lane, V.r, port2, () => enter(e.x + C));
+    } else if (r === e.chanRow) {
+      add("hbar", `chan-${r}-${g}`, { ...lane, left: 0, right: 0 });
+    }
+  }
+  return out;
+}
+
+// Computes pure geometry descriptors for edge pieces inside grid cell (r, col): straight lines
+// passing through an empty cell, and detour lanes running through the row padding below a card.
+function chainCellSpecs(layout, r, col) {
+  const out = [];
+  for (const e of layout.edges) {
+    const U = layout.pos.get(e.u), V = layout.pos.get(e.v);
+    if (!(col > U.c && col < V.c)) continue;
+    const base = { kind: "hbar", top: null, bottom: null, left: 0, right: 0, dashed: e.cross, edge: e };
+    if (e.chanRow === null && r === U.r) out.push({ ...base, id: `chain-edge-${e.u}-${e.v}-pass-${r}-${col}`, top: e.p1 });
+    if (e.chanRow === r) out.push({ ...base, id: `chain-edge-${e.u}-${e.v}-chan-${r}-${col}`, bottom: e.chan });
+  }
+  return out;
 }
 
 // What the Kanban search matches, lowercased: the task id and the card's text (title,
@@ -2054,93 +2329,269 @@ export default class FmBoard extends View {
     return q ? list.filter((c) => searchText(c).includes(q)) : list;
   }
 
-  /** @param {string} edgeId @param {string} subLabel @param {boolean} crossRepo @param {boolean} active @param {Record<string, `#${string}`>} t */
-  renderChainArrow(edgeId, subLabel, crossRepo, active, t) {
-    const color = crossRepo ? t.blocked : active ? t.accent : t.muted;
-    return v_flex().id(edgeId).flex_none().items_center().justify_center().px(2)
-      .child(div().text_size(this.fs(12)).font_semibold().text_color(color).child("->"))
-      .when(Boolean(subLabel), (e) => e.child(div().text_size(this.fs(8.5)).text_color(color).child(subLabel)));
+  /** @param {string} name @param {Record<string, `#${string}`>} t @param {string} id */
+  chainProjectBadge(name, t, id) {
+    const color = this.colorOf(name, t);
+    const tag = this.tags?.get(name) ?? name.slice(0, 3).toUpperCase();
+    return h_flex().id(id).flex_none().w(30).h(16).justify_center().items_center().rounded(3).bg(color)
+      .font_family(this.monoFont).text_size(this.fs(9.5)).font_semibold().text_color("#ffffff").tooltip(name).child(tag);
   }
 
-  /** @param {any} node @param {any} comp @param {Record<string, `#${string}`>} t @param {boolean} [compact] */
-  renderChainNode(node, comp, t, compact = false) {
+  /** @param {string} label @param {`#${string}`} color @param {boolean} [dashed] */
+  renderChainChip(label, color, dashed = false) {
+    return div().flex_none().px(6).py(1).rounded(4).border(1).border_color(color)
+      .when(dashed, (e) => e.border_dashed())
+      .font_family(this.monoFont).text_size(this.fs(9)).text_color(color).child(label);
+  }
+
+  /** @param {Record<string, `#${string}`>} t */
+  renderChainLegend(t) {
+    const item = (label, color, dashed = false) => h_flex().gap(6).items_center()
+      .child(div().w(16).h(2).border_t(1).border_color(color).when(dashed, (e) => e.border_dashed()))
+      .child(div().text_size(this.fs(10.5)).text_color(t.muted).child(label));
+    return h_flex().id("chain-legend").flex_none().gap(16).items_center().px(4).flex_wrap()
+      .child(item("upstream", t.working))
+      .child(item("selected", t.accent))
+      .child(item("downstream", t.ansi6))
+      .child(item("cross-project", t.dim, true))
+      .child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).child("L0…Ln = dependency level"));
+  }
+
+  /** @param {any} spec @param {Map<string, string>} roles @param {boolean} dimLane @param {Record<string, `#${string}`>} t */
+  renderChainPiece(spec, roles, dimLane, t) {
+    const { c, o: roleO } = chainEdgeColor(spec.edge, roles, t);
+    const o = dimLane ? roleO * 0.45 : roleO;
+    if (spec.kind === "head") {
+      return svg("mods/fm-board/arrow-head.svg").id(spec.id).absolute()
+        .right(spec.right).top(spec.top).w(spec.w).h(spec.h)
+        .text_color(c).when(o < 1, (el) => el.opacity(o));
+    }
+    const placed = div().id(spec.id).absolute()
+      .when(spec.top != null, (el) => el.top(spec.top))
+      .when(spec.bottom != null, (el) => el.bottom(spec.bottom))
+      .border_color(c)
+      .when(spec.dashed, (el) => el.border_dashed())
+      .when(o < 1, (el) => el.opacity(o));
+    // Herdr paints no border on a box with no room inside it, so a 0px or 1px bar would draw nothing.
+    // Each bar is a 2px box whose 1px border is the line; it stays a border so cross-project lines can dash.
+    if (spec.kind === "hbar") return placed.left(spec.left).right(spec.right).h(2).border_t(1);
+    if (spec.kind === "vbar") return placed.left(spec.left).w(2).when(spec.h != null, (el) => el.h(spec.h)).border_l(1);
+    const el = placed.left(spec.left).w(spec.w).h(spec.h);
+    if (spec.cornerKind === "tr") return el.border_t(1).border_r(1).rounded_tr(CHAIN_R);
+    if (spec.cornerKind === "bl") return el.border_b(1).border_l(1).rounded_bl(CHAIN_R);
+    if (spec.cornerKind === "br") return el.border_b(1).border_r(1).rounded_br(CHAIN_R);
+    return el.border_t(1).border_l(1).rounded_tl(CHAIN_R);
+  }
+
+  /** @param {any} node @param {Record<string, `#${string}`>} t @param {Map<string, string>} laneRoles @param {boolean} dimLane */
+  renderChainNode(node, t, laneRoles, dimLane) {
     const id = node.id;
-    const role = this.highlight?.roles?.get(id) ?? null;
-    const pinnedRole = this.pinned?.roles?.get(id) ?? null;
+    const role = laneRoles.get(id) ?? null;
     const isSelected = this.selectedCardId === id;
     const isCurrent = Boolean(this.query) && this.currentMatch === id;
     const q = this.query.toLowerCase();
     const queryMatches = !q || (!node.missing && searchText(node).includes(q));
     const [statusLabel, statusColor] = this.nodeStatus(node, t, true);
-    const activeRoot = node.column === "working" && (node.waitingIds?.length ?? 0) === 0;
-    const roleBorder = isCurrent || isSelected || role === "selected" ? t.accent
-      : role === "upstream" ? t.working
-      : role === "downstream" ? t.ansi6
-      : activeRoot ? t.working
-      : role === "branch" ? t.muted
-      : t.border;
-    const borderWidth = isCurrent || isSelected || pinnedRole === "upstream" || pinnedRole === "downstream" || activeRoot ? 2 : 1;
-    const dimmed = (Boolean(this.highlight?.dimmedIds?.has(id)) && !isCurrent) || (Boolean(q) && !queryMatches);
-    const waiting = node.column === "queued" && (node.waitingIds?.length ?? 0) > 0;
+    const roleBorder = isCurrent || isSelected ? t.accent : (chainRoleColor(role, t) ?? t.border);
+    const dimmed = dimLane || (Boolean(this.highlight?.dimmedIds?.has(id)) && !isCurrent) || (Boolean(q) && !queryMatches);
     const strip = (title) => (node.project && title.startsWith(`${node.project} `) ? title.slice(node.project.length + 1) : title);
 
-    const card = v_flex().id(`chain-node-${id}`).gap(4).p(7).rounded(6)
+    // Hairline border width stays 1px across hover and selection so cards never shift.
+    const card = v_flex().id(`chain-node-${id}`).flex_1().min_w(0).gap(6).p(10).rounded(6)
       .bg(isSelected ? t.selected : t.background)
-      .border(borderWidth).border_color(roleBorder)
-      .when(!compact, (e) => e.w(205).flex_none())
-      .when(compact, (e) => e.flex_1().min_w(0))
+      .border(1).border_color(roleBorder)
       .when(dimmed, (e) => e.opacity(0.45))
-      .when(!dimmed && waiting && !role && !isCurrent, (e) => e.opacity(0.82))
       .cursor_pointer().hover((s) => s.bg(t.hover))
       .tooltip(`${id}: ${node.title ?? id} · Click to highlight chain & open card detail`)
       .on_hover((hovered, cx) => this.hoverChainCard(id, hovered, cx))
       .on_click((_e, cx) => { cx.stop_propagation(); this.selectChainNode(id, cx); });
 
-    const topRow = h_flex().gap(4).items_center().min_w(0)
+    const topRow = h_flex().h(16).gap(6).items_center().min_w(0)
       .child(node.missing
-        ? div().id(`cnode-tag-${id}`).flex_none().px(4).py(1).rounded(9).border(1).border_color(t.border)
-          .text_size(this.fs(10)).text_color(t.muted).tooltip("Not on the board").child("unknown")
-        : this.projectBadge(node.project || "firstmate", t, `cnode-tag-${id}`))
+        ? div().id(`cnode-tag-${id}`).flex_none().px(4).h(16).rounded(3).border(1).border_color(t.border)
+          .font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.muted).tooltip("Not on the board").child("unknown")
+        : this.chainProjectBadge(node.project || "firstmate", t, `cnode-tag-${id}`))
+      .child(div().flex_1().min_w(0).font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).truncate()
+        .child(chainShortId(id)))
       .when(!node.missing && node.priority !== null && node.priority !== undefined && node.column !== "done", (e) =>
-        e.child(div().id(`cnode-prio-${id}`).flex_none().px(4).rounded(4).border(1)
-          .border_color(node.priority === 0 ? t.foreground : t.border)
-          .text_size(this.fs(9.5)).text_color(node.priority === 0 ? t.foreground : t.muted)
-          .child(`P${node.priority}`)))
-      .child(div().id(`cnode-status-${id}`).flex_none().px(4).py(0.5).rounded(4).bg(statusColor + "22")
-        .text_size(this.fs(10)).font_semibold().text_color(statusColor).child(statusLabel))
-      .child(div().flex_1().min_w(0));
+        e.child(div().id(`cnode-prio-${id}`).flex_none().font_family(this.monoFont).text_size(this.fs(9.5))
+          .when(node.priority === 0, (p) => p.font_bold())
+          .text_color(node.priority === 0 ? t.foreground : t.dim)
+          .child(`P${node.priority}`)));
 
-    if (pinnedRole === "selected" || pinnedRole === "upstream" || pinnedRole === "downstream") {
-      const roleLabel = pinnedRole === "selected" ? "Selected" : pinnedRole === "upstream" ? "Upstream" : "Downstream";
-      const roleColor = pinnedRole === "selected" ? t.accent : pinnedRole === "upstream" ? t.working : t.ansi6;
-      topRow.child(div().id(`cnode-role-${id}`).flex_none().px(4).py(0.5).rounded(4).bg(roleColor + "24")
-        .text_size(this.fs(9.5)).font_semibold().text_color(roleColor).child(roleLabel));
+    const metaRow = h_flex().gap(6).items_center().min_w(0)
+      .child(div().flex_none().w(6).h(6).rounded(3).bg(statusColor))
+      .child(div().id(`cnode-status-${id}`).flex_none().text_size(this.fs(10.5)).text_color(t.muted).child(statusLabel));
+    if ((node.blocksCount ?? 0) > 0 && (node.waitingIds?.length ?? 0) === 0) {
+      metaRow.child(div().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.working).truncate()
+        .child(`· unblocks ${node.blocksCount}`));
+    } else if ((node.waitingIds?.length ?? 0) > 1) {
+      metaRow.child(div().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.dim).truncate()
+        .child(`· ${node.waitingIds.length} blockers`));
     }
 
     card.child(topRow)
-      .child(div().min_w(0).text_size(this.fs(11)).font_semibold().text_color(t.foreground).child(strip(node.title ?? id)));
+      .child(div().min_w(0).text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(strip(node.title ?? id)))
+      .child(metaRow);
 
     if (node.pr && /^https:\/\//.test(node.pr)) {
-      card.child(div().id(`cnode-pr-${id}`).text_size(this.fs(10)).text_color(t.accent).truncate()
+      const prLabel = node.pr.replace(/^https:\/\/github\.com\/[^/]+\/([^/]+)\/pull\/(\d+).*$/, "$1#$2")
+        .replace("https://github.com/", "");
+      card.child(div().id(`cnode-pr-${id}`).font_family(this.monoFont).text_size(this.fs(10)).text_color(t.accent).truncate()
         .cursor_pointer().hover((s) => s.text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [node.pr]); })
-        .child(node.pr.replace("https://github.com/", "")));
+        .child(prLabel));
     }
 
     if (!node.missing && this.workerLive(node)) {
       this.shownTerminals.add(node.terminal);
       const tail = (this.tails.get(node.terminal) ?? []).at(-1) || this.workerStatusLabel(node);
-      card.child(div().id(`cnode-live-${id}`).px(5).py(2).rounded(4).bg(t.working + "1f")
+      card.child(div().id(`cnode-live-${id}`).px(6).py(2).rounded(2).bg(t.raised)
+        .border_l(2).border_color(t.working)
         .font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.muted).truncate().child(tail));
     } else if (node.background) {
-      card.child(div().px(5).py(2).rounded(4).bg(t.working + "1f")
+      card.child(div().px(6).py(2).rounded(2).bg(t.raised)
+        .border_l(2).border_color(t.working)
         .text_size(this.fs(9.5)).font_semibold().text_color(t.foreground).truncate().child(`백그라운드 실행 중: ${node.background}`));
-    } else if ((node.blocksCount ?? 0) > 0 && (node.waitingIds?.length ?? 0) === 0) {
-      card.child(div().text_size(this.fs(9.5)).font_semibold().text_color(t.working).child(`★ Root unblocker (blocks ${node.blocksCount})`));
-    } else if ((node.waitingIds?.length ?? 0) > 0) {
-      card.child(div().text_size(this.fs(9.5)).text_color(t.muted).truncate().child(`Waits on ${node.waitingIds.join(", ")}`));
     }
     return card;
+  }
+
+  /** @param {any} comp @param {any} layout @param {Map<string, string>} laneRoles @param {boolean} dimLane @param {Record<string, `#${string}`>} t */
+  renderChainWideGrid(comp, layout, laneRoles, dimLane, t) {
+    const body = v_flex().gap(0).min_w(layout.cols * CHAIN_CARD_W + Math.max(0, layout.cols - 1) * CHAIN_GUT);
+    const ruler = h_flex().mb(8);
+    for (let c = 0; c < layout.cols; c++) {
+      ruler.child(div().w(CHAIN_CARD_W).flex_none().font_family(this.monoFont).text_size(this.fs(9))
+        .text_color(t.dim).pb(4).border_b(1).border_color(t.border).child(`L${c}`));
+      if (c < layout.cols - 1) ruler.child(div().w(CHAIN_GUT).flex_none());
+    }
+    body.child(ruler);
+
+    layout.grid.forEach((row, r) => {
+      const rowId = r === 0 ? `chain-spine-${comp.id}` : r === 1 ? `chain-branches-${comp.id}` : `chain-branch-row-${comp.id}-${r}`;
+      const rowEl = h_flex().id(rowId).items_stretch();
+      for (let c = 0; c < layout.cols; c++) {
+        const id = row[c];
+        const cell = v_flex().id(`chain-cell-${comp.id}-${r}-${c}`).relative().w(CHAIN_CARD_W).flex_none()
+          .when(layout.rowPad[r] > 0, (e) => e.pb(layout.rowPad[r]));
+        const pieces = chainCellSpecs(layout, r, c);
+        if (pieces.length) cell.children(pieces.map((spec) => this.renderChainPiece(spec, laneRoles, dimLane, t)));
+        if (id) {
+          const node = this.graph.nodes.get(id);
+          if (node) cell.child(this.renderChainNode(node, t, laneRoles, dimLane));
+        } else if (r > 0 && c === 0) {
+          const firstId = row.find(Boolean);
+          const first = firstId ? this.graph.nodes.get(firstId) : null;
+          const fromId = first?.waitingIds?.find((u) => layout.pos.get(u)?.r === 0)
+            ?? first?.waitingIds?.find((u) => layout.pos.has(u));
+          const fromNode = fromId ? this.graph.nodes.get(fromId) : null;
+          if (first && fromNode) {
+            const fromTag = this.tags?.get(fromNode.project) ?? (fromNode.project || "EXT").slice(0, 3).toUpperCase();
+            const toTag = this.tags?.get(first.project) ?? (first.project || "EXT").slice(0, 3).toUpperCase();
+            const arrow = Boolean(fromNode.project && first.project && fromNode.project !== first.project) ? "┄▸" : "→";
+            cell.child(v_flex().gap(2).pt(10).pr(12).items_end()
+              .child(div().font_family(this.monoFont).text_size(this.fs(9)).text_color(t.dim).child("SIDE BRANCH"))
+              .child(div().text_size(this.fs(10.5)).text_color(t.muted).child(`forks from ${chainShortId(fromId)}`))
+              .child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).child(`${fromTag} ${arrow} ${toTag}`)));
+          }
+        }
+        rowEl.child(cell);
+        if (c < layout.cols - 1) {
+          const pieces = chainGutterSpecs(layout, r, c);
+          rowEl.child(div().id(`chain-gutter-${comp.id}-${r}-${c}`).relative().w(CHAIN_GUT).flex_none()
+            .children(pieces.map((spec) => this.renderChainPiece(spec, laneRoles, dimLane, t))));
+        }
+      }
+      body.child(rowEl);
+    });
+    return div().id(`chain-grid-${comp.id}`).w_full().min_w(0).overflow_x_scroll().child(body);
+  }
+
+  /** @param {any} comp @param {any} layout @param {Map<string, string>} laneRoles @param {boolean} dimLane @param {Record<string, `#${string}`>} t */
+  renderChainStepper(comp, layout, laneRoles, dimLane, t) {
+    const RAIL = 40, RX = 28;
+    const spineSet = new Set(layout.spineIds);
+    const segColor = (i) => chainEdgeColor({ u: layout.spineIds[i], v: layout.spineIds[i + 1] }, laneRoles, t);
+    const isCross = (node) => (node.waitingIds ?? []).some((u) => {
+      const up = this.graph.nodes.get(u);
+      return Boolean(node.project && up?.project && node.project !== up.project);
+    }) || (node.blockingIds ?? []).some((d) => {
+      const dn = this.graph.nodes.get(d);
+      return Boolean(node.project && dn?.project && node.project !== dn.project);
+    });
+
+    const subrows = [];
+    for (const step of layout.steps) {
+      step.nodes.forEach((n, k) => subrows.push({ n, lv: step.level, first: k === 0, spine: spineSet.has(n.id) }));
+    }
+
+    const stepper = v_flex().id(`chain-stepper-${comp.id}`).gap(0);
+    const byLevel = new Map();
+    subrows.forEach((s, i) => {
+      const isLastRow = i === subrows.length - 1;
+      const rail = div().relative().w(RAIL).flex_none().when(dimLane, (e) => e.opacity(0.45));
+      if (s.first) {
+        rail.child(div().absolute().left(0).top(12).font_family(this.monoFont).text_size(this.fs(9))
+          .text_color(t.dim).child(`L${s.lv}`));
+      }
+      if (s.spine) {
+        const pos = layout.spineIds.indexOf(s.n.id);
+        if (pos > 0) {
+          const { c, o } = segColor(pos - 1);
+          rail.child(div().absolute().left(RX).top(0).h(14).w(2).border_l(1).border_color(c).when(o < 1, (e) => e.opacity(o)));
+        }
+        if (pos < layout.spineIds.length - 1 || !isLastRow) {
+          const { c, o } = pos < layout.spineIds.length - 1 ? segColor(pos) : { c: t.dim, o: 1 };
+          rail.child(div().absolute().left(RX).top(22).bottom(0).w(2).border_l(1).border_color(c).when(o < 1, (e) => e.opacity(o)));
+        }
+        const [, statusColor] = this.nodeStatus(s.n, t, true);
+        const rc = chainRoleColor(laneRoles?.get(s.n.id) ?? null, t);
+        rail.child(div().absolute().left(RX - 4).top(14).w(9).h(9).rounded(5)
+          .border(1.5).border_color(rc ?? statusColor).bg(rc ?? t.surface));
+      } else {
+        const nextSpineIdx = layout.spineIds.findIndex((id) => (layout.levelOf.get(id) ?? 0) > s.lv);
+        const { c: railC, o: railO } = nextSpineIdx > 0 ? segColor(nextSpineIdx - 1) : { c: t.dim, o: 1 };
+        if (!isLastRow) {
+          rail.child(div().absolute().left(RX).top(0).bottom(0).w(2).border_l(1).border_color(railC).when(railO < 1, (e) => e.opacity(railO)));
+        } else {
+          rail.child(div().absolute().left(RX).top(0).h(18).w(2).border_l(1).border_color(railC).when(railO < 1, (e) => e.opacity(railO)));
+        }
+        const cross = isCross(s.n);
+        const rc = chainRoleColor(laneRoles?.get(s.n.id) ?? null, t) ?? t.dim;
+        rail.child(div().absolute().top(18).left(RX).right(0).h(2).border_t(1).border_color(rc)
+          .when(cross, (e) => e.border_dashed()));
+      }
+
+      const content = h_flex().flex_1().min_w(0).when(!isLastRow, (e) => e.pb(8));
+      if (!s.spine) {
+        const j = chainJoint(18);
+        const cross = isCross(s.n);
+        const rc = chainRoleColor(laneRoles?.get(s.n.id) ?? null, t) ?? t.dim;
+        content.child(div().id(`chain-stepper-conn-${s.n.id}`).relative().w(20).flex_none().when(dimLane, (e) => e.opacity(0.45))
+          .child(div().id(`chain-stepper-edge-${s.n.id}-line`).absolute().top(j.lineTop).left(0).right(j.headW).h(2)
+            .border_t(1).border_color(rc).when(cross, (e) => e.border_dashed()))
+          .child(svg("mods/fm-board/arrow-head.svg").id(`chain-stepper-edge-${s.n.id}-head`).absolute()
+            .right(0).top(j.headTop).w(j.headW).h(j.headH).text_color(rc)));
+      }
+      const cd = this.renderChainNode(s.n, t, laneRoles, dimLane);
+      if (!s.spine) {
+        const forks = (s.n.waitingIds ?? []).filter((u) => spineSet.has(u));
+        const joins = (s.n.blockingIds ?? []).filter((d) => spineSet.has(d));
+        const note = [];
+        if (forks.length) note.push(`forks from ${forks.map(chainShortId).join(", ")}`);
+        if (joins.length) note.push(`joins ${joins.map(chainShortId).join(", ")} ↓`);
+        if (note.length) cd.child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).child(note.join(" · ")));
+      }
+      content.child(cd);
+      const rowEl = h_flex().items_stretch().child(rail).child(content);
+      if (!byLevel.has(s.lv)) byLevel.set(s.lv, []);
+      byLevel.get(s.lv).push(rowEl);
+    });
+    for (const [lv, rows] of byLevel) {
+      stepper.child(v_flex().id(`chain-step-${comp.id}-${lv}`).gap(0).children(rows));
+    }
+    return stepper;
   }
 
   /** @param {any} comp @param {number} idx @param {Record<string, `#${string}`>} t @param {boolean} stacked */
@@ -2152,109 +2603,38 @@ export default class FmBoard extends View {
     const workingCount = realNodes.filter((n) => n.column === "working").length;
     const isTopChain = idx === 0;
 
-    const header = h_flex().id(`head-chain-${comp.id}`).gap(6).items_center().justify_between()
-      .px(8).py(4).rounded(5).bg(t.selected).cursor_pointer().hover((s) => s.opacity(0.8))
+    const header = h_flex().id(`head-chain-${comp.id}`).gap(8).items_center().min_w(0)
+      .cursor_pointer().hover((s) => s.opacity(0.8))
       .on_click((_e, cx) => this.toggleFold(laneKey, cx))
-      .child(h_flex().flex_1().min_w(0).gap(6).items_center()
-        .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
-        .children(projects.slice(0, 3).map((p, pIdx) => this.projectBadge(p, t, `lane-tag-${comp.id}-${pIdx}`)))
-        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground)
-          .child(`Chain ${idx + 1} · ${comp.summaryLabel}`)))
-      .child(h_flex().flex_none().gap(6).items_center()
-        .when(Boolean(comp.hasCycle), (e) => e.child(div().px(5).py(0.5).rounded(4).bg(t.ansi1 + "24")
-          .text_size(this.fs(9.5)).font_semibold().text_color(t.ansi1).child("Cycle")))
-        .when(isTopChain && comp.depth > 1, (e) => e.child(div().px(5).py(0.5).rounded(4).bg(t.working + "22")
-          .border(1).border_color(t.working).text_size(this.fs(9.5)).font_semibold().text_color(t.working)
-          .child(stacked ? `${comp.depth} steps` : `Critical Path · ${comp.depth} steps`)))
-        .when(!isTopChain, (e) => e.child(div().text_size(this.fs(10)).text_color(t.dim).child(`${comp.depth} steps`)))
-        .when(!stacked && (comp.crossProjectEdges?.length ?? 0) > 0, (e) => e.child(div().px(5).py(0.5).rounded(4)
-          .bg(t.blocked + "20").border(1).border_color(t.blocked)
-          .text_size(this.fs(9.5)).font_semibold().text_color(t.blocked).child("Cross-project")))
-        .when(!stacked, (e) => e.child(div().text_size(this.fs(10)).text_color(t.dim)
-          .child(`${realNodes.length} tasks${workingCount ? ` · ${workingCount} working` : ""}`))));
+      .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
+      .child(div().flex_none().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.dim).child(`CHAIN ${idx + 1}`))
+      .children(projects.slice(0, 3).map((p, pIdx) => this.chainProjectBadge(p, t, `lane-tag-${comp.id}-${pIdx}`)))
+      .child(div().flex_1().min_w(0).truncate().text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(comp.summaryLabel))
+      .when(Boolean(comp.hasCycle), (e) => e.child(this.renderChainChip("CYCLE", t.ansi1)))
+      .when(isTopChain && comp.depth > 1, (e) => e.child(this.renderChainChip("CRITICAL PATH", t.working)))
+      .when(!stacked && (comp.crossProjectEdges?.length ?? 0) > 0, (e) => e.child(this.renderChainChip("CROSS-PROJECT", t.muted, true)))
+      .child(div().flex_none().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.dim)
+        .child(stacked ? `${comp.depth} steps` : `${comp.depth} steps · ${realNodes.length} tasks${workingCount ? ` · ${workingCount} working` : ""}`));
 
-    const lane = v_flex().id(`chain-lane-${comp.id}`).flex_none().gap(8).p(8).rounded(8).bg(t.surface)
-      .border(1).border_color(t.border)
-      .when(isTopChain, (e) => e.border_l(3).border_color(t.working))
-      .child(header);
+    const lane = v_flex().id(`chain-lane-${comp.id}`).flex_none().gap(12).p(12).rounded(8).bg(t.surface)
+      .border(1).border_color(t.border).child(header);
     if (folded) return lane;
 
-    const layout = chainSpineLayout(comp, this.graph.nodes);
-    if (stacked) {
-      const stepper = v_flex().id(`chain-stepper-${comp.id}`).gap(0).pl(4);
-      const lineActive = this.highlight?.selectedComponent?.id === comp.id;
-      layout.steps.forEach((step, stepIdx) => {
-        const orderedNodes = step.nodes;
-        const hasWorking = orderedNodes.some((n) => n.column === "working");
-        const hasSelected = orderedNodes.some((n) => n.id === this.selectedCardId);
-        const hasBlocked = orderedNodes.some((n) => n.column === "blocked" || n.column === "parked" || (n.waitingIds?.length ?? 0) > 0);
-        const dotColor = hasSelected ? t.accent : hasWorking ? t.working : hasBlocked ? t.blocked : t.muted;
-        const rail = v_flex().w(14).flex_none().items_center()
-          .child(div().w(10).h(10).rounded(5).mt(8).flex_none().bg(dotColor))
-          .when(stepIdx < layout.steps.length - 1, (e) =>
-            e.child(div().w(2).flex_1().min_h(12).bg(lineActive ? t.accent : t.border)));
-        const stepCards = v_flex().flex_1().min_w(0).gap(4)
-          .when(stepIdx < layout.steps.length - 1, (e) => e.pb(6))
-          .children(orderedNodes.map((n) => this.renderChainNode(n, comp, t, true)));
-        stepper.child(h_flex().id(`chain-step-${comp.id}-${step.level}`).gap(8).items_stretch()
-          .child(rail).child(stepCards));
-      });
-      lane.child(stepper);
-    } else {
-      const spineRow = h_flex().id(`chain-spine-${comp.id}`).items_center().gap(4).overflow_x_scroll().py(2);
-      layout.spine.forEach((node, i) => {
-        if (i > 0) {
-          const prev = layout.spine[i - 1];
-          const cross = Boolean(prev.project && node.project && prev.project !== node.project);
-          const onFocusPath = (nid) => { const r = this.highlight?.roles?.get(nid); return Boolean(r) && r !== "branch"; };
-          const edgeActive = onFocusPath(prev.id) && onFocusPath(node.id);
-          const sub = cross ? "cross-repo" : i === 1 ? "blocks" : `step ${i + 1}`;
-          spineRow.child(this.renderChainArrow(`chain-edge-${prev.id}-${node.id}`, sub, cross, edgeActive, t));
-        }
-        spineRow.child(this.renderChainNode(node, comp, t, false));
-      });
-      lane.child(spineRow);
+    const layout = placeChainLane(comp, this.graph.nodes);
+    const laneRoles = this.highlight?.focusComponent?.id === comp.id ? this.highlight.roles : new Map();
+    const dimLane = Boolean(this.highlight?.selectedComponent) && this.highlight.selectedComponent.id !== comp.id;
 
-      if (layout.branchColumns.length) {
-        const branchRow = h_flex().id(`chain-branches-${comp.id}`).items_center().gap(4).overflow_x_scroll()
-          .pt(6).border_t(1).border_dashed().border_color(t.border);
-        const firstCol = layout.branchColumns[0];
-        const originIds = [...new Set(firstCol.nodes.flatMap((n) => n.waitingIds ?? []).filter((id) => layout.spineSet.has(id)))];
-        if (originIds.length) {
-          branchRow.child(v_flex().w(140).flex_none().px(6).py(4).gap(2)
-            .child(div().text_size(this.fs(10)).font_semibold().text_color(t.foreground).child("↳ Side branch"))
-            .child(div().text_size(this.fs(9.5)).text_color(t.muted).truncate().child(`from ${originIds.join(", ")}`)))
-            .child(this.renderChainArrow(`chain-branch-origin-${comp.id}`, "forks", false, false, t));
-        }
-        layout.branchColumns.forEach((col, colIdx) => {
-          if (colIdx > 0) {
-            const prevIds = new Set(layout.branchColumns[colIdx - 1].nodes.map((n) => n.id));
-            const connected = col.nodes.some((n) => (n.waitingIds ?? []).some((u) => prevIds.has(u)));
-            const cross = col.nodes.some((n) => (n.waitingIds ?? []).some((u) => {
-              const up = this.graph.nodes.get(u);
-              return prevIds.has(u) && n.project && up?.project && n.project !== up.project;
-            }));
-            branchRow.child(this.renderChainArrow(`chain-branch-edge-${comp.id}-${col.level}`,
-              cross ? "cross-repo" : connected ? "" : "then", cross, false, t));
-          }
-          branchRow.child(v_flex().gap(6).children(col.nodes.map((n) => this.renderChainNode(n, comp, t, false))));
-        });
-        const joinTargets = [...new Set(layout.branchColumns.flatMap((col) =>
-          col.nodes.flatMap((n) => (n.blockingIds ?? []).filter((d) => layout.spineSet.has(d)))))];
-        if (joinTargets.length) {
-          branchRow.child(this.renderChainArrow(`chain-branch-join-${comp.id}`, "joins", false, false, t))
-            .child(div().flex_none().px(6).py(4).rounded(5).bg(t.raised).border(1).border_color(t.border)
-              .text_size(this.fs(10)).text_color(t.muted).child(`-> ${joinTargets.join(", ")}`));
-        }
-        lane.child(branchRow);
-      }
+    if (stacked) {
+      lane.child(this.renderChainStepper(comp, layout, laneRoles, dimLane, t));
+    } else if (layout.cols > 0) {
+      lane.child(this.renderChainWideGrid(comp, layout, laneRoles, dimLane, t));
     }
 
     if (this.selectedCardId && comp.nodeIds.includes(this.selectedCardId)) {
       const selectedCard = (this.cards ?? []).find((c) => c.id === this.selectedCardId);
-      const detailWrap = v_flex().id("chain-detail").gap(6).pt(6).border_t(1).border_color(t.border)
-        .child(h_flex().gap(6).items_center().justify_between()
-          .child(div().text_size(this.fs(11)).font_semibold().text_color(t.accent).child(`Task detail · ${this.selectedCardId}`))
+      const detailWrap = v_flex().id("chain-detail").gap(6).pt(10).border_t(1).border_color(t.border)
+        .child(h_flex().gap(8).items_center().justify_between()
+          .child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.accent).child(`TASK DETAIL · ${this.selectedCardId}`))
           .child(this.button("chain-detail-close", "Close", t, (cx) => this.clearChainSelection(cx))));
       if (selectedCard) detailWrap.child(this.card(selectedCard, t, false));
       else detailWrap.child(div().text_size(this.fs(11)).text_color(t.muted).child("External blocker not in the current backlog snapshot."));
@@ -2276,17 +2656,17 @@ export default class FmBoard extends View {
       ["todo", cards.filter((c) => c.column === "todo").length],
     ].filter(([, n]) => n > 0).map(([label, n]) => `${n} ${label}`).join(" · ");
 
-    const header = h_flex().id("head-independent").gap(8).items_center().justify_between()
-      .px(6).py(4).rounded(5).bg(t.selected).cursor_pointer().hover((s) => s.opacity(0.8))
+    const header = h_flex().id("head-independent").gap(8).items_center()
+      .cursor_pointer().hover((s) => s.opacity(0.8))
       .on_click((_e, cx) => this.toggleIndependent(cx))
-      .child(h_flex().flex_none().gap(6).items_center()
-        .child(div().text_size(this.fs(10)).text_color(t.dim).child(open ? "▾" : "▸"))
-        .child(div().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child("Independent"))
-        .child(div().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length))))
-      .child(div().min_w(0).truncate().text_size(this.fs(10.5)).text_color(t.dim)
+      .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(open ? "▾" : "▸"))
+      .child(div().flex_none().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.dim).child("INDEPENDENT"))
+      .child(div().flex_1().min_w(0).text_size(this.fs(12)).font_semibold().text_color(t.foreground)
+        .child(`${cards.length} ${cards.length === 1 ? "task" : "tasks"} without dependencies`))
+      .child(div().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.dim).truncate()
         .child(counts || "No independent tasks"));
 
-    const drawer = v_flex().id("independent-drawer").flex_none().gap(8).p(8).rounded(8).bg(t.surface)
+    const drawer = v_flex().id("independent-drawer").flex_none().gap(10).px(12).py(10).rounded(8).bg(t.surface)
       .border(1).border_color(t.border).child(header);
     if (!open) return drawer;
     if (!cards.length) {
@@ -2304,6 +2684,7 @@ export default class FmBoard extends View {
     const chains = this.visibleChains();
     const independent = this.independentCards();
     const wrap = v_flex().id("chains-board").flex_1().min_h(0).gap(8).overflow_y_scrollbar();
+    if (chains.length) wrap.child(this.renderChainLegend(t));
     if (!chains.length) {
       if (this.query && !independent.length) {
         return wrap.child(div().p(12).text_size(this.fs(11.5)).text_color(t.muted).child("No matching chains or tasks."));
@@ -2541,8 +2922,10 @@ export default class FmBoard extends View {
       const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
       const ids = [];
       for (const comp of this.visibleChains()) {
-        const { spine, branchColumns, steps } = chainSpineLayout(comp, this.graph.nodes);
-        const drawn = stacked ? steps.flatMap((step) => step.nodes) : [...spine, ...branchColumns.flatMap((col) => col.nodes)];
+        const layout = placeChainLane(comp, this.graph.nodes);
+        const drawn = stacked
+          ? layout.steps.flatMap((step) => step.nodes)
+          : layout.grid.flat().map((id) => (id ? this.graph.nodes.get(id) : null)).filter(Boolean);
         for (const n of drawn) {
           if (!n.missing && n.column !== "done" && searchText(n).includes(q)) ids.push(n.id);
         }

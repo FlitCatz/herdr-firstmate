@@ -1147,27 +1147,35 @@ test("Chains view groups components, orders lanes by most blocking / deepest fir
   assert.deepEqual(Array.from(layout.branchColumns, (c) => Array.from(c.nodes, (n) => n.id)), [["B1"]]);
 });
 
-test("Chains view lane order puts most-blocking chain before shallow chain", async () => {
-  const b = await board({
-    ui: { viewMode: "chains" },
-    snapshot: {
-      schema: "fm-fleet-snapshot.v1",
-      fm_home: HOME,
-      tasks: [],
-      backlog: {
-        records: [
-          { id: "S1", state: "queued", repo: "maple-workshop", title: "Small 1", structured: true, unresolved_blocker_ids: [] },
-          { id: "S2", state: "queued", repo: "maple-workshop", title: "Small 2", structured: true, unresolved_blocker_ids: ["S1"] },
-          { id: "B0", state: "queued", repo: "orchard-atlas", title: "Big Root", structured: true, unresolved_blocker_ids: [] },
-          { id: "B1", state: "queued", repo: "orchard-atlas", title: "Big 1", structured: true, unresolved_blocker_ids: ["B0"] },
-          { id: "B2", state: "queued", repo: "orchard-atlas", title: "Big 2", structured: true, unresolved_blocker_ids: ["B0"] },
-          { id: "B3", state: "queued", repo: "orchard-atlas", title: "Big 3", structured: true, unresolved_blocker_ids: ["B1"] },
-        ],
-      },
-    },
-  });
-  assert.ok(b.text("head-chain-chain-1").includes("B0"));
-  assert.ok(b.text("head-chain-chain-2").includes("S1"));
+test("Chains view puts the most-blocking chain first while the Kanban Inspector keeps largest-chain-first order", async () => {
+  // Join chain: four roots each block J (5 tasks, each root blocks 1).
+  // Line chain: X0 -> X1 -> X2 (3 tasks, X0 blocks 2, deeper).
+  const records = [
+    { id: "R1", state: "queued", repo: "orchard-atlas", title: "Join root 1", structured: true, unresolved_blocker_ids: [] },
+    { id: "R2", state: "queued", repo: "orchard-atlas", title: "Join root 2", structured: true, unresolved_blocker_ids: [] },
+    { id: "R3", state: "queued", repo: "orchard-atlas", title: "Join root 3", structured: true, unresolved_blocker_ids: [] },
+    { id: "R4", state: "queued", repo: "orchard-atlas", title: "Join root 4", structured: true, unresolved_blocker_ids: [] },
+    { id: "J", state: "queued", repo: "orchard-atlas", title: "Join", structured: true, unresolved_blocker_ids: ["R1", "R2", "R3", "R4"] },
+    { id: "X0", state: "queued", repo: "maple-workshop", title: "Line 0", structured: true, unresolved_blocker_ids: [] },
+    { id: "X1", state: "queued", repo: "maple-workshop", title: "Line 1", structured: true, unresolved_blocker_ids: ["X0"] },
+    { id: "X2", state: "queued", repo: "maple-workshop", title: "Line 2", structured: true, unresolved_blocker_ids: ["X1"] },
+  ];
+  const snapshot = { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } };
+
+  const chains = await board({ ui: { viewMode: "chains" }, snapshot });
+  chains.view.size = { width: 1280, height: 800 };
+  chains.redraw();
+  const heads = chains.ids.filter((id) => id.startsWith("head-chain-"));
+  assert.equal(heads.length, 2);
+  assert.ok(chains.text(heads[0]).includes("Chain 1 · X0"), chains.text(heads[0]));
+  assert.ok(chains.text(heads[1]).includes("Chain 2 · R1"), chains.text(heads[1]));
+
+  const kanban = await board({ snapshot });
+  kanban.view.size = { width: 1280, height: 800 };
+  kanban.redraw();
+  kanban.click("dep-inspector-toggle");
+  assert.equal(kanban.view.inspectorOpen, true);
+  assert.ok(kanban.view.highlight.selectedComponent.nodeIds.includes("J"), "Inspector opens the largest chain by default");
 });
 
 test("Chains view supports folding lanes, highlighting & opening card detail, vertical stepper <720px, Independent drawer, and search", async () => {
@@ -1203,6 +1211,15 @@ test("Chains view supports folding lanes, highlighting & opening card detail, ve
   assert.ok(b.ids.includes("chain-detail"));
   assert.ok(b.ids.includes("card-maple-card-layout"));
   assert.ok(b.ids.includes("blocks-maple-card-layout"));
+
+  // Hovering a node in another lane keeps the selected chain bright and dims the other lane.
+  const nodeDimmed = (id) => b.items.find((x) => x.id === id).calls.some((c) => c[0] === "opacity" && c[1] === 0.45);
+  b.hover("chain-node-orchard-map-labels", true);
+  assert.ok(!nodeDimmed("chain-node-maple-card-layout"), "selected node stays bright while hovering another lane");
+  assert.ok(!nodeDimmed("chain-node-maple-theme-tokens"));
+  assert.ok(nodeDimmed("chain-node-orchard-map-labels"), "nodes outside the selected chain stay dimmed");
+  b.hover("chain-node-orchard-map-labels", false);
+
   b.keyDown("root", "escape");
   assert.equal(b.view.selectedCardId, null);
   assert.ok(!b.ids.includes("chain-detail"));

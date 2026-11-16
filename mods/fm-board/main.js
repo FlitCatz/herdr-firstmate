@@ -630,7 +630,7 @@ function dependencyGraph(cards) {
       hasCycle,
     });
   }
-  rawComponents.sort((a, b) => b.maxBlocks - a.maxBlocks || b.depth - a.depth || b.nodeIds.length - a.nodeIds.length);
+  rawComponents.sort((a, b) => b.nodeIds.length - a.nodeIds.length || b.depth - a.depth);
   /** @type {Map<string, any>} */
   const componentById = new Map();
   const components = rawComponents.map((comp, idx) => {
@@ -1729,15 +1729,6 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
-  /** @param {string} laneKey @param {import("gpui-kit").Context} cx */
-  toggleLane(laneKey, cx) {
-    if (this.query) return;
-    if (this.revealed.delete(laneKey) && this.folded.has(laneKey)) { cx.notify(); return; }
-    if (!this.folded.delete(laneKey)) this.folded.add(laneKey);
-    try { localStorage.setItem(FOLDED_KEY, JSON.stringify([...this.folded])); } catch {}
-    cx.notify();
-  }
-
   /** @param {import("gpui-kit").Context} cx */
   toggleIndependent(cx) {
     if (this.query) return;
@@ -2029,7 +2020,7 @@ export default class FmBoard extends View {
     return box.child(flow);
   }
 
-  // Unfinished dependency chains in display order, filtered by project filter and search query.
+  // Unfinished dependency chains, most-blocking then deepest first, filtered by project filter and search query.
   visibleChains() {
     const q = this.query.toLowerCase();
     return (this.graph?.components ?? []).filter((comp) => {
@@ -2040,7 +2031,7 @@ export default class FmBoard extends View {
       if (this.filter && !activeNodes.some((n) => n.project === this.filter)) return false;
       if (q && !activeNodes.some((n) => searchText(n).includes(q))) return false;
       return true;
-    });
+    }).sort((a, b) => b.maxBlocks - a.maxBlocks || b.depth - a.depth || b.nodeIds.length - a.nodeIds.length);
   }
 
   // Unfinished tasks without active dependencies, placed in the Independent drawer.
@@ -2080,7 +2071,7 @@ export default class FmBoard extends View {
       : role === "branch" ? t.muted
       : t.border;
     const borderWidth = isCurrent || isSelected || role === "upstream" || role === "downstream" || activeRoot ? 2 : 1;
-    const dimmed = (Boolean(this.selectedCardId) && !role && !isCurrent) || (Boolean(q) && !queryMatches);
+    const dimmed = (Boolean(this.highlight?.dimmedIds?.has(id)) && !isCurrent) || (Boolean(q) && !queryMatches);
     const waiting = node.column === "queued" && (node.waitingIds?.length ?? 0) > 0;
     const strip = (title) => (node.project && title.startsWith(`${node.project} `) ? title.slice(node.project.length + 1) : title);
 
@@ -2154,7 +2145,7 @@ export default class FmBoard extends View {
 
     const header = h_flex().id(`head-chain-${comp.id}`).gap(6).items_center().justify_between()
       .px(8).py(4).rounded(5).bg(t.selected).cursor_pointer().hover((s) => s.opacity(0.8))
-      .on_click((_e, cx) => this.toggleLane(laneKey, cx))
+      .on_click((_e, cx) => this.toggleFold(laneKey, cx))
       .child(h_flex().flex_1().min_w(0).gap(6).items_center()
         .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
         .children(projects.slice(0, 3).map((p, pIdx) => this.projectBadge(p, t, `lane-tag-${comp.id}-${pIdx}`)))
@@ -2182,13 +2173,13 @@ export default class FmBoard extends View {
     const layout = chainSpineLayout(comp, this.graph.nodes);
     if (stacked) {
       const stepper = v_flex().id(`chain-stepper-${comp.id}`).gap(0).pl(4);
+      const lineActive = this.highlight?.selectedComponent?.id === comp.id;
       comp.levels.forEach((lg, stepIdx) => {
         const orderedNodes = [...lg.nodes].sort((a, b) => Number(layout.spineSet.has(b.id)) - Number(layout.spineSet.has(a.id)));
         const hasWorking = orderedNodes.some((n) => n.column === "working");
         const hasSelected = orderedNodes.some((n) => n.id === this.selectedCardId);
         const hasBlocked = orderedNodes.some((n) => n.column === "blocked" || n.column === "parked" || (n.waitingIds?.length ?? 0) > 0);
         const dotColor = hasSelected ? t.accent : hasWorking ? t.working : hasBlocked ? t.blocked : t.muted;
-        const lineActive = Boolean(this.selectedCardId) && orderedNodes.some((n) => this.highlight?.roles?.has(n.id));
         const rail = v_flex().w(14).flex_none().items_center()
           .child(div().w(10).h(10).rounded(5).mt(8).flex_none().bg(dotColor))
           .when(stepIdx < comp.levels.length - 1, (e) =>

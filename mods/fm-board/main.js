@@ -690,9 +690,8 @@ function compareChainBranch(aId, aLen, bId, bLen, nodesMap, order, levelOf) {
   return (order.get(aId) ?? 0) - (order.get(bId) ?? 0);
 }
 
-// Splits a connected component into its longest forward path (main spine) and remaining
-// side-branch columns grouped by topological level, plus the per-level steps the narrow stepper
-// draws with spine nodes first. Follows strictly increasing levels so cycles never loop.
+// Splits a connected component into its longest forward path (main spine) and the per-level
+// steps, spine node first, in the order both Chains layouts draw them. Follows strictly increasing levels so cycles never loop.
 function chainSpineLayout(comp, nodesMap) {
   const levelOf = new Map();
   for (const lg of comp?.levels ?? []) {
@@ -735,28 +734,25 @@ function chainSpineLayout(comp, nodesMap) {
     spineSet.add(cur);
     spineIds.push(cur);
   }
-  const branchColumns = [];
-  for (const lg of comp?.levels ?? []) {
-    const nodes = lg.nodes.filter((n) => !spineSet.has(n.id));
-    if (nodes.length) branchColumns.push({ level: lg.level, nodes });
-  }
   const steps = (comp?.levels ?? []).map((lg) => ({
     level: lg.level,
     nodes: [...lg.nodes].sort((a, b) => Number(spineSet.has(b.id)) - Number(spineSet.has(a.id))),
   }));
   return {
     spine: spineIds.map((id) => nodesMap.get(id)).filter(Boolean),
-    spineSet,
-    branchColumns,
     steps,
   };
 }
 
 const CHAIN_CARD_W = 200;
 const CHAIN_GUT = 44;
-const CHAIN_PORTS = [18, 34];
+const CHAIN_PORT_TOP = 18;
+const CHAIN_PORT_STEP = 16;
+// Lowest port a card offers, so every arrowhead stays on the edge of even the shortest (~78px) card.
+const CHAIN_PORT_MAX = 66;
 const CHAIN_R = 6;
 const CHAIN_ROW_PAD = 12;
+const CHAIN_LANE_GAP = 4;
 const CHAIN_HEAD_W = 6;
 const CHAIN_HEAD_H = 9;
 
@@ -792,16 +788,18 @@ function chainEdgeColor(e, roles, t) {
   return { c: t.dim, o: 0.4 };
 }
 
-// Places a component onto a level grid (spine on row 0, side branches on rows >= 1),
-// assigns outgoing/incoming edge ports separated by 16px, and distributes vertical
-// turn segments inside any shared gutter.
+// Places a component onto a level grid (spine on row 0, side branches on rows >= 1) and routes
+// every edge. An edge whose straight path along its source row would run through a card detours
+// through a lane in the row padding instead: below the source row, or above it when the target
+// sits higher. Ports are ordered above < same row < below, and the vertical turns sharing a
+// gutter are ordered by where they lead, so lines leave and enter cards without crossing.
 function placeChainLane(comp, nodesMap) {
   const levelOf = new Map();
   for (const lg of comp?.levels ?? []) {
     for (const id of lg.ids) levelOf.set(id, lg.level);
   }
   const ids = comp?.nodeIds ?? [];
-  if (!ids.length) return { grid: [], pos: new Map(), edges: [], cols: 0, spineIds: [], levelOf };
+  if (!ids.length) return { grid: [], pos: new Map(), edges: [], cols: 0, spineIds: [], levelOf, steps: [], rowPad: [] };
   const minLv = Math.min(...ids.map((id) => levelOf.get(id) ?? 0));
   const maxLv = Math.max(...ids.map((id) => levelOf.get(id) ?? 0));
   const cols = maxLv - minLv + 1;
@@ -813,7 +811,7 @@ function placeChainLane(comp, nodesMap) {
     grid[r][c] = id;
     pos.set(id, { r, c });
   };
-  const { spine } = chainSpineLayout(comp, nodesMap);
+  const { spine, steps } = chainSpineLayout(comp, nodesMap);
   const spineIds = spine.map((n) => n.id);
   for (const id of spineIds) put(id, 0);
   const rest = ids
@@ -836,134 +834,147 @@ function placeChainLane(comp, nodesMap) {
       if (U.c >= V.c) continue;
       const up = nodesMap.get(u);
       const cross = Boolean(n?.project && up?.project && n.project !== up.project);
-      edges.push({ u, v: id, cross, p1: CHAIN_PORTS[0], p2: CHAIN_PORTS[0], x: CHAIN_GUT / 2 });
+      const blocked = grid[U.r].slice(U.c + 1, V.c).some(Boolean);
+      edges.push({
+        u, v: id, cross, p1: CHAIN_PORT_TOP, p2: CHAIN_PORT_TOP, x: null, x0: null,
+        chanRow: blocked ? (V.r < U.r ? U.r - 1 : U.r) : null, chan: null,
+      });
     }
   }
+  const span = (e) => pos.get(e.v).c - pos.get(e.u).c;
+  // Wider detours take lower lanes so narrower ones nest inside them; equal spans take lanes in
+  // the reverse of their port order, which keeps their turns out of each other's way.
+  const lanes = new Map();
+  for (const e of [...edges].reverse().sort((a, b) => span(b) - span(a))) {
+    if (e.chanRow === null) continue;
+    const from = pos.get(e.u).c, to = pos.get(e.v).c - 1;
+    if (!lanes.has(e.chanRow)) lanes.set(e.chanRow, []);
+    const rowLanes = lanes.get(e.chanRow);
+    let i = rowLanes.findIndex((used) => used.every(([a, b]) => to < a || from > b));
+    if (i < 0) i = rowLanes.push([]) - 1;
+    rowLanes[i].push([from, to]);
+    e.chan = CHAIN_R + CHAIN_LANE_GAP * i;
+  }
+  const rowPad = grid.map((_, r) => {
+    const n = lanes.get(r)?.length ?? 0;
+    return r < grid.length - 1 || n ? CHAIN_ROW_PAD + CHAIN_LANE_GAP * Math.max(0, n - 1) : 0;
+  });
   const outs = new Map(), ins = new Map();
-  const byRow = (e, other) => (pos.get(other).r === pos.get(e.u === other ? e.v : e.u).r ? -1 : pos.get(other).r);
   for (const e of edges) {
     if (!outs.has(e.u)) outs.set(e.u, []);
     outs.get(e.u).push(e);
     if (!ins.has(e.v)) ins.set(e.v, []);
     ins.get(e.v).push(e);
   }
-  const portAt = (i) => CHAIN_PORTS[i] ?? CHAIN_PORTS[CHAIN_PORTS.length - 1] + 16 * (i - 1);
-  for (const list of outs.values()) {
-    list.sort((x, y) => byRow(x, x.v) - byRow(y, y.v)).forEach((e, i) => { e.p1 = portAt(i); });
-  }
-  for (const list of ins.values()) {
-    list.sort((x, y) => byRow(x, x.u) - byRow(y, y.u)).forEach((e, i) => { e.p2 = portAt(i); });
-  }
-  const byTurnGutter = new Map();
+  // Where an edge heads from its card, in rows: negative above, 0 straight across, positive below.
+  // A detour lane sits half a row from the card, between its own row and the next one.
+  const outSide = (e) => (e.chanRow === null ? pos.get(e.v).r - pos.get(e.u).r : e.chanRow - pos.get(e.u).r + 0.5);
+  const inSide = (e) => (e.chanRow === null ? pos.get(e.u).r - pos.get(e.v).r : e.chanRow - pos.get(e.v).r + 0.5);
+  const assignPorts = (groups, side, set) => {
+    for (const list of groups.values()) {
+      const step = Math.min(CHAIN_PORT_STEP, Math.floor((CHAIN_PORT_MAX - CHAIN_PORT_TOP) / Math.max(1, list.length - 1)));
+      list.sort((a, b) => side(a) - side(b)
+        || (a.chanRow === null && side(a) > 0 ? span(b) - span(a) : span(a) - span(b)))
+        .forEach((e, i) => set(e, CHAIN_PORT_TOP + step * i));
+    }
+  };
+  assignPorts(outs, outSide, (e, p) => { e.p1 = p; });
+  assignPorts(ins, inSide, (e, p) => { e.p2 = p; });
+  // Vertical positions comparable across rows; a detour lane lies below every port of its row.
+  const yAt = (r, y) => r * 10000 + y;
+  const turns = new Map();
+  const addTurn = (g, from, to, set) => {
+    if (!turns.has(g)) turns.set(g, []);
+    turns.get(g).push({ key: from < to ? [0, -to] : [1, to], set });
+  };
   for (const e of edges) {
     const U = pos.get(e.u), V = pos.get(e.v);
-    if (U.r === V.r && e.p1 === e.p2) continue;
-    const g = V.c - 1;
-    if (!byTurnGutter.has(g)) byTurnGutter.set(g, []);
-    byTurnGutter.get(g).push(e);
+    let from = yAt(U.r, e.p1);
+    if (e.chanRow !== null) {
+      const lane = yAt(e.chanRow, 9000 - e.chan);
+      addTurn(U.c, from, lane, (x) => { e.x0 = x; });
+      from = lane;
+    }
+    const to = yAt(V.r, e.p2);
+    if (from !== to) addTurn(V.c - 1, from, to, (x) => { e.x = x; });
   }
-  for (const list of byTurnGutter.values()) {
-    const n = list.length;
-    list.forEach((e, idx) => {
-      e.x = n === 1 ? CHAIN_GUT / 2 : Math.round((CHAIN_GUT * (idx + 1)) / (n + 1));
-    });
+  const minX = CHAIN_R + 1, maxX = CHAIN_GUT - CHAIN_HEAD_W - CHAIN_R - 1;
+  for (const list of turns.values()) {
+    list.sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1])
+      .forEach((tn, i) => tn.set(minX + Math.round(((maxX - minX) * (i + 1)) / (list.length + 1))));
   }
-  return { grid, pos, edges, cols, spineIds, levelOf };
+  return { grid, pos, edges, cols, spineIds, levelOf, steps, rowPad };
 }
 
-// Computes pure geometry descriptors for every connector piece in gutter (r, g).
+// Computes pure geometry descriptors for every connector piece in gutter (r, g). A slot is
+// { top } for a card port or { bottom } for a detour lane in the row padding.
 function chainGutterSpecs(layout, r, g) {
   const out = [];
+  const R = CHAIN_R, C = CHAIN_R + 1;
   for (const e of layout.edges) {
     const U = layout.pos.get(e.u), V = layout.pos.get(e.v);
     if (!(g >= U.c && g < V.c)) continue;
-    const key = `${e.u}-${e.v}`;
+    const add = (kind, id, geo) => out.push({ kind, id: `chain-edge-${e.u}-${e.v}-${id}`, top: null, bottom: null, ...geo, dashed: e.cross, edge: e });
+    const enter = (left) => {
+      const j = chainJoint(e.p2);
+      add("hbar", "line", { top: j.lineTop, left, right: j.headW });
+      add("head", "head", { top: j.headTop, right: 0, w: j.headW, h: j.headH });
+    };
+    // Runs in from the gutter's left edge at slot a on row ra, turns at x, and leaves toward the
+    // right edge at slot b on row rb through exit(), with an (R + 1) elbow at each bend.
+    const turn = (pre, x, ra, a, rb, b, exit) => {
+      if (r < Math.min(ra, rb) || r > Math.max(ra, rb)) return;
+      const down = rb > ra || (rb === ra && (b.bottom != null || (a.bottom == null && b.top > a.top)));
+      const hang = (s) => (s.bottom == null ? { top: s.top } : { bottom: s.bottom - R });
+      const sit = (s) => (s.bottom == null ? { top: s.top - R } : { bottom: s.bottom });
+      const below = (s) => (s.bottom == null ? { t: s.top + C } : { b: s.bottom - R });
+      const above = (s) => (s.bottom == null ? { t: s.top - R } : { b: s.bottom + C });
+      const corner = (kind, left, at) => add("corner", `${pre}corner-${kind}`, { cornerKind: kind, left, ...at, w: C, h: C });
+      if (r === ra) {
+        add("hbar", `${pre}hbar-${r}-${g}`, { ...a, left: 0, right: CHAIN_GUT - x + R });
+        corner(down ? "tr" : "br", x - R, down ? hang(a) : sit(a));
+      }
+      const from = r === ra && down ? below(a) : r === rb && !down ? below(b) : { t: 0 };
+      const to = r === rb && down ? above(b) : r === ra && !down ? above(a) : { b: 0 };
+      const geo = from.t == null ? { bottom: to.b, h: from.b - to.b }
+        : to.t == null ? { top: from.t, bottom: to.b } : { top: from.t, h: to.t - from.t };
+      if (geo.h == null || geo.h > 0) add("vbar", `${pre}vbar-${r}`, { left: x, h: null, ...geo });
+      if (r === rb) {
+        corner(down ? "bl" : "tl", x, down ? sit(b) : hang(b));
+        exit();
+      }
+    };
     const last = g === V.c - 1;
-    if (U.r === V.r && e.p1 === e.p2) {
-      if (r !== U.r) continue;
-      if (last) {
-        const j = chainJoint(e.p2);
-        out.push(
-          { kind: "hbar", id: `chain-edge-${key}-line`, top: j.lineTop, left: 0, right: j.headW, dashed: e.cross, edge: e },
-          { kind: "head", id: `chain-edge-${key}-head`, top: j.headTop, right: 0, w: j.headW, h: j.headH, edge: e },
-        );
+    const port1 = { top: e.p1 }, port2 = { top: e.p2 }, lane = { bottom: e.chan };
+    if (e.chanRow === null) {
+      if (!last) {
+        if (r === U.r) add("hbar", `hbar-${r}-${g}`, { ...port1, left: 0, right: 0 });
+      } else if (U.r === V.r && e.p1 === e.p2) {
+        if (r === U.r) enter(0);
       } else {
-        out.push({ kind: "hbar", id: `chain-edge-${key}-hbar-${r}-${g}`, top: e.p1, left: 0, right: 0, dashed: e.cross, edge: e });
+        turn("", e.x, U.r, port1, V.r, port2, () => enter(e.x + C));
       }
-      continue;
-    }
-    if (!last) {
-      if (r === U.r) {
-        out.push({ kind: "hbar", id: `chain-edge-${key}-hbar-${r}-${g}`, top: e.p1, left: 0, right: 0, dashed: e.cross, edge: e });
-      }
-      continue;
-    }
-    const x = e.x ?? CHAIN_GUT / 2;
-    if (U.r === V.r) {
-      if (r !== U.r) continue;
-      const down = e.p2 > e.p1;
-      const j = chainJoint(e.p2);
-      const vTop = down ? e.p1 + CHAIN_R + 1 : e.p2 + CHAIN_R + 1;
-      const vH = Math.abs(e.p2 - e.p1) - 2 * CHAIN_R - 1;
-      out.push(
-        { kind: "hbar", id: `chain-edge-${key}-hbar-${r}-${g}`, top: e.p1, left: 0, right: CHAIN_GUT - x + CHAIN_R, dashed: e.cross, edge: e },
-        { kind: "corner", id: `chain-edge-${key}-corner-${down ? "tr" : "br"}`, cornerKind: down ? "tr" : "br", left: x - CHAIN_R, top: down ? e.p1 : e.p1 - CHAIN_R, w: CHAIN_R + 1, h: CHAIN_R + 1, dashed: e.cross, edge: e },
-        { kind: "vbar", id: `chain-edge-${key}-vbar-${r}`, left: x, top: vTop, bottom: null, h: Math.max(0, vH), dashed: e.cross, edge: e },
-        { kind: "corner", id: `chain-edge-${key}-corner-${down ? "bl" : "tl"}`, cornerKind: down ? "bl" : "tl", left: x, top: down ? e.p2 - CHAIN_R : e.p2, w: CHAIN_R + 1, h: CHAIN_R + 1, dashed: e.cross, edge: e },
-        { kind: "hbar", id: `chain-edge-${key}-line`, top: j.lineTop, left: x + CHAIN_R + 1, right: j.headW, dashed: e.cross, edge: e },
-        { kind: "head", id: `chain-edge-${key}-head`, top: j.headTop, right: 0, w: j.headW, h: j.headH, edge: e },
-      );
-      continue;
-    }
-    const down = V.r > U.r;
-    const lo = Math.min(U.r, V.r), hi = Math.max(U.r, V.r);
-    if (r < lo || r > hi) continue;
-    if (r === U.r) {
-      if (down) {
-        out.push(
-          { kind: "hbar", id: `chain-edge-${key}-hbar-${r}-${g}`, top: e.p1, left: 0, right: CHAIN_GUT - x + CHAIN_R, dashed: e.cross, edge: e },
-          { kind: "corner", id: `chain-edge-${key}-corner-tr`, cornerKind: "tr", left: x - CHAIN_R, top: e.p1, w: CHAIN_R + 1, h: CHAIN_R + 1, dashed: e.cross, edge: e },
-          { kind: "vbar", id: `chain-edge-${key}-vbar-${r}`, left: x, top: e.p1 + CHAIN_R + 1, bottom: 0, h: null, dashed: e.cross, edge: e },
-        );
-      } else {
-        out.push(
-          { kind: "hbar", id: `chain-edge-${key}-hbar-${r}-${g}`, top: e.p1, left: 0, right: CHAIN_GUT - x + CHAIN_R, dashed: e.cross, edge: e },
-          { kind: "corner", id: `chain-edge-${key}-corner-br`, cornerKind: "br", left: x - CHAIN_R, top: e.p1 - CHAIN_R, w: CHAIN_R + 1, h: CHAIN_R + 1, dashed: e.cross, edge: e },
-          { kind: "vbar", id: `chain-edge-${key}-vbar-${r}`, left: x, top: 0, bottom: null, h: e.p1 - CHAIN_R, dashed: e.cross, edge: e },
-        );
-      }
-    } else if (r === V.r) {
-      const j = chainJoint(e.p2);
-      if (down) {
-        out.push(
-          { kind: "vbar", id: `chain-edge-${key}-vbar-${r}`, left: x, top: 0, bottom: null, h: e.p2 - CHAIN_R, dashed: e.cross, edge: e },
-          { kind: "corner", id: `chain-edge-${key}-corner-bl`, cornerKind: "bl", left: x, top: e.p2 - CHAIN_R, w: CHAIN_R + 1, h: CHAIN_R + 1, dashed: e.cross, edge: e },
-          { kind: "hbar", id: `chain-edge-${key}-line`, top: j.lineTop, left: x + CHAIN_R + 1, right: j.headW, dashed: e.cross, edge: e },
-          { kind: "head", id: `chain-edge-${key}-head`, top: j.headTop, right: 0, w: j.headW, h: j.headH, edge: e },
-        );
-      } else {
-        out.push(
-          { kind: "vbar", id: `chain-edge-${key}-vbar-${r}`, left: x, top: e.p2 + CHAIN_R + 1, bottom: 0, h: null, dashed: e.cross, edge: e },
-          { kind: "corner", id: `chain-edge-${key}-corner-tl`, cornerKind: "tl", left: x, top: e.p2, w: CHAIN_R + 1, h: CHAIN_R + 1, dashed: e.cross, edge: e },
-          { kind: "hbar", id: `chain-edge-${key}-line`, top: j.lineTop, left: x + CHAIN_R + 1, right: j.headW, dashed: e.cross, edge: e },
-          { kind: "head", id: `chain-edge-${key}-head`, top: j.headTop, right: 0, w: j.headW, h: j.headH, edge: e },
-        );
-      }
-    } else {
-      out.push({ kind: "vbar", id: `chain-edge-${key}-vbar-${r}`, left: x, top: 0, bottom: 0, h: null, dashed: e.cross, edge: e });
+    } else if (g === U.c) {
+      turn("out-", e.x0, U.r, port1, e.chanRow, lane, () => add("hbar", `chan-${r}-${g}`, { ...lane, left: e.x0 + C, right: 0 }));
+    } else if (last) {
+      turn("", e.x, e.chanRow, lane, V.r, port2, () => enter(e.x + C));
+    } else if (r === e.chanRow) {
+      add("hbar", `chan-${r}-${g}`, { ...lane, left: 0, right: 0 });
     }
   }
   return out;
 }
 
-// Computes pure geometry descriptors for pass-through lines across empty grid cells.
-function chainEmptyCellSpecs(layout, r, col) {
+// Computes pure geometry descriptors for edge pieces inside grid cell (r, col): straight lines
+// passing through an empty cell, and detour lanes running through the row padding below a card.
+function chainCellSpecs(layout, r, col) {
   const out = [];
   for (const e of layout.edges) {
     const U = layout.pos.get(e.u), V = layout.pos.get(e.v);
-    if (r === U.r && col > U.c && col < V.c) {
-      out.push({ kind: "hbar", id: `chain-edge-${e.u}-${e.v}-pass-${r}-${col}`, top: e.p1, left: 0, right: 0, dashed: e.cross, edge: e });
-    }
+    if (!(col > U.c && col < V.c)) continue;
+    const base = { kind: "hbar", top: null, bottom: null, left: 0, right: 0, dashed: e.cross, edge: e };
+    if (e.chanRow === null && r === U.r) out.push({ ...base, id: `chain-edge-${e.u}-${e.v}-pass-${r}-${col}`, top: e.p1 });
+    if (e.chanRow === r) out.push({ ...base, id: `chain-edge-${e.u}-${e.v}-chan-${r}-${col}`, bottom: e.chan });
   }
   return out;
 }
@@ -2299,46 +2310,34 @@ export default class FmBoard extends View {
       .child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).child("L0…Ln = dependency level"));
   }
 
-  /** @param {any} spec @param {Map<string, string>} roles @param {Record<string, `#${string}`>} t */
-  renderChainPiece(spec, roles, t) {
-    const { c, o } = chainEdgeColor(spec.edge, roles, t);
+  /** @param {any} spec @param {Map<string, string>} roles @param {boolean} dimLane @param {Record<string, `#${string}`>} t */
+  renderChainPiece(spec, roles, dimLane, t) {
+    const { c, o: roleO } = chainEdgeColor(spec.edge, roles, t);
+    const o = dimLane ? roleO * 0.45 : roleO;
     if (spec.kind === "head") {
       return svg("mods/fm-board/arrow-head.svg").id(spec.id).absolute()
         .right(spec.right).top(spec.top).w(spec.w).h(spec.h)
         .text_color(c).when(o < 1, (el) => el.opacity(o));
     }
-    if (spec.kind === "hbar") {
-      return div().id(spec.id).absolute()
-        .top(spec.top).left(spec.left).right(spec.right).h(0)
-        .border_t(1).border_color(c)
-        .when(spec.dashed, (el) => el.border_dashed())
-        .when(o < 1, (el) => el.opacity(o));
-    }
-    if (spec.kind === "vbar") {
-      return div().id(spec.id).absolute()
-        .left(spec.left).top(spec.top).w(0)
-        .when(spec.bottom !== null, (el) => el.bottom(spec.bottom))
-        .when(spec.h !== null, (el) => el.h(spec.h))
-        .border_l(1).border_color(c)
-        .when(spec.dashed, (el) => el.border_dashed())
-        .when(o < 1, (el) => el.opacity(o));
-    }
-    const el = div().id(spec.id).absolute()
-      .left(spec.left).top(spec.top).w(spec.w).h(spec.h)
+    const placed = div().id(spec.id).absolute()
+      .when(spec.top != null, (el) => el.top(spec.top))
+      .when(spec.bottom != null, (el) => el.bottom(spec.bottom))
       .border_color(c)
       .when(spec.dashed, (el) => el.border_dashed())
       .when(o < 1, (el) => el.opacity(o));
+    if (spec.kind === "hbar") return placed.left(spec.left).right(spec.right).h(0).border_t(1);
+    if (spec.kind === "vbar") return placed.left(spec.left).w(0).when(spec.h != null, (el) => el.h(spec.h)).border_l(1);
+    const el = placed.left(spec.left).w(spec.w).h(spec.h);
     if (spec.cornerKind === "tr") return el.border_t(1).border_r(1).rounded_tr(CHAIN_R);
     if (spec.cornerKind === "bl") return el.border_b(1).border_l(1).rounded_bl(CHAIN_R);
     if (spec.cornerKind === "br") return el.border_b(1).border_r(1).rounded_br(CHAIN_R);
     return el.border_t(1).border_l(1).rounded_tl(CHAIN_R);
   }
 
-  /** @param {any} node @param {any} comp @param {Record<string, `#${string}`>} t @param {boolean} [compact] @param {Map<string, string> | null} [laneRoles] @param {boolean} [dimLane] */
-  renderChainNode(node, comp, t, compact = false, laneRoles = null, dimLane = false) {
+  /** @param {any} node @param {Record<string, `#${string}`>} t @param {Map<string, string>} laneRoles @param {boolean} dimLane */
+  renderChainNode(node, t, laneRoles, dimLane) {
     const id = node.id;
-    const roles = laneRoles ?? (this.highlight?.focusComponent?.id === comp.id ? this.highlight.roles : null);
-    const role = roles?.get(id) ?? null;
+    const role = laneRoles.get(id) ?? null;
     const isSelected = this.selectedCardId === id;
     const isCurrent = Boolean(this.query) && this.currentMatch === id;
     const q = this.query.toLowerCase();
@@ -2421,42 +2420,38 @@ export default class FmBoard extends View {
     body.child(ruler);
 
     layout.grid.forEach((row, r) => {
-      const last = r === layout.grid.length - 1;
       const rowId = r === 0 ? `chain-spine-${comp.id}` : r === 1 ? `chain-branches-${comp.id}` : `chain-branch-row-${comp.id}-${r}`;
       const rowEl = h_flex().id(rowId).items_stretch();
       for (let c = 0; c < layout.cols; c++) {
         const id = row[c];
         const cell = v_flex().id(`chain-cell-${comp.id}-${r}-${c}`).relative().w(CHAIN_CARD_W).flex_none()
-          .when(!last, (e) => e.pb(CHAIN_ROW_PAD));
+          .when(layout.rowPad[r] > 0, (e) => e.pb(layout.rowPad[r]));
+        const pieces = chainCellSpecs(layout, r, c);
+        if (pieces.length) cell.children(pieces.map((spec) => this.renderChainPiece(spec, laneRoles, dimLane, t)));
         if (id) {
           const node = this.graph.nodes.get(id);
-          if (node) cell.child(this.renderChainNode(node, comp, t, false, laneRoles, dimLane));
-        } else {
-          const pieces = chainEmptyCellSpecs(layout, r, c);
-          if (pieces.length) cell.children(pieces.map((spec) => this.renderChainPiece(spec, laneRoles, t)));
-          if (r > 0 && c === 0) {
-            const firstId = row.find(Boolean);
-            const first = firstId ? this.graph.nodes.get(firstId) : null;
-            const fromId = first?.waitingIds?.find((u) => layout.pos.get(u)?.r === 0)
-              ?? first?.waitingIds?.find((u) => layout.pos.has(u));
-            const fromNode = fromId ? this.graph.nodes.get(fromId) : null;
-            if (first && fromNode) {
-              const fromTag = this.tags?.get(fromNode.project) ?? (fromNode.project || "EXT").slice(0, 3).toUpperCase();
-              const toTag = this.tags?.get(first.project) ?? (first.project || "EXT").slice(0, 3).toUpperCase();
-              const arrow = Boolean(fromNode.project && first.project && fromNode.project !== first.project) ? "┄▸" : "→";
-              cell.child(v_flex().gap(2).pt(10).pr(12).items_end()
-                .child(div().font_family(this.monoFont).text_size(this.fs(9)).text_color(t.dim).child("SIDE BRANCH"))
-                .child(div().text_size(this.fs(10.5)).text_color(t.muted).child(`forks from ${chainShortId(fromId)}`))
-                .child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).child(`${fromTag} ${arrow} ${toTag}`)));
-            }
+          if (node) cell.child(this.renderChainNode(node, t, laneRoles, dimLane));
+        } else if (r > 0 && c === 0) {
+          const firstId = row.find(Boolean);
+          const first = firstId ? this.graph.nodes.get(firstId) : null;
+          const fromId = first?.waitingIds?.find((u) => layout.pos.get(u)?.r === 0)
+            ?? first?.waitingIds?.find((u) => layout.pos.has(u));
+          const fromNode = fromId ? this.graph.nodes.get(fromId) : null;
+          if (first && fromNode) {
+            const fromTag = this.tags?.get(fromNode.project) ?? (fromNode.project || "EXT").slice(0, 3).toUpperCase();
+            const toTag = this.tags?.get(first.project) ?? (first.project || "EXT").slice(0, 3).toUpperCase();
+            const arrow = Boolean(fromNode.project && first.project && fromNode.project !== first.project) ? "┄▸" : "→";
+            cell.child(v_flex().gap(2).pt(10).pr(12).items_end()
+              .child(div().font_family(this.monoFont).text_size(this.fs(9)).text_color(t.dim).child("SIDE BRANCH"))
+              .child(div().text_size(this.fs(10.5)).text_color(t.muted).child(`forks from ${chainShortId(fromId)}`))
+              .child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).child(`${fromTag} ${arrow} ${toTag}`)));
           }
         }
         rowEl.child(cell);
         if (c < layout.cols - 1) {
           const pieces = chainGutterSpecs(layout, r, c);
           rowEl.child(div().id(`chain-gutter-${comp.id}-${r}-${c}`).relative().w(CHAIN_GUT).flex_none()
-            .when(dimLane, (e) => e.opacity(0.45))
-            .children(pieces.map((spec) => this.renderChainPiece(spec, laneRoles, t))));
+            .children(pieces.map((spec) => this.renderChainPiece(spec, laneRoles, dimLane, t))));
         }
       }
       body.child(rowEl);
@@ -2478,9 +2473,8 @@ export default class FmBoard extends View {
     });
 
     const subrows = [];
-    for (const lg of comp.levels ?? []) {
-      const stepNodes = [...lg.nodes].sort((a, b) => Number(spineSet.has(b.id)) - Number(spineSet.has(a.id)));
-      stepNodes.forEach((n, k) => subrows.push({ n, lv: lg.level, first: k === 0, spine: spineSet.has(n.id) }));
+    for (const step of layout.steps) {
+      step.nodes.forEach((n, k) => subrows.push({ n, lv: step.level, first: k === 0, spine: spineSet.has(n.id) }));
     }
 
     const stepper = v_flex().id(`chain-stepper-${comp.id}`).gap(0);
@@ -2531,7 +2525,7 @@ export default class FmBoard extends View {
           .child(svg("mods/fm-board/arrow-head.svg").id(`chain-stepper-edge-${s.n.id}-head`).absolute()
             .right(0).top(j.headTop).w(j.headW).h(j.headH).text_color(rc)));
       }
-      const cd = this.renderChainNode(s.n, comp, t, true, laneRoles, dimLane);
+      const cd = this.renderChainNode(s.n, t, laneRoles, dimLane);
       if (!s.spine) {
         const forks = (s.n.waitingIds ?? []).filter((u) => spineSet.has(u));
         const joins = (s.n.blockingIds ?? []).filter((d) => spineSet.has(d));
@@ -2879,9 +2873,10 @@ export default class FmBoard extends View {
       const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
       const ids = [];
       for (const comp of this.visibleChains()) {
+        const layout = placeChainLane(comp, this.graph.nodes);
         const drawn = stacked
-          ? chainSpineLayout(comp, this.graph.nodes).steps.flatMap((step) => step.nodes)
-          : placeChainLane(comp, this.graph.nodes).grid.flat().map((id) => (id ? this.graph.nodes.get(id) : null)).filter(Boolean);
+          ? layout.steps.flatMap((step) => step.nodes)
+          : layout.grid.flat().map((id) => (id ? this.graph.nodes.get(id) : null)).filter(Boolean);
         for (const n of drawn) {
           if (!n.missing && n.column !== "done" && searchText(n).includes(q)) ids.push(n.id);
         }

@@ -643,9 +643,13 @@ test("a failed task is drawn in Blocked with a red Failed label, an ordinary blo
     makeTask("broke-build", "failed", false, "failed [at=1]: tests did not pass"),
     makeTask("needs-file", "blocked", true, "blocked [at=1]: waiting for a file"),
   ];
+  const records = [
+    ...tasks.map((x) => ({ id: x.id, state: "in_flight", kind: "ship", repo: "orchard-atlas", title: x.id, structured: true })),
+    { id: "after-build", state: "queued", repo: "orchard-atlas", title: "after-build", structured: true, unresolved_blocker_ids: ["broke-build", "needs-file"] },
+  ];
   const b = await board({
-    theme: { ansi1: "#cc0000" },
-    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records: tasks.map((x) => ({ id: x.id, state: "in_flight", kind: "ship", repo: "orchard-atlas", title: x.id, structured: true })) } },
+    theme: { ansi1: "#cc0000", blocked: "#0000cc" },
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records } },
   });
   const card = (id) => b.view.cards.find((c) => c.id === id);
   assert.equal(card("broke-build").column, "blocked");
@@ -662,6 +666,23 @@ test("a failed task is drawn in Blocked with a red Failed label, an ordinary blo
   assert.equal(border("needs-file"), "#808080");
   assert.ok(b.ids.includes("col-blocked"));
   assert.ok(!b.ids.includes("col-failed"));
+  // In the chain a waiting card shows, the failed step's dot and label are red, the blocked step's are not.
+  const theme = new Proxy({ ansi1: "#cc0000", blocked: "#0000cc" }, { get: (o, k) => (k in o ? o[k] : "#808080") });
+  const steps = [];
+  const walk = (el) => {
+    if (!el || typeof el !== "object") return;
+    const { kids } = el.node;
+    const label = kids.at(-1)?.node, dot = kids[0]?.node;
+    if (kids.length === 3 && typeof label?.kids[0] === "string" && typeof kids[1]?.node?.kids[0] === "string") {
+      steps.push({ title: kids[1].node.kids[0], label: label.kids[0],
+        dot: dot.calls.find((c) => c[0] === "bg")?.[1], color: label.calls.find((c) => c[0] === "text_color")?.[1] });
+    }
+    kids.forEach(walk);
+  };
+  walk(b.view.chain(card("after-build"), theme));
+  const stepOf = (title) => steps.find((s) => s.title === title);
+  assert.deepEqual({ ...stepOf("broke-build") }, { title: "broke-build", label: "failed", dot: "#cc0000", color: "#cc0000" });
+  assert.deepEqual({ ...stepOf("needs-file") }, { title: "needs-file", label: "blocked", dot: "#0000cc", color: "#0000cc" });
 });
 
 // Asia/Seoul is UTC+9 all year, so an instant at 03:50Z reads 12:50 there on the same date.

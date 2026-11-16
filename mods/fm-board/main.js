@@ -2861,6 +2861,7 @@ export default class FmBoard extends View {
     const strip = (title) => (c.project && title.startsWith(`${c.project} `) ? title.slice(c.project.length + 1) : title);
     const status = (x) => {
       if (!x) return ["finished or unknown", t.muted];
+      if (x.failed) return ["failed", t.ansi1];
       if (x.column === "queued") return x.waitingIds.length ? ["waiting", t.blocked] : ["ready", t.foreground];
       const col = COLUMNS.find((k) => k.id === x.column);
       return [x.column === "working" ? "working" : (x.state || x.column), t[col?.color] ?? t.muted];

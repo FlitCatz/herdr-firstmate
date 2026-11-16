@@ -31,3 +31,4 @@ A footer below the columns shows supervision watcher status and the latest refre
 The preview uses fictional projects and tasks.
 
 `node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, registered checks, tab behavior, folder-watch cleanup, and check-mode side-effect guards; it needs only Node.js, not Herdr.
+This repository has no CI and declares that to no-mistakes in `.no-mistakes.yaml`.

@@ -983,18 +983,13 @@ function placeChainLane(comp, nodesMap) {
   }
   const gutterW = Array.from({ length: Math.max(0, cols - 1) }, (_, g) => {
     const k = turns.get(g)?.length ?? 0;
-    return k < 2 ? CHAIN_GUT : Math.max(CHAIN_GUT, 2 * CHAIN_GUT_STUB + CHAIN_HEAD_W + (k - 1) * CHAIN_PORT_STEP);
+    return Math.max(CHAIN_GUT, 2 * CHAIN_GUT_STUB + CHAIN_HEAD_W + (k - 1) * CHAIN_PORT_STEP);
   });
   for (const [g, list] of turns) {
     const w = gutterW[g];
     list.sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1]);
-    if (list.length === 1) {
-      const minX = CHAIN_R + 1, maxX = w - CHAIN_HEAD_W - CHAIN_R - 1;
-      list[0].set(Math.round((minX + maxX) / 2));
-    } else {
-      const startX = Math.round((w - CHAIN_HEAD_W - (list.length - 1) * CHAIN_PORT_STEP) / 2);
-      list.forEach((tn, i) => tn.set(startX + i * CHAIN_PORT_STEP));
-    }
+    const startX = Math.round((w - CHAIN_HEAD_W - (list.length - 1) * CHAIN_PORT_STEP) / 2);
+    list.forEach((tn, i) => tn.set(startX + i * CHAIN_PORT_STEP));
   }
   return { grid, pos, edges, cols, spineIds, levelOf, steps, rowPad, rowMinH, gutterW };
 }
@@ -1003,7 +998,7 @@ function placeChainLane(comp, nodesMap) {
 // { top } for a card port or { bottom } for a detour lane in the row padding.
 function chainGutterSpecs(layout, r, g) {
   const out = [];
-  const R = CHAIN_R, C = CHAIN_R + 1, gutW = layout.gutterW?.[g] ?? CHAIN_GUT;
+  const R = CHAIN_R, C = CHAIN_R + 1, gutW = layout.gutterW[g];
   for (const e of layout.edges) {
     const U = layout.pos.get(e.u), V = layout.pos.get(e.v);
     if (!(g >= U.c && g < V.c)) continue;
@@ -2741,7 +2736,7 @@ export default class FmBoard extends View {
 
   /** @param {any} comp @param {any} layout @param {Map<string, string>} laneRoles @param {boolean} dimLane @param {Record<string, `#${string}`>} t */
   renderChainWideGrid(comp, layout, laneRoles, dimLane, t) {
-    const gutAt = (c) => layout.gutterW?.[c] ?? CHAIN_GUT;
+    const gutAt = (c) => layout.gutterW[c];
     const totalGutW = Array.from({ length: Math.max(0, layout.cols - 1) }, (_, c) => gutAt(c)).reduce((s, w) => s + w, 0);
     const body = v_flex().gap(0).min_w(layout.cols * CHAIN_CARD_W + totalGutW);
     const ruler = h_flex().mb(8);
@@ -2755,7 +2750,7 @@ export default class FmBoard extends View {
     layout.grid.forEach((row, r) => {
       const rowId = r === 0 ? `chain-spine-${comp.id}` : r === 1 ? `chain-branches-${comp.id}` : `chain-branch-row-${comp.id}-${r}`;
       const rowEl = h_flex().id(rowId).items_stretch();
-      const rowMinH = layout.rowMinH?.[r] ?? 0;
+      const rowMinH = layout.rowMinH[r];
       for (let c = 0; c < layout.cols; c++) {
         const id = row[c];
         const cell = v_flex().id(`chain-cell-${comp.id}-${r}-${c}`).relative().w(CHAIN_CARD_W).flex_none()

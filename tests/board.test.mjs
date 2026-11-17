@@ -148,10 +148,10 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   const {
     FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout,
     chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor,
-    CHAIN_CARD_W, CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
+    CHAIN_CARD_W, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
     waitingLabel, blocksLabel,
   } = vm.runInNewContext(
-    `${source}\n({ FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout, chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor, CHAIN_CARD_W, CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H, waitingLabel, blocksLabel })`,
+    `${source}\n({ FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout, chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor, CHAIN_CARD_W, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H, waitingLabel, blocksLabel })`,
     scope,
   );
   const view = new FmBoard();
@@ -197,7 +197,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   return {
     view, registry, reload, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout,
     chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor,
-    CHAIN_CARD_W, CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
+    CHAIN_CARD_W, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
     waitingLabel, blocksLabel, initEffects,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
@@ -2148,11 +2148,17 @@ test("closing a viewer cancels its watch and prevents a resumed loop from rearmi
 // Rasterizes every connector piece the wide Chains grid draws into 1px cells per edge, with every
 // card a fixed height, so routing checks see what a reader sees: the pixels each line covers.
 function rasterChainLane(b, layout, cardH = 90) {
-  const { chainGutterSpecs, chainCellSpecs, CHAIN_CARD_W: W, CHAIN_GUT: G, CHAIN_R: R } = b;
+  const { chainGutterSpecs, chainCellSpecs, CHAIN_CARD_W: W, CHAIN_R: R } = b;
+  const gutAt = (c) => layout.gutterW[c];
+  const cardHAt = (r) => Math.max(cardH, layout.rowMinH[r]);
   const rowTop = [], rowH = [];
   let y = 0;
-  layout.grid.forEach((_, r) => { rowTop.push(y); rowH.push(cardH + layout.rowPad[r]); y += rowH[r]; });
-  const colX = (c) => c * (W + G);
+  layout.grid.forEach((_, r) => { rowTop.push(y); rowH.push(cardHAt(r) + layout.rowPad[r]); y += rowH[r]; });
+  const colX = (c) => {
+    let x = 0;
+    for (let i = 0; i < c; i++) x += W + gutAt(i);
+    return x;
+  };
   const pixels = new Map(), heads = new Map();
   const mark = (e, px, py) => {
     const k = `${e.u}->${e.v}`;
@@ -2174,19 +2180,19 @@ function rasterChainLane(b, layout, cardH = 90) {
       const L = x0 + spec.left, T = yOf(R + 1);
       for (let i = 0; i <= R; i++) {
         mark(spec.edge, L + i, spec.cornerKind[0] === "t" ? T : T + R);
-        mark(spec.edge, spec.cornerKind[1] === "l" ? L : L + R, T + i);
+        mark(spec.edge, L + (spec.cornerKind[1] === "l" ? 0 : R), T + i);
       }
     }
   };
   layout.grid.forEach((row, r) => {
     for (let c = 0; c < layout.cols; c++) {
       for (const spec of chainCellSpecs(layout, r, c)) draw(spec, r, colX(c), W);
-      if (c < layout.cols - 1) for (const spec of chainGutterSpecs(layout, r, c)) draw(spec, r, colX(c) + W, G);
+      if (c < layout.cols - 1) for (const spec of chainGutterSpecs(layout, r, c)) draw(spec, r, colX(c) + W, gutAt(c));
     }
   });
   const cards = [];
   layout.grid.forEach((row, r) => row.forEach((id, c) => {
-    if (id) cards.push({ id, x0: colX(c), x1: colX(c) + W, y0: rowTop[r], y1: rowTop[r] + cardH });
+    if (id) cards.push({ id, x0: colX(c), x1: colX(c) + W, y0: rowTop[r], y1: rowTop[r] + cardHAt(r) });
   }));
   return { pixels, heads, cards, rowTop, colX };
 }
@@ -2240,12 +2246,12 @@ test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce a
   const {
     cardsFrom, dependencyGraph,
     chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs,
-    CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
+    CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
   } = b;
 
   // chainJoint keeps an odd head height centered on the 1px line slot [y, y+1] across every port height.
   assert.equal(CHAIN_HEAD_H % 2, 1);
-  for (const y of [18, 34, 50, 66]) {
+  for (const y of [CHAIN_PORT_TOP, CHAIN_PORT_TOP + CHAIN_PORT_STEP, CHAIN_PORT_TOP + 2 * CHAIN_PORT_STEP, CHAIN_PORT_TOP + 4 * CHAIN_PORT_STEP]) {
     const j = chainJoint(y);
     assert.equal(j.lineTop, y);
     assert.equal(j.lineH, 1);
@@ -2287,8 +2293,8 @@ test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce a
   assert.equal(edge("orchard-icons", "maple-release").cross, true);
   assert.equal(edge("maple-token", "maple-card").cross, false);
 
-  // Every vertical turn sharing a gutter gets its own x, with room for an (R + 1) elbow on its left
-  // and for an elbow plus a visible line before the arrowhead on its right.
+  // Every vertical turn sharing a gutter gets its own x, further apart than the old 16px, with room
+  // for an (R + 1) elbow on its left and an elbow plus visible line before the arrowhead on its right.
   const turnsByGutter = new Map();
   for (const e of layout.edges) {
     const U = layout.pos.get(e.u), V = layout.pos.get(e.v);
@@ -2296,14 +2302,21 @@ test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce a
     if (!turnsByGutter.has(V.c - 1)) turnsByGutter.set(V.c - 1, []);
     turnsByGutter.get(V.c - 1).push(e.x);
   }
-  for (const xs of turnsByGutter.values()) {
-    assert.equal(new Set(xs).size, xs.length, `distinct turn x in a gutter: ${xs}`);
-    for (const x of xs) {
-      assert.ok(x - CHAIN_R >= 1, `elbow at ${x} stays inside the gutter`);
-      assert.ok(x + CHAIN_R + 1 < CHAIN_GUT - CHAIN_HEAD_W, `line after the elbow at ${x} is visible before the head`);
+  for (const [gIdx, xs] of turnsByGutter) {
+    const sorted = [...xs].sort((a, b) => a - b);
+    assert.equal(new Set(sorted).size, sorted.length, `distinct turn x in gutter ${gIdx}: ${sorted}`);
+    for (let i = 1; i < sorted.length; i++) {
+      assert.ok(sorted[i] - sorted[i - 1] > 16, `parallel vertical runs in gutter ${gIdx}: ${sorted}`);
+    }
+    const gutW = layout.gutterW[gIdx];
+    for (const x of sorted) {
+      assert.ok(x - CHAIN_R >= 1, `elbow at ${x} stays inside gutter ${gIdx}`);
+      assert.ok(x + CHAIN_R + 1 < gutW - CHAIN_HEAD_W, `line after the elbow at ${x} is visible before the head`);
     }
   }
   assert.equal(turnsByGutter.get(2).length, 2);
+  // Every gutter is wider than the 44px the Chains view used before it was spread out.
+  for (const [gIdx, w] of layout.gutterW.entries()) assert.ok(w > 44, `gutter ${gIdx} is ${w}px`);
   assert.equal(assertCleanRouting(b, layout, "fixture"), 0);
 
   // The same graph with maple-release's blockers listed in another order still draws without crossings.
@@ -2315,7 +2328,14 @@ test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce a
   }));
   assert.equal(assertCleanRouting(b, placeChainLane(rg.components[0], rg.nodes), "reordered blockers"), 0);
 
-  // Skip-level pass-through across empty cell (r=2, c=2) draws a horizontal bar at maple-skip's outgoing port 18.
+  // Three-way join spreads its arrowheads across the card edge with >=20px step.
+  const releasePorts = [edge("maple-panel", "maple-release").p2, edge("orchard-icons", "maple-release").p2, edge("maple-skip", "maple-release").p2];
+  assert.ok(releasePorts[1] - releasePorts[0] >= 20, `3-way fan-in top gap: ${releasePorts}`);
+  assert.ok(releasePorts[2] - releasePorts[1] >= 20, `3-way fan-in bottom gap: ${releasePorts}`);
+  // Rows sit further apart than the 12px padding the Chains view used before.
+  assert.ok(layout.rowPad[0] > 12, `row padding ${layout.rowPad[0]}`);
+
+  // Skip-level pass-through across empty cell (r=2, c=2) draws a horizontal bar at maple-skip's outgoing port.
   const pass = chainCellSpecs(layout, 2, 2);
   assert.equal(pass.length, 1);
   assert.equal(pass[0].top, edge("maple-skip", "maple-release").p1);
@@ -2356,6 +2376,19 @@ test("Chains routes a skip-level edge around the cards it passes instead of thro
   assert.ok(underB[0].bottom >= 0 && underB[0].bottom < diamond.rowPad[0], "lane sits in the row padding");
   // The only row is the last one, yet it keeps padding for the lane.
   assert.ok(diamond.rowPad[0] > 0);
+
+  // Overlapping skip-level detours keep wider separation than before and >= CHAIN_R clearance from cards.
+  const dualDetour = lane([
+    { id: "D0", title: "D0", unresolved_blocker_ids: [] },
+    { id: "D1", title: "D1", unresolved_blocker_ids: ["D0"] },
+    { id: "D2", title: "D2", unresolved_blocker_ids: ["D1", "D0"] },
+    { id: "D3", title: "D3", unresolved_blocker_ids: ["D2", "D1"] },
+  ]);
+  assertCleanRouting(b, dualDetour, "dual detour");
+  const detourChans = dualDetour.edges.filter((e) => e.chan != null).map((e) => e.chan).sort((x, y) => x - y);
+  assert.equal(detourChans.length, 2);
+  assert.ok(detourChans[1] - detourChans[0] > 4, `detour lanes ${detourChans} sit further apart than the old 4px`);
+  assert.ok(detourChans[0] >= b.CHAIN_R && dualDetour.rowPad[0] - detourChans[1] >= b.CHAIN_R);
 
   // Side branch X -> Y -> Z on row 1, plus X -> Z (same row, past Y) and X -> S3 (up to the spine, past Y).
   const branch = lane([
@@ -2424,9 +2457,9 @@ test("Chains never lets a line leaving one card run on into a line entering the 
   }
 });
 
-test("Chains keeps every port of a heavily blocked card on the card's edge", async () => {
+test("Chains spreads a six-blocker fan-in's ports and turns further apart than before", async () => {
   const b = await board();
-  const { cardsFrom, dependencyGraph, placeChainLane, CHAIN_HEAD_H } = b;
+  const { cardsFrom, dependencyGraph, placeChainLane } = b;
   const roots = ["B0", "B1", "B2", "B3", "B4", "B5"];
   const g = dependencyGraph(cardsFrom({
     backlog: {
@@ -2439,11 +2472,53 @@ test("Chains keeps every port of a heavily blocked card on the card's edge", asy
   const layout = placeChainLane(g.components[0], g.nodes);
   const ports = layout.edges.map((e) => e.p2).sort((x, y) => x - y);
   assert.equal(ports.length, 6);
-  // A card with no PR or live strip is about 78px tall; each arrowhead must end above that.
-  for (const p of ports) assert.ok(p + (CHAIN_HEAD_H - 1) / 2 < 78, `port ${p} stays on the card edge`);
-  // Arrowheads never overlap each other.
-  for (let i = 1; i < ports.length; i++) assert.ok(ports[i] - ports[i - 1] >= CHAIN_HEAD_H, `ports ${ports}`);
+  // Every consecutive pair sits further apart than the old 16px port step, however many lines come in.
+  for (let i = 1; i < ports.length; i++) assert.ok(ports[i] - ports[i - 1] > 16, `ports ${ports}`);
+  // The 5 parallel turns in the gutter are spread just as wide.
+  const xs = layout.edges.filter((e) => e.x != null).map((e) => e.x).sort((a, b) => a - b);
+  assert.equal(xs.length, 5);
+  for (let i = 1; i < xs.length; i++) assert.ok(xs[i] - xs[i - 1] > 16, `turns ${xs}`);
   assert.equal(assertCleanRouting(b, layout, "six blockers"), 0);
+});
+
+test("the wide Chains grid draws a six-blocker card tall enough for its arrowheads and its gutters wide enough for their turns", async () => {
+  const roots = ["B0", "B1", "B2", "B3", "B4", "B5"];
+  const records = [
+    ...roots.map((id) => ({ id, state: "queued", repo: "maple-workshop", title: id, structured: true, unresolved_blocker_ids: [] })),
+    { id: "T", state: "queued", repo: "maple-workshop", title: "T", structured: true, unresolved_blocker_ids: roots },
+  ];
+  const b = await board({ ui: { viewMode: "chains" }, snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  const call = (el, name) => el?.calls?.findLast((c) => c[0] === name)?.[1];
+  const item = (id) => b.items.find((x) => x.id === id);
+  const comp = b.view.visibleChains()[0];
+
+  // Every arrowhead into T ends above where T's rounded bottom corner begins, on the card as drawn.
+  const card = item("chain-node-T");
+  const minH = call(card, "min_h");
+  const radius = call(card, "rounded");
+  assert.ok(minH > 0 && radius > 0, "T is drawn with a minimum height and rounded corners");
+  const heads = roots.map((u) => item(`chain-edge-${u}-T-head`));
+  assert.equal(heads.filter(Boolean).length, 6, "T draws all six arrowheads");
+  for (const head of heads) {
+    assert.ok(call(head, "top") + call(head, "h") <= minH - radius, `${head.id} ends at ${call(head, "top") + call(head, "h")}px on a ${minH}px card`);
+  }
+
+  // Each gutter is drawn wider than the old 44px and fits every turn it draws, spread out and left of the arrowheads.
+  const headW = call(heads[0], "w");
+  const gutters = b.items.filter((x) => x.id.startsWith(`chain-gutter-${comp.id}-`));
+  assert.ok(gutters.length > 0);
+  for (const gutter of gutters) {
+    const w = call(gutter, "w");
+    assert.ok(w > 44, `${gutter.id} is ${w}px wide`);
+    const turns = gutter.childIds.map(item).filter((x) => x.id.includes("-vbar-")).map((x) => call(x, "left"));
+    const xs = [...new Set(turns)].sort((x, y) => x - y);
+    for (let i = 1; i < xs.length; i++) assert.ok(xs[i] - xs[i - 1] > 16, `${gutter.id} turns at ${xs}`);
+    for (const x of xs) assert.ok(x > 0 && x + b.CHAIN_R + 1 < w - headW, `${gutter.id} turn at ${x} fits its ${w}px`);
+  }
+  const firstRow = gutters.find((x) => x.id === `chain-gutter-${comp.id}-0-0`);
+  assert.equal(new Set(firstRow.childIds.map(item).filter((x) => x.id.includes("-vbar-")).map((x) => call(x, "left"))).size, 5);
 });
 
 test("Chains keeps a join's arrowheads apart even when a card elsewhere in the lane unblocks many", async () => {
@@ -2469,34 +2544,40 @@ test("Chains keeps a join's arrowheads apart even when a card elsewhere in the l
 });
 
 test("Chains keeps a join's arrowheads apart when the card beside it unblocks many", async () => {
-  const b = await board();
-  const { cardsFrom, dependencyGraph, placeChainLane, CHAIN_HEAD_H } = b;
   const fan = ["D1", "D2", "D3", "D4", "D5", "D6", "D7"];
-  const g = dependencyGraph(cardsFrom({
-    backlog: {
-      records: [
-        { id: "H", state: "queued", repo: "maple-workshop", title: "H", structured: true, unresolved_blocker_ids: [] },
-        { id: "X", state: "queued", repo: "maple-workshop", title: "X", structured: true, unresolved_blocker_ids: [] },
-        ...fan.map((id) => ({
-          id, state: "queued", repo: "maple-workshop", title: id, structured: true,
-          priority: id === "D1" ? "0" : "2", unresolved_blocker_ids: id === "D1" ? ["H", "X"] : ["H"],
-        })),
-      ],
-    },
-  }));
+  const records = [
+    { id: "H", state: "queued", repo: "maple-workshop", title: "H", structured: true, unresolved_blocker_ids: [] },
+    { id: "X", state: "queued", repo: "maple-workshop", title: "X", structured: true, unresolved_blocker_ids: [] },
+    ...fan.map((id) => ({
+      id, state: "queued", repo: "maple-workshop", title: id, structured: true,
+      priority: id === "D1" ? "0" : "2", unresolved_blocker_ids: id === "D1" ? ["H", "X"] : ["H"],
+    })),
+  ];
+  const b = await board({ ui: { viewMode: "chains" }, snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  const { cardsFrom, dependencyGraph, placeChainLane, CHAIN_HEAD_H } = b;
+  const g = dependencyGraph(cardsFrom({ backlog: { records } }));
   const layout = placeChainLane(g.components[0], g.nodes);
   // H sits directly left of D1 on the spine and sends six more lines out past it.
   assert.deepEqual(Array.from(layout.grid[0]), ["H", "D1"]);
   const joinPorts = layout.edges.filter((e) => e.v === "D1").map((e) => e.p2).sort((x, y) => x - y);
   assert.equal(joinPorts.length, 2);
   assert.ok(joinPorts[1] - joinPorts[0] >= CHAIN_HEAD_H, `D1's ports ${joinPorts}`);
-  // Every line still leaves H on the card's edge, above the bottom of even a ~78px card.
-  for (const e of layout.edges.filter((x) => x.u === "H")) assert.ok(e.p1 < 78, `H -> ${e.v} leaves at ${e.p1}`);
+  // As drawn, every line leaves H on its flat right edge, above where H's rounded bottom corner begins.
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  const call = (el, name) => el?.calls?.findLast((c) => c[0] === name)?.[1];
+  const card = b.items.find((x) => x.id === "chain-node-H");
+  const bottom = call(card, "min_h") - call(card, "rounded");
+  const comp = b.view.visibleChains()[0];
+  const gutter = b.items.find((x) => x.id === `chain-gutter-${comp.id}-0-0`);
+  const leaving = gutter.childIds.filter((id) => /^chain-edge-H-.*-(hbar-0-0|line)$/.test(id)).map((id) => b.items.find((x) => x.id === id));
+  assert.equal(leaving.length, fan.length);
+  for (const line of leaving) assert.ok(call(line, "top") + 1 <= bottom, `${line.id} leaves at ${call(line, "top")} on a card flat to ${bottom}`);
   assertCleanRouting(b, layout, "hub beside join");
 });
 
 test("Chains connector lines, arrowheads, and elbows obey all alignment rules in wide and narrow views across selection states", async () => {
-  // Exercises all 4 elbow directions (tr, bl, br, tl), multi-port joins (18, 34, 50),
+  // Exercises all 4 elbow directions (tr, bl, br, tl), multi-port joins,
   // cross-project dashed links, pass-through cells, and narrow stepper branch heads.
   const records = [
     { id: "maple-token", state: "in_flight", repo: "maple-workshop", title: "Token", priority: "0", structured: true, unresolved_blocker_ids: [] },

@@ -1925,8 +1925,8 @@ export default class FmBoard extends View {
       if ((c.waitingOn?.length ?? 0) > 0) {
         const selected = this.selectedCardId === c.id;
         depRow.child(div().id(`waits-${c.id}`).min_w(0).px(5).py(1).rounded(4).border(1)
-          .border_color(selected ? t.accent : t.blocked).bg(t.blocked + "18")
-          .text_size(this.fs(10.5)).font_semibold().text_color(t.blocked).truncate()
+          .border_color(selected ? t.accent : t.ansi3).bg(t.ansi3 + "18")
+          .text_size(this.fs(10.5)).font_semibold().text_color(t.ansi3).truncate()
           .cursor_pointer().hover((st) => st.opacity(0.8))
           .tooltip(`Inspect dependency chain · Waits on: ${c.waitingOn.join(", ")}`)
           .on_click((_e, cx) => { cx.stop_propagation(); this.selectChainCard(c.id, cx); })

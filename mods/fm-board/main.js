@@ -1248,6 +1248,9 @@ export default class FmBoard extends View {
     // props.ui.view (testing): open the viewer on that project's local copy.
     if (ui.view) this.openView(ui.view, { path: `${home()}/projects/${ui.view}`, title: `${ui.view} · local copy` }, cx);
     if (ui.viewTab) this.viewer.tab = ui.viewTab;
+    // props.ui.focus and props.ui.point (previews): Focus on that card, or that card pointed to.
+    if (typeof ui.focus === "string") { this.focusMode = true; this.focusId = ui.focus; }
+    if (typeof ui.point === "string") this.pointedId = ui.point;
     if (ui.pick) this.usePath(ui.pick, cx);
     this.refresh(cx);
     if (props()?.snapshot_file) return;
@@ -1894,7 +1897,8 @@ export default class FmBoard extends View {
         .child(this.askButton(foldId, [c.id], c.title, t)));
     if (folded) return el;
     // The project sits on the state row so the title keeps the full card width.
-    el.child(h_flex().gap(6).items_center().min_w(0)
+    // In a narrow column the deferral date or wait wraps to its own line instead of being cut off.
+    el.child(h_flex().id(`state-${c.id}`).gap(6).items_center().min_w(0).flex_wrap()
       .child(this.projectBadge(c.project || "firstmate", t, `tag-${c.id}`))
       .when(c.priority !== null && c.column !== "done", (e) => e.child(div().flex_none().px(4).rounded(3).border(1)
         .border_color(c.priority === 0 ? t.foreground : t.border).font_family(DATA_FONT).text_size(this.fs(10))
@@ -3177,7 +3181,8 @@ export default class FmBoard extends View {
     const first = cards.find((c) => c.decision.options.length) ?? cards[0];
     const ids = cards.map((c) => c.id), question = first.decision.question || topic;
     const boxDimmed = this.focusMode && !cards.some(needsCaptain);
-    const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(4).bg(t.raised).border(1).border_color(t.accent)
+    // A hairline, not the accent: accent marks hover, selection, and the search match only.
+    const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(4).bg(t.raised).border(1).border_color(t.border)
       .when(boxDimmed, (e) => e.opacity(FOCUS_DIM))
       .child(this.foldRow(foldId, t, folded, question,
         div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)))
@@ -3433,8 +3438,10 @@ export default class FmBoard extends View {
       right.child(updated);
       if (this.ready !== null) right.child(this.ready ? this.badge("Receiving", t.ansi2) : this.badge("Not receiving", t.working));
     }
-    return h_flex().flex_none().gap(10).items_center().justify_between().min_w(0)
-      .child(h_flex().flex_1().min_w(0).gap(10).items_center().overflow_hidden().children(this.watcherChips(t)))
+    // The whole status group sits at the strip's right end, apart from the tabs, so a red
+    // "No watcher" never reads as another tab.
+    return h_flex().id("board-status").flex_none().gap(10).items_center().justify_end().min_w(0)
+      .child(h_flex().flex_shrink(1).min_w(0).gap(10).items_center().overflow_hidden().children(this.watcherChips(t)))
       .child(right);
   }
 

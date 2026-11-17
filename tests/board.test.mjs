@@ -2918,3 +2918,33 @@ test("Parked has its own status color, apart from Held, Blocked, Working, and Re
     assert.notEqual(headRule(col), theme.ansi5, `${col} differs from Parked`);
   }
 });
+
+test("a Held topic box wears a hairline, not the accent that marks hover, selection, and the search match", async () => {
+  const theme = { accent: "#1f62d0", border: "#dddddd" };
+  const b = await board({ theme });
+  const outline = b.items.find((x) => x.id === "group-preview-style").calls.findLast((c) => c[0] === "border_color")[1];
+  assert.equal(outline, theme.border);
+});
+
+test("the strip's status group sits at its right end, and a card's state row wraps instead of cutting a date off", async () => {
+  const b = await board();
+  // The update time's row is pushed to the end of the strip, away from the tabs.
+  const status = b.items.find((x) => x.id === "board-status");
+  assert.ok(status.childIds.includes("refresh"));
+  assert.ok(status.calls.some((c) => c[0] === "justify_end"), "status group is right-aligned");
+  assert.ok(!status.calls.some((c) => c[0] === "justify_between"));
+  const stateRow = b.items.find((x) => x.id === "state-orchard-tile-refresh");
+  assert.ok(stateRow.childIds.includes("until-orchard-tile-refresh"));
+  assert.ok(stateRow.calls.some((c) => c[0] === "flex_wrap"), "the deferral date wraps to its own line in a narrow column");
+});
+
+test("preview props open Focus on a card or point at one, for screenshots without key presses", async () => {
+  const theme = { accent: "#1f62d0", blocked: "#c93c2c" };
+  const focus = await board({ theme, ui: { focus: "maple-tour-sketch" } });
+  assert.equal(focus.view.focusMode, true);
+  assert.ok(focus.ids.includes("focus-hint"));
+  const point = await board({ theme, ui: { point: "maple-tour-sketch" } });
+  assert.equal(point.view.pointedId, "maple-tour-sketch");
+  const ring = point.items.find((x) => x.id === "card-maple-tour-sketch").calls.findLast((c) => c[0] === "border_color")[1];
+  assert.equal(ring, theme.blocked);
+});

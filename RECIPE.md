@@ -150,7 +150,7 @@ It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to chec
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
 The viewer cancels its pending folder watch when its root changes or it closes.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.
-Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews.
+Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews. Among the `ui` props, `focus` opens Focus on a card and `point` rings a card as the NEXT MOVE card line does, so previews can show those states without key presses.
 During `herdr-app check`, the Board skips startup reads, helper commands, watches, and refresh timers, and the tab bar skips panel persistence and layout commands.
 
 ## Watch out

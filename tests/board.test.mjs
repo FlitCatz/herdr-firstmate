@@ -681,23 +681,22 @@ test("a failed task is drawn in Blocked with a red Failed label, an ordinary blo
   assert.equal(border("needs-file"), "#808080");
   assert.ok(b.ids.includes("col-blocked"));
   assert.ok(!b.ids.includes("col-failed"));
-  // In the chain a waiting card shows, the failed step's dot and label are red, the blocked step's are not.
+  // In the Dependency Inspector and Chains node status, the failed step is red ("failed") and the blocked step is not.
   const theme = new Proxy({ ansi1: "#cc0000", blocked: "#0000cc" }, { get: (o, k) => (k in o ? o[k] : "#808080") });
-  const steps = [];
-  const walk = (el) => {
-    if (!el || typeof el !== "object") return;
-    const { kids } = el.node;
-    const label = kids.at(-1)?.node, dot = kids[0]?.node;
-    if (kids.length === 3 && typeof label?.kids[0] === "string" && typeof kids[1]?.node?.kids[0] === "string") {
-      steps.push({ title: kids[1].node.kids[0], label: label.kids[0],
-        dot: dot.calls.find((c) => c[0] === "bg")?.[1], color: label.calls.find((c) => c[0] === "text_color")?.[1] });
-    }
-    kids.forEach(walk);
+  assert.deepEqual([...b.view.nodeStatus(card("broke-build"), theme, true)], ["failed", "#cc0000"]);
+  assert.deepEqual([...b.view.nodeStatus(card("needs-file"), theme, true)], ["blocked", "#0000cc"]);
+  b.click("waits-after-build");
+  assert.ok(b.ids.includes("dep-node-broke-build"));
+  assert.ok(b.text("dep-node-broke-build").includes("failed"));
+  assert.ok(b.text("dep-node-needs-file").includes("blocked"));
+  const hasColoredLabel = (el, text, color) => {
+    if (!el || typeof el !== "object") return false;
+    const { kids, calls } = el.node;
+    if (kids.includes(text) && calls.some((c) => c[0] === "text_color" && c[1] === color)) return true;
+    return kids.some((k) => hasColoredLabel(k, text, color));
   };
-  walk(b.view.chain(card("after-build"), theme));
-  const stepOf = (title) => steps.find((s) => s.title === title);
-  assert.deepEqual({ ...stepOf("broke-build") }, { title: "broke-build", label: "failed", dot: "#cc0000", color: "#cc0000" });
-  assert.deepEqual({ ...stepOf("needs-file") }, { title: "needs-file", label: "blocked", dot: "#0000cc", color: "#0000cc" });
+  assert.ok(hasColoredLabel(b.view.renderDagNode(card("broke-build"), null, theme), "failed", "#cc0000"));
+  assert.ok(hasColoredLabel(b.view.renderDagNode(card("needs-file"), null, theme), "blocked", "#0000cc"));
 });
 
 // Asia/Seoul is UTC+9 all year, so an instant at 03:50Z reads 12:50 there on the same date.
@@ -890,7 +889,9 @@ test("card dependency badges render in every column, not only Queued", async () 
     makeTask("P1", "paused", "ci running"),
     makeTask("R1", "unknown", "checks green: PR ready", "https://github.com/FlitCatz/maple-workshop/pull/10", "done [at=1]: PR ready"),
   ];
+  const theme = { ansi3: "#8f5d00", blocked: "#c93c2c", accent: "#1f62d0" };
   const multi = await board({
+    theme,
     snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records } },
   });
   assert.equal(multi.view.cards.find((c) => c.id === "W1").column, "working");
@@ -911,17 +912,19 @@ test("card dependency badges render in every column, not only Queued", async () 
   assert.equal(multi.view.cards.find((c) => c.id === "Q1").column, "queued");
   assert.equal(multi.text("waits-Q1"), "← Waits on Held Step");
 
-  // A queued card's waiting row still expands and hides the order it waits on, without opening the inspector.
-  assert.equal(multi.text("wait-Q1"), "▸ Waiting on Held Step");
-  assert.ok(!multi.text("card-Q1").includes("this task"));
-  multi.click("wait-Q1");
-  assert.equal(multi.text("wait-Q1"), "▾ Waiting on Held Step");
-  assert.ok(multi.text("card-Q1").includes("this task"));
-  assert.equal(multi.view.inspectorOpen, false);
-  multi.click("wait-Q1");
-  assert.ok(!multi.text("card-Q1").includes("this task"));
-  // Only queued cards have the waiting row.
+  // Waiting is shown only by the ← Waits on badge (no inline expandable "Waiting on" row).
+  // Its badge uses the theme's gold/orange ansi3 palette (not blocked red), keeping accent border on selection.
+  assert.ok(!multi.ids.includes("wait-Q1"));
   assert.ok(!multi.ids.includes("wait-H1"));
+  const badgeCall = (id, fn) => multi.items.find((x) => x.id === id)?.calls.findLast((c) => c[0] === fn)?.[1];
+  assert.equal(badgeCall("waits-Q1", "border_color"), theme.ansi3);
+  assert.equal(badgeCall("waits-Q1", "bg"), `${theme.ansi3}18`);
+  assert.equal(badgeCall("waits-Q1", "text_color"), theme.ansi3);
+  assert.equal(multi.view.inspectorOpen, false);
+  multi.click("waits-Q1");
+  assert.equal(multi.view.inspectorOpen, true);
+  assert.equal(badgeCall("waits-Q1", "border_color"), theme.accent);
+  assert.equal(badgeCall("waits-Q1", "text_color"), theme.ansi3);
 });
 
 test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlights upstream/selected/downstream, dims unrelated cards only while selected, and clears on Escape or Close", async () => {

@@ -462,7 +462,7 @@ function columnOf(record, task) {
   // Codex on hc never reports its own state; fall back to the worker's last status event.
   if (state === "unknown") {
     const last = /^([a-z-]+)/.exec(task?.hints?.last_event_text ?? "")?.[1];
-    if (last === "done") return task?.pr?.url ? "review" : "paused";
+    if (last === "done") return task?.pr?.url || branchReady(record, task) ? "review" : "paused";
     if (last === "needs-decision") return "parked";
     if (last === "blocked" || last === "paused" || last === "working") return last;
     if (last === "resolved") return "working";
@@ -506,6 +506,20 @@ function prWaiting(record, task) {
   if (task?.current_state?.state !== "done" || !task?.pr?.url) return false;
   if (record?.state === "done" || record?.merged) return false;
   return !/\b(merged|closed)\b/i.test(task.current_state.detail ?? "");
+}
+
+// A local-only ship whose worker reported done (either as current state or as its last
+// status event when the harness is unobservable) waits on local landing approval until its
+// backlog item is marked done or merged. Scouts never have a branch to land.
+function branchReady(record, task) {
+  if (task?.mode !== "local-only" || (task?.kind && task.kind !== "ship")) return false;
+  const r = record ?? task?.backlog;
+  if (r?.state === "done" || r?.merged) return false;
+  if (task?.pr?.url) return false;
+  const state = task?.current_state?.state;
+  if (state === "done") return true;
+  if (state === "unknown") return /^([a-z-]+)/.exec(task?.hints?.last_event_text ?? "")?.[1] === "done";
+  return false;
 }
 
 // "Waiting on <title>", or "Waiting on 2 · <first title>"; the card's own project name is
@@ -1143,6 +1157,7 @@ function cardsFrom(snapshot) {
     sourceDetail: task?.current_state?.detail ?? "",
     pr: task?.pr?.url ?? record?.pr_url ?? detailPr(task?.current_state?.detail),
     prWaiting: prWaiting(record, task),
+    branchReady: branchReady(record, task),
     // Only hc runs workers in Herdr terminals, so only those can be opened from here.
     terminal: task?.backend === "hc" ? hcAddress(task) : null,
     // The worker's isolated copy, for the read-only Files/Changes view.
@@ -1884,7 +1899,10 @@ export default class FmBoard extends View {
     // A deferred hold shows its date when it has one; a hold to answer now shows how long it has waited.
     const until = c.column === "held" && c.holdGroup === "deferred" ? c.holdUntil : null;
     const age = c.column === "held" && c.holdGroup === "now" ? waitAge(c.heldSince, Date.now()) : "";
-    const badge = c.prWaiting ? div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.blocked).child("PR waiting") : null;
+    const readyLabel = c.prWaiting ? "PR waiting" : c.branchReady ? "Ready branch" : null;
+    const badge = readyLabel
+      ? div().id(`ready-${c.id}`).flex_none().text_size(this.fs(11)).font_semibold().text_color(t.blocked).child(readyLabel)
+      : null;
     // The bar on the left edge carries the column's status color (red for a failed worker), so a
     // column reads at a glance; the body makes room for it.
     const barColor = c.failed ? t.ansi1 : t[COLUMNS.find((k) => k.id === c.column)?.color ?? "unknown"];
@@ -2078,7 +2096,7 @@ export default class FmBoard extends View {
       ["done", "Done today", of("done").filter((c) => c.completedOn === today).length, "", "done"],
       ["waiting", "Waiting on you", holds.length, oldest ? `oldest ${oldest}` : "", "blocked"],
       ["working", "Working", working.length, jobs ? `${jobs} background job${jobs === 1 ? "" : "s"}` : "", "working"],
-      ["ready", "Ready to land", cards.filter((c) => c.prWaiting || c.column === "review").length, "", "done"],
+      ["ready", "Ready to land", cards.filter((c) => c.prWaiting || c.branchReady || c.column === "review").length, "", "done"],
       ["blocked", "Blocked", blocked.length, failed ? `${failed} failed` : "", "ansi1"],
     ];
     const blank = String.fromCharCode(0xa0); // keeps an empty sub-line one line tall
@@ -2408,6 +2426,7 @@ export default class FmBoard extends View {
     const colDef = COLUMNS.find((k) => k.id === node.column);
     if (node.missing) return ["external", t.muted];
     if (showPrWaiting && node.prWaiting) return ["PR waiting", t.done];
+    if (showPrWaiting && node.branchReady) return ["Ready branch", t.done];
     if (node.failed) return ["failed", t.ansi1];
     if (node.column === "queued") {
       return (node.waitingIds?.length ?? 0) > 0 ? ["waiting", t.blocked] : ["ready", colDef ? t[colDef.color] : t.muted];

@@ -2968,3 +2968,85 @@ test("preview props open Focus on a card or point at one, for screenshots withou
   const ring = point.items.find((x) => x.id === "card-maple-tour-sketch").calls.findLast((c) => c[0] === "border_color")[1];
   assert.equal(ring, theme.blocked);
 });
+
+test("local-only done tasks count as Ready to land until landed, while PR and scout cases stay unchanged", async () => {
+  const makeTask = (id, { kind = "ship", mode = "local-only", state = "done", detail = "ready", prUrl = null, lastEvent = "" } = {}) => ({
+    id, kind, project: `${HOME}/projects/maple-workshop`, branch: `fm/${id}`, harness: "claude", backend: "hc",
+    mode, yolo: false, spawn_gen: "s1", remote: null, secondmate_projects: [],
+    paths: { home: HOME, meta: "", status_log: "", worktree: { path: "", present: false }, report: { path: "", present: false } },
+    current_state: { state, source: state === "done" ? "status-log" : "none", detail, raw: detail, observed_at: "2026-11-17T03:00:00Z", freshness: "fresh" },
+    endpoint: { target: null, exists: false, agent_alive: "not_checked", status: "absent", observed_at: "2026-11-17T03:00:00Z", freshness: "fresh" },
+    pr: { url: prUrl, source: prUrl ? "status_event" : "absent", head: null },
+    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: lastEvent },
+    actions: { watch: "", steer: "", return_channel_note: null },
+    backlog: { id, state: "in_flight", kind, repo: "maple-workshop", title: id },
+  });
+  const tasks = [
+    makeTask("local-ready", { mode: "local-only", state: "done", detail: "ready on fm/local-ready" }),
+    makeTask("local-codex-ready", { mode: "local-only", state: "unknown", detail: "", lastEvent: "done [at=1]: ready on branch" }),
+    makeTask("local-landed", { mode: "local-only", state: "done", detail: "ready on fm/local-landed" }),
+    makeTask("local-working", { mode: "local-only", state: "working", detail: "implementing" }),
+    makeTask("pr-open", { mode: "no-mistakes", state: "done", detail: "checks green: PR ready", prUrl: "https://github.com/FlitCatz/maple-workshop/pull/91" }),
+    makeTask("pr-merged", { mode: "no-mistakes", state: "done", detail: "run passed: PR merged", prUrl: "https://github.com/FlitCatz/maple-workshop/pull/92" }),
+    makeTask("pr-review-col", { mode: "no-mistakes", state: "unknown", detail: "", prUrl: "https://github.com/FlitCatz/maple-workshop/pull/93", lastEvent: "done: PR ready" }),
+    makeTask("scout-done", { kind: "scout", mode: "", state: "done", detail: "report ready" }),
+    makeTask("scout-local-mode", { kind: "scout", mode: "local-only", state: "done", detail: "report ready" }),
+  ];
+  const records = tasks.map((t) => ({
+    id: t.id, state: t.id === "local-landed" ? "done" : "in_flight", kind: t.kind, repo: "maple-workshop", title: t.id, structured: true,
+  }));
+  const theme = { blocked: "#c93c2c", done: "#16a34a" };
+  const b = await board({
+    theme,
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records } },
+  });
+  const card = (id) => b.view.cards.find((c) => c.id === id);
+  const badge = (id) => b.items.find((x) => x.id === `ready-${id}`);
+
+  // Local-only done & not landed -> Ready branch in the same column/styling as PR waiting.
+  assert.equal(card("local-ready").column, "done");
+  assert.equal(card("local-ready").branchReady, true);
+  assert.equal(card("local-ready").prWaiting, false);
+  assert.equal(badge("local-ready")?.text, "Ready branch");
+  assert.equal(badge("local-ready")?.calls.findLast((c) => c[0] === "text_color")?.[1], theme.blocked);
+  assert.ok(!b.ids.includes("pr-local-ready"));
+
+  // Unobservable local-only done & not landed -> Review column with Ready branch badge, counted once.
+  assert.equal(card("local-codex-ready").column, "review");
+  assert.equal(card("local-codex-ready").branchReady, true);
+  assert.equal(badge("local-codex-ready")?.text, "Ready branch");
+
+  // Local-only landed -> Done, no badge.
+  assert.equal(card("local-landed").column, "done");
+  assert.equal(card("local-landed").branchReady, false);
+  assert.equal(badge("local-landed"), undefined);
+
+  // Local-only still working -> Working, not ready.
+  assert.equal(card("local-working").column, "working");
+  assert.equal(card("local-working").branchReady, false);
+
+  // PR cases unchanged.
+  assert.equal(card("pr-open").column, "done");
+  assert.equal(card("pr-open").prWaiting, true);
+  assert.equal(card("pr-open").branchReady, false);
+  assert.equal(badge("pr-open")?.text, "PR waiting");
+  assert.equal(badge("pr-open")?.calls.findLast((c) => c[0] === "text_color")?.[1], theme.blocked);
+  assert.equal(card("pr-merged").prWaiting, false);
+  assert.equal(badge("pr-merged"), undefined);
+  assert.equal(card("pr-review-col").column, "review");
+  assert.equal(card("pr-review-col").prWaiting, false);
+  assert.equal(card("pr-review-col").branchReady, false);
+
+  // Scout done without PR -> Done, not ready.
+  assert.equal(card("scout-done").column, "done");
+  assert.equal(card("scout-done").prWaiting, false);
+  assert.equal(card("scout-done").branchReady, false);
+  assert.equal(badge("scout-done"), undefined);
+  assert.equal(card("scout-local-mode").column, "done");
+  assert.equal(card("scout-local-mode").branchReady, false);
+
+  // Ready to land counts: local-ready (1) + local-codex-ready (1) + pr-open (1) + pr-review-col (1) = 4.
+  assert.match(b.text("today-ready"), /^Ready to land 4\s*$/);
+  assert.deepEqual([...b.view.nodeStatus(card("local-ready"), theme, true)], ["Ready branch", theme.done]);
+  assert.deepEqual([...b.view.nodeStatus(card("pr-open"), theme, true)], ["PR waiting", theme.done]);
+});

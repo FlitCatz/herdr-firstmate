@@ -2485,6 +2485,46 @@ test("Chains grows fan-in cards so every port keeps the full step and every arro
   assert.equal(assertCleanRouting(b, layout, "six blockers"), 0);
 });
 
+test("the wide Chains grid draws a six-blocker card tall enough for its arrowheads and its gutters wide enough for their turns", async () => {
+  const roots = ["B0", "B1", "B2", "B3", "B4", "B5"];
+  const records = [
+    ...roots.map((id) => ({ id, state: "queued", repo: "maple-workshop", title: id, structured: true, unresolved_blocker_ids: [] })),
+    { id: "T", state: "queued", repo: "maple-workshop", title: "T", structured: true, unresolved_blocker_ids: roots },
+  ];
+  const b = await board({ ui: { viewMode: "chains" }, snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } } });
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  const call = (el, name) => el?.calls?.findLast((c) => c[0] === name)?.[1];
+  const item = (id) => b.items.find((x) => x.id === id);
+  const comp = b.view.visibleChains()[0];
+
+  // Every arrowhead into T ends above where T's rounded bottom corner begins, on the card as drawn.
+  const card = item("chain-node-T");
+  const minH = call(card, "min_h");
+  const radius = call(card, "rounded");
+  assert.ok(minH > 0 && radius > 0, "T is drawn with a minimum height and rounded corners");
+  const heads = roots.map((u) => item(`chain-edge-${u}-T-head`));
+  assert.equal(heads.filter(Boolean).length, 6, "T draws all six arrowheads");
+  for (const head of heads) {
+    assert.ok(call(head, "top") + call(head, "h") <= minH - radius, `${head.id} ends at ${call(head, "top") + call(head, "h")}px on a ${minH}px card`);
+  }
+
+  // Each gutter is drawn wider than the old 44px and fits every turn it draws, spread out and left of the arrowheads.
+  const headW = call(heads[0], "w");
+  const gutters = b.items.filter((x) => x.id.startsWith(`chain-gutter-${comp.id}-`));
+  assert.ok(gutters.length > 0);
+  for (const gutter of gutters) {
+    const w = call(gutter, "w");
+    assert.ok(w > 44, `${gutter.id} is ${w}px wide`);
+    const turns = gutter.childIds.map(item).filter((x) => x.id.includes("-vbar-")).map((x) => call(x, "left"));
+    const xs = [...new Set(turns)].sort((x, y) => x - y);
+    for (let i = 1; i < xs.length; i++) assert.ok(xs[i] - xs[i - 1] > 16, `${gutter.id} turns at ${xs}`);
+    for (const x of xs) assert.ok(x > 0 && x + b.CHAIN_R + 1 < w - headW, `${gutter.id} turn at ${x} fits its ${w}px`);
+  }
+  const firstRow = gutters.find((x) => x.id === `chain-gutter-${comp.id}-0-0`);
+  assert.equal(new Set(firstRow.childIds.map(item).filter((x) => x.id.includes("-vbar-")).map((x) => call(x, "left"))).size, 5);
+});
+
 test("Chains keeps a join's arrowheads apart even when a card elsewhere in the lane unblocks many", async () => {
   const b = await board();
   const { cardsFrom, dependencyGraph, placeChainLane, CHAIN_HEAD_H } = b;

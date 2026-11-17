@@ -1188,6 +1188,9 @@ export default class FmBoard extends View {
     this.focusMode = false;
     /** @type {string | null} */
     this.focusId = null;
+    // The card a reference such as the NEXT MOVE card line brought into view, ringed until Escape.
+    /** @type {string | null} */
+    this.pointedId = null;
     // Folds and collapsed columns an inspector click shows open for now, without saving them.
     /** @type {Set<string>} */
     this.revealed = new Set();
@@ -1859,8 +1862,9 @@ export default class FmBoard extends View {
     const dimmed = Boolean(this.highlight?.dimmedIds?.has(c.id)) && !current;
     const roleBorder = role === "selected" ? t.accent : role === "upstream" ? t.working : role === "downstream" ? t.ansi6 : null;
     const pinnedBorder = pinnedRole === "selected" || pinnedRole === "upstream" || pinnedRole === "downstream";
-    // In Focus the card j/k reached is ringed, and every card that is not the captain's call steps back.
-    const focusSel = this.focusMode && this.focusId === c.id;
+    // The card j/k reached in Focus, or the one a reference brought into view, is ringed;
+    // in Focus every card that is not the captain's call steps back.
+    const focusSel = (this.focusMode && this.focusId === c.id) || this.pointedId === c.id;
     const focusDim = this.focusMode && !needsCaptain(c);
     const borderWidth = current || pinnedBorder || focusSel ? 2 : 1;
     // A failed card keeps its red border unless the card is the current search match or sits on a highlighted chain.
@@ -2068,8 +2072,10 @@ export default class FmBoard extends View {
         .child(div().min_w(0).truncate().text_size(this.fs(10)).text_color(t.dim).child(sub || blank))));
   }
 
-  // The longest-waiting hold to answer now, as the board's one filled band. Its options and
-  // Write answer put the same drafts in the firstmate input as the Held card does.
+  // The longest-waiting hold to answer now, at the top of the board in the Ledger idiom: a hairline
+  // frame with a bar in the held status color. Its first line names the card the decision comes
+  // from and brings that card into view; its options and Write answer put the same drafts in the
+  // firstmate input as the Held card does.
   /** @param {Record<string, string>} t @param {any[]} holds */
   nextMove(t, holds) {
     const c = holds[0];
@@ -2078,36 +2084,54 @@ export default class FmBoard extends View {
     const options = c.decision?.options ?? [];
     const rec = this.recommendedOption(c.decision);
     const age = waitAge(c.heldSince, Date.now());
-    const fg = t.solid_foreground, soft = fg + "a6";
-    const action = (id, label, tooltip, onClick, filled, ghost) => h_flex().id(id).flex_none().gap(6).items_center()
-      .px(10).py(6).rounded(6).cursor_pointer().border(1)
-      .border_color(filled ? fg : ghost ? t.solid : fg + "48").bg(filled ? fg : t.solid)
-      .text_size(this.fs(11.5)).font_semibold().text_color(filled ? t.solid : ghost ? soft : fg)
-      .hover((s) => s.opacity(0.85)).tooltip(tooltip)
+    const action = (id, label, tooltip, onClick, primary) => h_flex().id(id).flex_none().gap(6).items_center()
+      .px(8).py(4).rounded(3).cursor_pointer().border(1).border_color(primary ? t.solid : t.border)
+      .bg(primary ? t.solid : t.raised).text_size(this.fs(11.5)).text_color(primary ? t.solid_foreground : t.foreground)
+      .hover((s) => s.opacity(0.8)).tooltip(tooltip)
       .on_click((_e, cx) => onClick(cx))
       .children(label.map((x) => (typeof x === "string" ? div().child(x) : x)));
-    const letter = (o, filled) => div().font_family(DATA_FONT).font_weight(500).text_color(filled ? t.solid + "8c" : fg + "99").child(o.label);
-    return h_flex().id("next-move").flex_none().flex_wrap().gap(14).items_center().px(14).py(11).rounded(8).bg(t.solid)
+    const letter = (o, primary) => div().font_family(DATA_FONT).font_semibold()
+      .text_color(primary ? t.solid_foreground : t.accent).child(o.label);
+    return h_flex().id("next-move").relative().flex_none().flex_wrap().gap(14).items_center()
+      .pl(14 + CARD_BAR_PX).pr(12).py(10).rounded(8).bg(t.background).border(1).border_color(t.border)
+      .child(div().id("next-move-bar").absolute().left(0).top(0).bottom(0).w(CARD_BAR_PX).rounded_l(8).bg(t.blocked))
       .child(v_flex().flex_1().min_w(240).gap(5)
-        .child(h_flex().gap(8).items_center().min_w(0).flex_wrap()
-          .child(this.projectBadge(c.project || "firstmate", t, `next-tag-${c.id}`))
-          .child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).text_color(soft).child(c.id))
-          .when(Boolean(age), (e) => e.child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).text_color(fg)
-            .child(`waiting ${age}`)))
-          .child(div().flex_none().text_size(this.fs(11)).text_color(soft).child(`Next move, 1 of ${holds.length}`)))
-        .child(div().id("next-move-question").text_size(this.fs(15)).font_semibold().text_color(fg)
+        .child(h_flex().gap(8).items_center().min_w(0)
+          .child(h_flex().id("next-move-card").flex_1().min_w(0).gap(8).items_center().cursor_pointer()
+            .hover((s) => s.opacity(0.75)).tooltip(`Show ${c.id} on the board`)
+            .on_click((_e, cx) => this.revealCard(c.id, cx))
+            .child(this.projectBadge(c.project || "firstmate", t, `next-tag-${c.id}`))
+            .child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).text_color(t.dim).child(c.id))
+            .child(div().min_w(0).truncate().text_size(this.fs(11.5)).font_semibold().text_color(t.muted).child(c.title)))
+          .when(Boolean(age), (e) => e.child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).font_semibold()
+            .text_color(t.blocked).child(`waiting ${age}`)))
+          .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(`Next move, 1 of ${holds.length}`)))
+        .child(div().id("next-move-question").text_size(this.fs(14)).font_semibold().text_color(t.foreground)
           .child(c.decision?.question || c.detail || c.title)))
       .child(h_flex().flex_none().gap(6).items_center().flex_wrap()
         .children(options.map((o) => {
-          const filled = o === rec;
-          return action(`next-opt-${o.label}`, [letter(o, filled), o.text], "Put this answer in the firstmate input",
-            (cx) => this.answerOption(ids, o, "", cx), filled, false);
+          const primary = o === rec;
+          return action(`next-opt-${o.label}`, [letter(o, primary), o.text], "Put this answer in the firstmate input",
+            (cx) => this.answerOption(ids, o, "", cx), primary);
         }))
         .child(action("next-write", ["Write answer"], "Start an answer in the firstmate input",
-          (cx) => this.insertCardText(answerHead(ids), cx), false, true))
+          (cx) => this.insertCardText(answerHead(ids), cx), false))
         .when(Boolean(c.terminal), (e) => e.child(action("next-worker",
-          [svg("mods/workspace-chrome/terminal.svg").size(this.fs(14)).text_color(soft), "Worker"], "Open worker",
-          (cx) => this.openWorker(c, cx), false, true))));
+          [svg("mods/workspace-chrome/terminal.svg").size(this.fs(14)).text_color(t.muted), "Worker"], "Open worker",
+          (cx) => this.openWorker(c, cx), false))));
+  }
+
+  // Brings a card on the Kanban board into view and rings it until Escape, for a reference
+  // such as the NEXT MOVE card line.
+  /** @param {string} id @param {import("gpui-kit").Context} cx */
+  revealCard(id, cx) {
+    const card = (this.cards ?? []).find((c) => c.id === id);
+    if (!card) return;
+    if (this.viewMode !== "kanban") this.setViewMode("kanban", cx);
+    this.pointedId = id;
+    this.keys.focus();
+    this.showCard(card, cx);
+    cx.notify();
   }
 
   // The captain's calls in the order Kanban draws them; Focus steps through these.
@@ -2320,14 +2344,19 @@ export default class FmBoard extends View {
     this.inspectorOpen = true;
     this.keys.focus();
     const card = (this.cards ?? []).find((c) => c.id === id);
-    if (card) {
-      if (this.filter && this.filter !== card.project) this.filter = null;
-      if (this.query && !searchText(card).includes(this.query.toLowerCase())) this.clearSearch(cx);
-      this.revealed = new Set([`card:${id}`, card.column]);
-      if (card.decision?.topic) this.revealed.add(`group:${card.decision.topic}`);
-      this.scrollToCard(card);
-    }
+    if (card) this.showCard(card, cx);
     cx.notify();
+  }
+
+  // Shows a card wherever a filter, search, or fold hides it, without saving those folds, and
+  // scrolls to it.
+  /** @param {any} card @param {import("gpui-kit").Context} cx */
+  showCard(card, cx) {
+    if (this.filter && this.filter !== card.project) this.filter = null;
+    if (this.query && !searchText(card).includes(this.query.toLowerCase())) this.clearSearch(cx);
+    this.revealed = new Set([`card:${card.id}`, card.column]);
+    if (card.decision?.topic) this.revealed.add(`group:${card.decision.topic}`);
+    this.scrollToCard(card);
   }
 
   // Brings a card's column on screen in the stacked board, or its entry (a card, a topic group,
@@ -3516,6 +3545,7 @@ export default class FmBoard extends View {
       .track_focus(this.keys)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && (this.inspectorOpen || this.selectedCardId)) { this.clearChainSelection(cx); cx.stop_propagation(); }
+        else if (e.key === "escape" && this.pointedId) { this.pointedId = null; cx.notify(); cx.stop_propagation(); }
         else if (this.focusKey(e, cx)) cx.stop_propagation();
       });
     // Focus keeps only the captain's calls at full strength; the rest of the Board steps back.

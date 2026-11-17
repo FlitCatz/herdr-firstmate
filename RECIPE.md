@@ -24,7 +24,9 @@ The board uses the Ledger look, which it shares with the separate PR viewer mod.
 The Today strip shows five counts with one line under each.
 `Done today` counts finished backlog items whose merged, reported, or done date is today in Korea time.
 `Waiting on you` counts holds to answer now and shows the oldest one's wait, `Working` counts working cards and their background jobs, `Ready to land` counts cards in Review or with a PR waiting, and `Blocked` counts Blocked cards and how many failed.
-While a hold waits to be answered now, a NEXT MOVE band sits below the strip. It is filled with the theme's solid color, the board's only filled band, and shows the longest-waiting hold: its project, task id, wait, place among the holds to answer now, and question.
+While a hold waits to be answered now, a NEXT MOVE band sits below the strip. It is a plain frame on the theme's background with a bar in the held (blocked) color on its left edge, and it shows the longest-waiting hold to answer now.
+Its first line names the card the decision comes from: the project tag, task id, and title, then the wait and its place among the holds to answer now. Clicking that card line switches to Kanban if needed, shows the card where a filter, search, or fold hides it, scrolls to it, and rings it until `Esc`.
+The hold's question follows in the normal text color.
 Holds are ordered by the backlog's hold-set time, else their filing date, with ties kept in backlog order.
 
 ## How it behaves
@@ -78,7 +80,7 @@ The Ask icon inserts `` `[Board card] <ids>: <title or group question>` `` follo
 Clicking an open decision's text puts `[Board answer] <id> [key=<key>]: ` there, and clicking one of its options puts `[Board answer] <id> [key=<key>]: <label> (<option text>) `; the key names that one decision, so Firstmate can close it with `fm-send.sh --resolve-key <key>` even when the card has several.
 All these drafts stay on one line with a trailing space, and the input receives focus so you can keep typing.
 Held cards without options use the chat input for free-text answers; a hold's options outside the Held column are shown as plain text.
-The NEXT MOVE band's options put the same drafts in the chat input as the Held card's options, covering every hold to answer now that shares its topic. Its recommended option is filled, and `Write answer` starts a free-text draft. When the hold has a worker terminal, a `Worker` button opens it.
+The NEXT MOVE band's options put the same drafts in the chat input as the Held card's options, covering every hold to answer now that shares its topic. Its options are the board's ordinary raised buttons, with the recommended one as the solid primary button, and `Write answer` starts a free-text draft. When the hold has a worker terminal, a `Worker` button opens it.
 In Kanban, the toolbar's `Focus` button (or `F` while the Board itself has the keyboard) turns Focus on and off.
 Focus dims everything except the captain's calls (holds to answer now and failed workers) and rings the selected call, starting with the NEXT MOVE card. A key row under the search field lists its keys.
 `j`/`k` (or the arrow keys) move between the calls in drawing order, showing each card open and scrolling to it. When the call has a live worker terminal, Focus runs Herdr's peek of that terminal, which shows it over the tab beside the Board without taking the keyboard.

@@ -2705,6 +2705,9 @@ test("NEXT MOVE shows the longest-waiting hold to answer now, and its options ma
   // With equal filing dates the backlog order decides: the icon set comes first.
   const b = await board();
   assert.match(b.text("next-move"), /maple-icon-set .*Next move, 1 of 3 Choose an icon style/);
+  // The first line names the card the decision comes from: its tag, id, and title.
+  const title = b.view.cards.find((c) => c.id === "maple-icon-set").title;
+  assert.equal(b.text("next-move-card"), `${b.view.tags.get("maple-workshop")} maple-icon-set ${title}`);
   b.click("next-opt-A");
   b.click("next-write");
   assert.deepEqual(b.drafts, ["[Board answer] maple-icon-set: A (Rounded)", "[Board answer] maple-icon-set:"]);
@@ -2713,12 +2716,16 @@ test("NEXT MOVE shows the longest-waiting hold to answer now, and its options ma
   assert.match(stamped.text("next-move"), /maple-empty-state .*Choose the preview style/);
   stamped.click("next-opt-B");
   assert.deepEqual(stamped.drafts, ["[Board answer] maple-tour-sketch, maple-empty-state: B (Bright)"]);
-  // The recommended option is the filled one: the band's ink on the solid band.
-  const inked = await board({ theme: { solid: "#000000", solid_foreground: "#ffffff" } });
-  const fill = (id) => inked.items.find((x) => x.id === id).calls.find((c) => c[0] === "bg")[1];
-  assert.equal(fill("next-move"), "#000000");
-  assert.equal(fill("next-opt-A"), "#ffffff");
-  assert.equal(fill("next-opt-B"), "#000000");
+  // A plain Ledger frame, not an inverted band: the background, a bar in the held color, and the
+  // recommended option as the one primary (solid) button among raised ones.
+  const theme = { background: "#fefefe", solid: "#000000", raised: "#eeeeee", blocked: "#c93c2c", accent: "#1f62d0" };
+  const styled = await board({ theme });
+  const fill = (id) => styled.items.find((x) => x.id === id).calls.find((c) => c[0] === "bg")[1];
+  assert.equal(fill("next-move"), theme.background);
+  assert.equal(fill("next-move-bar"), theme.blocked);
+  assert.equal(fill("next-opt-A"), theme.solid);
+  assert.equal(fill("next-opt-B"), theme.raised);
+  assert.equal(fill("next-write"), theme.raised);
   // No hold to answer now, no banner.
   const none = await board({ snapshot: changedSnapshot((s) => {
     for (const id of ["maple-icon-set", "maple-tour-sketch", "maple-empty-state"]) record(s, id).hold_bucket = "aged";
@@ -2839,4 +2846,23 @@ test("below the board one tab strip holds Commands, Projects with its unhandled 
   assert.ok(b.ids.includes("checks-section"), "picking another tab unfolds the group");
   const again = await board({ store });
   assert.ok(again.ids.includes("checks-section"), "a new Board copy opens the remembered tab");
+});
+
+test("the NEXT MOVE card line brings its card into view on Kanban and rings it until Escape", async () => {
+  const theme = { accent: "#1f62d0", border: "#dddddd" };
+  const store = memoryStore();
+  const b = await board({ theme, store, ui: { viewMode: "chains" } });
+  b.view.folded.add("card:maple-icon-set");
+  b.view.collapsed.add("held");
+  b.redraw();
+  b.click("next-move-card");
+  assert.equal(b.view.viewMode, "kanban", "the Held card lives on Kanban");
+  const border = () => b.items.find((x) => x.id === "card-maple-icon-set").calls;
+  assert.ok(border().some((c) => c[0] === "border_color" && c[1] === theme.accent));
+  assert.ok(border().some((c) => c[0] === "border" && c[1] === 2));
+  assert.ok(b.ids.includes("age-maple-icon-set") || b.ids.includes("tag-maple-icon-set"), "the folded card and column show open");
+  assert.ok(b.scrollsOn("list-held").length > 0, "the Held list scrolls to it");
+  assert.ok(b.focusedOn("root"));
+  b.keyDown("root", "escape");
+  assert.ok(!border().some((c) => c[0] === "border_color" && c[1] === theme.accent));
 });

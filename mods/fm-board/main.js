@@ -521,9 +521,9 @@ function branchReady(record, task) {
   return false;
 }
 
-// "Waiting on <title>", or "Waiting on 2 · <first title>"; the card's own project name is
+// "<lead> <title>", or "<lead> 2 · <first title>"; the card's own project name is
 // dropped from the front of the title because the card already shows it. The dependency
-// badge leads with "← Waits on" instead.
+// badge leads with "← Waits on".
 function waitingLabel(c, lead = "Waiting on") {
   const strip = (title) => (c.project && title.startsWith(`${c.project} `) ? title.slice(c.project.length + 1) : title);
   const n = c.waitingOn.length;
@@ -1180,7 +1180,6 @@ export default class FmBoard extends View {
     this.size = null; this.collapsed = new Set(props()?.collapsed ?? this.loadSet(COLLAPSED_KEY));
     this.folded = new Set(ui.folded ?? this.loadSet(FOLDED_KEY));
     this.open = new Set(ui.open ?? []); this.filter = ui.filter ?? null;
-    this.chainOpen = new Set(ui.chains ?? []);
     this.viewMode = ui.viewMode === "chains" || ui.viewMode === "kanban"
       ? ui.viewMode
       : (this.loadText(VIEW_MODE_KEY) === "chains" ? "chains" : "kanban");
@@ -1866,7 +1865,7 @@ export default class FmBoard extends View {
     // A search shows matching cards open, without changing the remembered folds.
     const foldId = `card:${c.id}`, folded = this.folded.has(foldId) && !this.query && !this.revealed.has(foldId);
     const current = this.query && this.currentMatch === c.id;
-    // A queued card that still waits on other work is dimmed and says what it waits on.
+    // A queued card that still waits on other work is dimmed.
     const waiting = c.column === "queued" && c.waitingOn.length > 0;
     const hasDeps = (c.waitingOn?.length ?? 0) > 0 || (c.blocksCount ?? 0) > 0;
     const role = this.highlight?.roles?.get(c.id) ?? null;
@@ -1921,15 +1920,6 @@ export default class FmBoard extends View {
         .text_color(t.muted).tooltip(`Deferred until ${until}`).child(`until ${String(until).replace(/^\d{4}-/, "")}`)))
       .when(Boolean(age), (e) => e.child(div().id(`age-${c.id}`).flex_none().font_family(DATA_FONT).text_size(this.fs(11))
         .font_semibold().text_color(t.blocked).tooltip(`Waiting on you for ${age}`).child(age))));
-    if (waiting) {
-      const key = `chain:${c.id}`, shown = this.chainOpen.has(key);
-      el.child(div().id(`wait-${c.id}`).min_w(0).text_size(this.fs(11)).text_color(t.blocked).truncate()
-        .cursor_pointer().hover((st) => st.opacity(0.75))
-        .tooltip(shown ? "Hide the order" : "Show the order this task waits on")
-        .on_click((_e, cx) => { if (!this.chainOpen.delete(key)) this.chainOpen.add(key); cx.notify(); })
-        .child(`${shown ? "▾" : "▸"} ${waitingLabel(c)}`));
-      if (shown) el.child(this.chain(c, t));
-    }
     if (hasDeps) {
       const depRow = h_flex().id(`deps-${c.id}`).gap(4).items_center().flex_wrap().min_w(0);
       if ((c.waitingOn?.length ?? 0) > 0) {
@@ -3145,55 +3135,6 @@ export default class FmBoard extends View {
       this.tailNotes = notes;
       if (changed) cx.notify();
     });
-  }
-
-  // The order a waiting task depends on, drawn top-down: every unfinished task it waits on,
-  // grouped by how deep it sits in the chain, an arrow between levels, and the task itself
-  // last. Each step shows its live state, so the first thing that is actually moving is plain.
-  chain(c, t) {
-    const byId = new Map((this.cards ?? []).map((x) => [x.id, x]));
-    const ancestors = new Set();
-    const collect = (id) => {
-      for (const up of byId.get(id)?.waitingIds ?? []) if (!ancestors.has(up)) { ancestors.add(up); collect(up); }
-    };
-    collect(c.id);
-    const depth = new Map();
-    const level = (id, path = new Set()) => {
-      if (depth.has(id)) return depth.get(id);
-      if (path.has(id)) return 0; // a cycle in the records; never loop
-      path.add(id);
-      const ups = (byId.get(id)?.waitingIds ?? []).filter((u) => ancestors.has(u));
-      const d = ups.length ? 1 + Math.max(...ups.map((u) => level(u, path))) : 0;
-      depth.set(id, d);
-      return d;
-    };
-    const levels = [];
-    for (const id of ancestors) (levels[level(id)] ??= []).push(id);
-    const strip = (title) => (c.project && title.startsWith(`${c.project} `) ? title.slice(c.project.length + 1) : title);
-    const status = (x) => {
-      if (!x) return ["finished or unknown", t.muted];
-      if (x.failed) return ["failed", t.ansi1];
-      if (x.column === "queued") return x.waitingIds.length ? ["waiting", t.blocked] : ["ready", t.foreground];
-      const col = COLUMNS.find((k) => k.id === x.column);
-      return [x.column === "working" ? "working" : (x.state || x.column), t[col?.color] ?? t.muted];
-    };
-    const step = (id, self) => {
-      const x = byId.get(id);
-      const [label, color] = self ? ["this task", t.accent] : status(x);
-      return h_flex().gap(6).items_center().min_w(0)
-        .child(div().flex_none().w(6).h(6).rounded(3).bg(color))
-        .child(div().flex_1().min_w(0).text_size(this.fs(11)).truncate()
-          .text_color(self ? t.foreground : t.dim).when(self, (e) => e.font_semibold())
-          .child(strip(x?.title ?? id)))
-        .child(div().flex_none().text_size(this.fs(10)).text_color(color).child(label));
-    };
-    const arrow = () => div().pl(1).text_size(this.fs(11)).text_color(t.muted).child("↓");
-    const box = v_flex().gap(2).p(6).rounded(5).bg(t.raised).border(1).border_color(t.border);
-    levels.filter(Boolean).forEach((ids, i) => {
-      if (i) box.child(arrow());
-      box.child(v_flex().gap(2).children(ids.map((id) => step(id, false))));
-    });
-    return box.child(arrow()).child(step(c.id, true));
   }
 
   // One box per topic: the question and its options once, then every task it decides.

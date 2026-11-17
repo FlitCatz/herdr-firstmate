@@ -305,7 +305,7 @@ export class FolderViewer {
           .on_click((_e, cx) => this.target(s.path, s.title, cx)).child(s.label);
       })));
     }
-    return v_flex().id("viewer").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border(1).border_color(t.border).text_color(t.foreground)
+    return v_flex().id("viewer").size_full().min_h(0).rounded(8).overflow_hidden().bg(t.background).border(1).border_color(t.border).text_color(t.foreground)
       .child(header).child(this.tab === "files" ? this.filesBody(t, fs) : this.changesBody(t, fs));
   }
 }

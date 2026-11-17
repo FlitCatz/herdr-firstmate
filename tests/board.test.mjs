@@ -92,18 +92,24 @@ function geometry(items) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null, prViewer = false, rootLayout = null, terminals = [] } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
   const initEffects = [];
+  // Overlays the Board opened and Herdr commands it ran, in order.
+  const overlays = [];
+  const commands = [];
+  const sharedSet = [];
+  // One-shot timers the Board set after init, in order, so a test can let time pass.
+  const timers = [];
   const scrolled = [];
   const focused = [];
   const cx = {
     notify() {}, stop_propagation() {}, spawn(fn) { initEffects.push("spawn"); pending.push(fn(cx)); },
-    timer: { every() { initEffects.push("timer"); }, after() { initEffects.push("timer"); } },
+    timer: { every() { initEffects.push("timer"); }, after(ms, fn) { initEffects.push("timer"); timers.push({ ms, fn }); } },
     focus_handle() { const handle = { focus() { focused.push(handle); }, is_focused: () => focused.at(-1) === handle, release: () => true }; return handle; },
   };
   const input = () => { let text = ""; return { on() {}, value: () => text, set_value(v) { text = v; } }; };
@@ -117,10 +123,17 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
     props: () => ({ home: HOME, ...(preview ? { snapshot_file: snapshotFile } : {}), collapsed: [], ui }),
     checking: () => checkMode,
-    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
+    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => terminals, focused: () => null,
+    run: (name, args) => { commands.push({ name, args }); },
+    openOverlay: (spec) => { overlays.push(spec); return `overlay-${overlays.length}`; },
+    layout: () => rootLayout, setShared: (key, value) => { sharedSet.push({ key, value }); },
+    appHome: () => "/fictional/herdr-home",
     localStorage: store,
     readTextFile: async (file) => {
       initEffects.push("read");
+      if (file === "/fictional/herdr-home/mods/herdr-pr-viewer/mod.json") {
+        return prViewer ? "{}" : null;
+      }
       if (file === snapshotFile) return customSnapshot ? JSON.stringify(customSnapshot) : readFile(file, "utf8");
       if (file === `${HOME}/data/projects.md`) {
         if (registry.fails) throw new Error("registry unreadable");
@@ -188,7 +201,9 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     waitingLabel, blocksLabel, initEffects,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
-    click, hover, keyDown, scrolled, focused, drafts, opened, redraw,
+    click, hover, keyDown, scrolled, focused, drafts, opened, redraw, overlays, commands, sharedSet, timers,
+    // Waits for the tasks the Board started, such as a PR link's install check.
+    settle: () => Promise.all(pending),
     text: (id) => items.find((x) => x.id === id)?.text,
     // Every scroll so far, as its index when it went through the handle the drawn element with
     // this id tracks, so a scroll on any other handle (which moves nothing there) shows up.
@@ -334,7 +349,7 @@ const MANY_PROJECTS = ["maple-workshop", "orchard-atlas", "birch-ledger", "cedar
   "meadow-queue", "nettle-vault"];
 
 test("the Projects list is a scroll area that holds every project", async () => {
-  const b = await board({ projects: MANY_PROJECTS });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: MANY_PROJECTS });
   assert.deepEqual(b.ids.filter((id) => id.startsWith("ptag-")), MANY_PROJECTS.map((name) => `ptag-${name}`));
   const list = b.items.find((x) => x.id === "project-list");
   assert.ok(list, "no project-list drawn");
@@ -373,7 +388,7 @@ const tagColors = (items) => Object.fromEntries(items.filter((x) => x.id.startsW
   .map((x) => [x.id.slice(5), x.calls.find((c) => c[0] === "bg")[1]]));
 
 test("a project keeps its tag color when other projects are added or removed", async () => {
-  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"] });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"] });
   const before = tagColors(b.items);
   // aspen-docs sorts before every project, which used to move each one's place in the color list.
   const same = (colors, names) => names.every((name) => colors[name] === before[name]);
@@ -385,15 +400,15 @@ test("a project keeps its tag color when other projects are added or removed", a
 
 test("a fresh Board sharing the store keeps every saved project color", async () => {
   const store = memoryStore();
-  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
   b.view.projects.unshift({ name: "aspen-docs", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
   const before = tagColors(b.redraw());
-  const again = tagColors((await board({ projects: ["aspen-docs", "maple-workshop"], store })).items);
+  const again = tagColors((await board({ ui: { bottomTab: "projects" }, projects: ["aspen-docs", "maple-workshop"], store })).items);
   assert.deepEqual(again, { "aspen-docs": before["aspen-docs"], "maple-workshop": before["maple-workshop"] });
 });
 
 test("the first 14 projects get distinct palette colors in name order, and the 15th one from its name", async () => {
-  const b = await board({ projects: MANY_PROJECTS, store: memoryStore() });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: MANY_PROJECTS, store: memoryStore() });
   const palette = paletteOf(b);
   const colors = tagColors(b.items);
   const sorted = [...MANY_PROJECTS].sort();
@@ -408,7 +423,7 @@ test("the first 14 projects get distinct palette colors in name order, and the 1
 });
 
 test("a picked color holds its hue against new projects, and Auto returns to the saved color", async () => {
-  const b = await board({ store: memoryStore() });
+  const b = await board({ ui: { bottomTab: "projects" }, store: memoryStore() });
   const palette = paletteOf(b);
   assert.deepEqual(tagColors(b.items), { "maple-workshop": palette[0], "orchard-atlas": palette[1] });
   b.view.pickColor("maple-workshop", palette[2], { notify() {} });
@@ -420,7 +435,7 @@ test("a picked color holds its hue against new projects, and Auto returns to the
 
 test("a removed project frees its hue for the next new project, and no other color changes", async () => {
   const store = memoryStore();
-  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
   const palette = paletteOf(b);
   const before = tagColors(b.items);
   assert.deepEqual(before, { "birch-ledger": palette[0], "cedar-signal": palette[1], "maple-workshop": palette[2], "orchard-atlas": palette[3] });
@@ -430,13 +445,13 @@ test("a removed project frees its hue for the next new project, and no other col
   const after = tagColors(await b.reload());
   // cedar-signal's hue is the lowest free one, so the new project takes it even though it sorts last.
   assert.deepEqual(after, { "birch-ledger": palette[0], "maple-workshop": palette[2], "orchard-atlas": palette[3], "zinnia-board": palette[1] });
-  const again = tagColors((await board({ projects: ["birch-ledger", "maple-workshop", "orchard-atlas", "zinnia-board"], store })).items);
+  const again = tagColors((await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "maple-workshop", "orchard-atlas", "zinnia-board"], store })).items);
   assert.deepEqual(again, after);
 });
 
 test("a project removed from the registry keeps its hue while its cards remain", async () => {
   const store = memoryStore();
-  const b = await board({ projects: ["maple-workshop", "orchard-atlas", "birch-ledger"], store });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["maple-workshop", "orchard-atlas", "birch-ledger"], store });
   const palette = paletteOf(b);
   // maple-workshop still has cards in the snapshot.
   b.registry.projects = ["orchard-atlas", "birch-ledger"];
@@ -450,7 +465,7 @@ test("a project removed from the registry keeps its hue while its cards remain",
 
 test("an empty or failed registry read, or no read yet, frees no hue", async () => {
   const store = memoryStore();
-  const b = await board({ projects: ["birch-ledger", "maple-workshop", "orchard-atlas"], store });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "maple-workshop", "orchard-atlas"], store });
   const saved = store.getItem("autoProjectColors");
   b.registry.projects = [];
   await b.reload();
@@ -460,15 +475,15 @@ test("an empty or failed registry read, or no read yet, frees no hue", async () 
   assert.ok(b.view.error);
   assert.equal(store.getItem("autoProjectColors"), saved);
   // A Board whose first read fails has nothing on screen and must not touch the saved colors.
-  const fresh = await board({ projects: ["maple-workshop"], store, registryFails: true });
+  const fresh = await board({ ui: { bottomTab: "projects" }, projects: ["maple-workshop"], store, registryFails: true });
   assert.ok(fresh.view.error);
   assert.equal(store.getItem("autoProjectColors"), saved);
 });
 
 test("two Board copies sharing the store never overwrite each other's colors", async () => {
   const store = memoryStore();
-  const a = await board({ store });
-  const b = await board({ store });
+  const a = await board({ ui: { bottomTab: "projects" }, store });
+  const b = await board({ ui: { bottomTab: "projects" }, store });
   const palette = paletteOf(a);
   // Copy A sees zeta-tools first; copy B, which loaded before that, then sees alpha-notes and zeta-tools together.
   a.view.projects.push({ name: "zeta-tools", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
@@ -488,7 +503,7 @@ test("two Board copies sharing the store never overwrite each other's colors", a
 test("on a fresh store whose unset keys read as undefined, the first projects still get distinct saved colors", async () => {
   const data = new Map();
   const store = { getItem: (key) => data.get(key), setItem: (key, value) => { data.set(key, String(value)); } };
-  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
   const palette = paletteOf(b);
   const expected = { "birch-ledger": palette[0], "cedar-signal": palette[1], "maple-workshop": palette[2], "orchard-atlas": palette[3] };
   assert.deepEqual(tagColors(b.items), expected);
@@ -497,7 +512,7 @@ test("on a fresh store whose unset keys read as undefined, the first projects st
 
 test("a store that cannot be read or written still draws, with colors from the names", async () => {
   const broken = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("denied"); } };
-  const b = await board({ store: broken });
+  const b = await board({ ui: { bottomTab: "projects" }, store: broken });
   const palette = paletteOf(b);
   const expected = Object.fromEntries(["maple-workshop", "orchard-atlas"].map((name) => [name, palette[fnv1a(name) % palette.length]]));
   assert.deepEqual(tagColors(b.items), expected);
@@ -505,7 +520,7 @@ test("a store that cannot be read or written still draws, with colors from the n
 });
 
 test("a project's tag color is one of the palette colors, the same on its cards, and a picked color wins", async () => {
-  const b = await board({ projects: MANY_PROJECTS });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: MANY_PROJECTS });
   // The picker lists the palette only for an open project row.
   b.view.open.add("maple-workshop");
   const swatches = b.redraw().filter((x) => x.id.startsWith("color-maple-workshop-") && !x.id.endsWith("-auto"))
@@ -1230,7 +1245,7 @@ test("Chains view groups components, orders lanes by most blocking / deepest fir
   assert.ok(b.ids.indexOf("chain-branches-chain-1") > b.ids.indexOf("chain-spine-chain-1"));
 
   // Each node shows project, priority, status, and PR link when present.
-  assert.equal(b.text("cnode-tag-maple-theme-tokens"), b.text("ptag-maple-workshop"));
+  assert.equal(b.text("cnode-tag-maple-theme-tokens"), b.view.tags.get("maple-workshop"));
   assert.equal(b.text("cnode-prio-maple-theme-tokens"), "P0");
   assert.equal(b.text("cnode-status-maple-theme-tokens"), "working");
   assert.equal(b.text("cnode-pr-maple-theme-tokens"), "maple-workshop#42");
@@ -1662,7 +1677,7 @@ test("Registered checks section lists state/*.check.sh names and home-wide state
   // Viewer in Asia/Seoul (UTC+9): 2026-11-10T03:05:09Z -> 11-10 12:05:09.
   process.env.TZ = "Asia/Seoul";
   const store = memoryStore();
-  const b = await board({ exec: realChecksExec, store });
+  const b = await board({ ui: { bottomTab: "checks" }, exec: realChecksExec, store });
   assert.ok(b.ids.includes("checks-section"));
   assert.ok(b.ids.indexOf("checks-section") > b.ids.indexOf("board"), "registered checks belong in the monitoring area, not cards");
   assert.deepEqual(
@@ -1672,7 +1687,7 @@ test("Registered checks section lists state/*.check.sh names and home-wide state
   assert.equal(b.text("check-alpha-audit"), "alpha-audit");
   assert.equal(b.text("check-beta-sync"), "beta-sync");
   assert.equal(b.text("check-gamma-digest"), "gamma-digest");
-  assert.match(b.text("head-checks"), /^▾ Registered checks 3 /);
+  assert.equal(b.text("bottom-tab-checks"), "Checks 3");
   assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): 11-10 12:05:09");
   // Ensure no check script contents or private state file contents leaked into the rendered tree.
   const allText = b.items.map((x) => x.text).join(" ");
@@ -1691,13 +1706,13 @@ test("Registered checks section lists state/*.check.sh names and home-wide state
   await b.reload();
   assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): 07:08:09");
 
-  // Collapsing the section hides rows, keeps Last sweep visible in the header, and saves state.
-  b.click("head-checks");
+  // Clicking the open Checks tab folds the tab group away, keeps the count on the tab, and saves state.
+  b.click("bottom-tab-checks");
   assert.ok(!b.ids.includes("checks-list"));
   assert.ok(!b.ids.includes("check-alpha-audit"));
-  assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): 07:08:09");
-  assert.deepEqual(JSON.parse(store.getItem("collapsed")), ["checks"]);
-  b.click("head-checks");
+  assert.equal(b.text("bottom-tab-checks"), "Checks 3");
+  assert.deepEqual(JSON.parse(store.getItem("collapsed")), ["bottom"]);
+  b.click("bottom-tab-checks");
   assert.ok(b.ids.includes("check-alpha-audit"));
 
   // Missing state/.last-check shows Not recorded; empty checks shows No registered checks.
@@ -1708,19 +1723,20 @@ test("Registered checks section lists state/*.check.sh names and home-wide state
   await b.reload();
   assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): Not recorded");
   assert.equal(b.text("checks-list"), "No registered checks");
-  assert.match(b.text("head-checks"), /^▾ Registered checks 0 /);
+  assert.equal(b.text("bottom-tab-checks"), "Checks 0");
 });
 
 test("Registered checks section reports a failed read instead of claiming no checks or no sweep", async () => {
-  const failed = await board({
+  const failed = await board({ ui: { bottomTab: "checks" },
     exec: async () => ({ code: 1, stdout: "", stderr: "permission denied" }),
   });
   assert.equal(failed.view.error, null);
   assert.equal(failed.text("checks-list"), "Could not read registered checks");
   assert.equal(failed.text("checks-last-sweep"), "Last sweep (all checks): Could not read");
-  assert.match(failed.text("head-checks"), /^▾ Registered checks Last sweep/);
+  // A failed read claims no count on the tab.
+  assert.equal(failed.text("bottom-tab-checks"), "Checks");
 
-  const rejected = await board({
+  const rejected = await board({ ui: { bottomTab: "checks" },
     exec: async (cmd, args) => {
       if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") throw new Error("timed out");
       return { code: 1, stdout: "", stderr: "" };
@@ -1738,7 +1754,7 @@ test("Registered checks section reports an unlistable state folder as a failed r
   await writeFile(join(stateDir, ".last-check"), "");
   await chmod(stateDir, 0o000);
   t.after(async () => { await chmod(stateDir, 0o755); await rm(tempHome, { recursive: true, force: true }); });
-  const b = await board({
+  const b = await board({ ui: { bottomTab: "checks" },
     exec: async (cmd, args) => {
       if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") {
         try {
@@ -1757,7 +1773,7 @@ test("Registered checks section reports an unlistable state folder as a failed r
 });
 
 test("Registered checks section is read even when the first refresh fails before the inbox", async () => {
-  const b = await board({
+  const b = await board({ ui: { bottomTab: "checks" },
     registryFails: true,
     exec: async (cmd, args) => {
       if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") {
@@ -1807,6 +1823,7 @@ async function tabs({ saved = null, checkMode = false, spaceList = [], paneList 
       return scrolls.map((s) => s.handle === handle ? s.idx : `other handle at ${s.idx}`);
     },
     text: (id) => items.find((x) => x.id === id)?.text,
+    get ids() { return items.map((x) => x.id); },
     click(id) { items.find((x) => x.id === id).click(); },
     wheel(delta, at, extra = {}) { now = at; handler(null, "on_scroll_wheel")({ delta: { x: 0, y: delta }, touch_phase: "moved", ...extra }); },
     resize(id) { handler(id, "on_size_change")({}, { notify() {} }); },
@@ -1834,6 +1851,23 @@ test("tabs keep the Board control and restore Board as a saved panel", async () 
   t.click("panel-board");
   assert.equal(t.actions.at(-2).args.child, "board");
   assert.equal(t.actions.at(-1).action, "layout.show");
+});
+
+test("tabs show a PR button beside Board only when the layout gives the PR viewer a panel slot", async () => {
+  const spaceList = [{ id: "s1", active: true, tabs: [] }];
+  const without = await tabs({ spaceList, rootLayout: { children: [{ id: "panel", hidden: true }, { id: "panel-body", active: "files" }] } });
+  assert.ok(!without.ids.includes("panel-pr"));
+  const withPr = await tabs({ spaceList, rootLayout: { children: [{ id: "panel", hidden: true },
+    { id: "panel-body", active: "files", children: [{ id: "files" }, { id: "changes" }, { id: "board" }, { id: "pr" }] }] } });
+  assert.equal(withPr.text("panel-pr"), "PR");
+  assert.equal(withPr.ids.indexOf("panel-pr") + 1, withPr.ids.indexOf("panel-board"), "PR sits right before Board");
+  withPr.click("panel-pr");
+  assert.deepEqual(JSON.parse(JSON.stringify(withPr.actions.slice(-2).map((x) => [x.action, x.args]))),
+    [["layout.select", { stack: "panel-body", child: "pr" }], ["layout.show", { id: "panel" }]]);
+  // A space that last showed the PR panel gets it back.
+  const restored = await tabs({ saved: '{"s1":"pr"}', spaceList, rootLayout: { children: [{ id: "panel", hidden: true },
+    { id: "panel-body", active: "files", children: [{ id: "board" }, { id: "pr" }] }] } });
+  assert.equal(restored.actions[0].args.child, "pr");
 });
 
 test("Herdr check renders tabs without reading or saving panels or changing the layout", async () => {
@@ -2620,4 +2654,317 @@ test("Chains dims every connector piece of an unselected chain, including lines 
   const pieces = maplePieces();
   assert.ok(pieces.length > 0);
   for (const piece of pieces) assert.ok(shown(piece) <= 0.45, `${piece.id} is dimmed with its chain (${shown(piece)})`);
+});
+
+// The fixture with changes, without touching the shared copy.
+/** @param {(s: any) => void} change */
+function changedSnapshot(change) {
+  const copy = JSON.parse(JSON.stringify(snapshot));
+  change(copy);
+  return copy;
+}
+const record = (s, id) => s.backlog.records.find((r) => r.id === id);
+const opacityOf = (b, id) => b.items.find((x) => x.id === id)?.calls.findLast((c) => c[0] === "opacity")?.[1] ?? 1;
+const koreaToday = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+
+test("the Today strip counts what landed today, what waits on the captain, what runs, what is ready, and what is blocked", async () => {
+  const task = (s, id) => s.tasks.find((t) => t.id === id);
+  // The fixture's five workers, placed by hand: maple-preview-screen works, idle in its terminal
+  // while a test run continues; maple-theme-tokens finished with an open PR and maple-button-labels
+  // reported done with a PR, both ready to land; orchard-nav-style reported blocked and
+  // orchard-export-check failed, both blocked.
+  const changed = changedSnapshot((s) => {
+    record(s, "orchard-seed-data").completion = { verb: "merged", date: koreaToday() };
+    Object.assign(task(s, "maple-theme-tokens").current_state, { state: "done", detail: "finished" });
+    const labels = task(s, "maple-button-labels");
+    Object.assign(labels.hints, { pending_decision: false, open_decisions: [], last_event_text: "done: labels shipped" });
+    labels.pr.url = "https://github.com/FlitCatz/maple-workshop/pull/43";
+    task(s, "orchard-nav-style").hints.pending_decision = false;
+    Object.assign(task(s, "orchard-export-check").current_state, { state: "failed", detail: "mirror check failed" });
+  });
+  const exec = async (cmd) => (cmd === "/bin/ps"
+    ? { code: 0, stdout: "500 1 claude\n501 500 node --test tests/\n", stderr: "" }
+    : { code: 1, stdout: "", stderr: "" });
+  const b = await board({ snapshot: changed, exec,
+    terminals: [{ address: "t1", state: "live", status: "idle", pid: 500, labels: { "firstmate.task": "fm-maple-preview-screen" } }] });
+  const listings = [];
+  b.view.readBackground({ notify() {}, spawn: (fn) => listings.push(fn({ notify() {} })) });
+  await Promise.all(listings);
+  b.redraw();
+  const cell = (id) => b.text(`today-${id}`);
+  assert.match(cell("done"), /^Done today 1/);
+  // The three holds to answer now; held-since falls back to the filing date, days ago.
+  assert.match(cell("waiting"), /^Waiting on you 3 oldest \d+d$/);
+  assert.equal(cell("working"), "Working 1 1 background job");
+  assert.match(cell("ready"), /^Ready to land 2\s*$/);
+  assert.equal(cell("blocked"), "Blocked 2 1 failed");
+  // A finished item from another day is not today's.
+  const old = await board();
+  assert.match(old.text("today-done"), /^Done today 0/);
+});
+
+test("NEXT MOVE shows the longest-waiting hold to answer now, and its options make the Held card's drafts", async () => {
+  // With equal filing dates the backlog order decides: the icon set comes first.
+  const b = await board();
+  assert.match(b.text("next-move"), /maple-icon-set .*Next move, 1 of 3 Choose an icon style/);
+  // The first line names the card the decision comes from: its tag, id, and title.
+  const title = b.view.cards.find((c) => c.id === "maple-icon-set").title;
+  assert.equal(b.text("next-move-card"), `${b.view.tags.get("maple-workshop")} maple-icon-set ${title}`);
+  b.click("next-opt-A");
+  b.click("next-write");
+  assert.deepEqual(b.drafts, ["[Board answer] maple-icon-set: A (Rounded)", "[Board answer] maple-icon-set:"]);
+  // A stamped hold that has waited longest wins, and a topic's answer covers every hold sharing it.
+  const stamped = await board({ snapshot: changedSnapshot((s) => { record(s, "maple-empty-state").hold_set = "2026-11-01T08:00:00Z"; }) });
+  assert.match(stamped.text("next-move"), /maple-empty-state .*Choose the preview style/);
+  stamped.click("next-opt-B");
+  assert.deepEqual(stamped.drafts, ["[Board answer] maple-tour-sketch, maple-empty-state: B (Bright)"]);
+  // A plain Ledger frame, not an inverted band: the background, a bar in the held color, and the
+  // recommended option as the one primary (solid) button among raised ones.
+  const theme = { background: "#fefefe", solid: "#000000", raised: "#eeeeee", blocked: "#c93c2c", accent: "#1f62d0" };
+  const styled = await board({ theme });
+  const fill = (id) => styled.items.find((x) => x.id === id).calls.find((c) => c[0] === "bg")[1];
+  assert.equal(fill("next-move"), theme.background);
+  assert.equal(fill("next-move-bar"), theme.blocked);
+  assert.equal(fill("next-opt-A"), theme.solid);
+  assert.equal(fill("next-opt-B"), theme.raised);
+  assert.equal(fill("next-write"), theme.raised);
+  // No hold to answer now, no banner.
+  const none = await board({ snapshot: changedSnapshot((s) => {
+    for (const id of ["maple-icon-set", "maple-tour-sketch", "maple-empty-state"]) record(s, id).hold_bucket = "aged";
+  }) });
+  assert.ok(!none.ids.includes("next-move"));
+  assert.match(none.text("today-waiting"), /^Waiting on you 0/);
+});
+
+test("for a topic whose oldest hold lists no options, NEXT MOVE and Focus Enter answer with the topic's options", async () => {
+  // The oldest preview-style hold only points at its sibling, which carries the question and options.
+  const snapshot = changedSnapshot((s) => {
+    record(s, "maple-tour-sketch").hold_reason = "[topic=preview-style] Same call as the empty state";
+    record(s, "maple-tour-sketch").hold_set = "2026-11-01T08:00:00Z";
+  });
+  const b = await board({ snapshot });
+  assert.match(b.text("next-move-card"), /maple-tour-sketch/);
+  assert.equal(b.text("next-move-question"), "Choose the preview style");
+  assert.ok(b.ids.includes("next-opt-A") && b.ids.includes("next-opt-B"));
+  assert.match(b.text("group-preview-style"), /Choose the preview style/);
+  b.click("next-opt-A");
+  assert.deepEqual(b.drafts, ["[Board answer] maple-tour-sketch, maple-empty-state: A (Soft)"]);
+  const f = await board({ snapshot });
+  f.click("focus-toggle");
+  assert.equal(f.view.focusId, "maple-tour-sketch");
+  f.keyDown("root", "enter");
+  assert.deepEqual(f.drafts, ["[Board answer] maple-tour-sketch, maple-empty-state: A (Soft)"]);
+});
+
+test("every card carries a left bar in its column's status color, and a hold to answer now shows its wait", async () => {
+  const theme = { idle: "#111111", working: "#222222", blocked: "#333333", done: "#444444", ansi1: "#555555", unknown: "#666666" };
+  const b = await board({ theme,
+    snapshot: changedSnapshot((s) => { record(s, "maple-icon-set").hold_set = new Date(Date.now() - 135 * 60000).toISOString().slice(0, 19) + "Z"; }) });
+  const barColor = (id) => b.items.find((x) => x.id === `bar-${id}`)?.calls.find((c) => c[0] === "bg")?.[1];
+  assert.equal(barColor("maple-preview-screen"), theme.working);
+  assert.equal(barColor("maple-icon-set"), theme.blocked);
+  assert.equal(barColor("orchard-seed-data"), theme.done);
+  assert.equal(barColor("maple-card-layout"), theme.idle);
+  assert.equal(b.text("age-maple-icon-set"), "2h 15m");
+  // Deferred holds keep their date and show no wait.
+  assert.ok(!b.ids.includes("age-orchard-tile-refresh"));
+});
+
+test("Focus dims everything but the captain's calls, j/k move between them, and Enter drafts the recommended answer", async () => {
+  const b = await board();
+  // Keys reach Focus only while the Board itself holds the keyboard.
+  b.keyDown("root", "f");
+  assert.equal(b.view.focusMode, false);
+  b.click("focus-toggle");
+  assert.equal(b.view.focusMode, true);
+  assert.ok(b.focusedOn("root"));
+  assert.ok(b.ids.includes("focus-hint"));
+  assert.equal(b.view.focusId, "maple-icon-set");
+  assert.equal(opacityOf(b, "card-maple-preview-screen"), 0.22);
+  assert.equal(opacityOf(b, "card-maple-icon-set"), 1);
+  assert.equal(opacityOf(b, "card-orchard-tile-refresh"), 0.22, "a deferred hold steps back too");
+  b.keyDown("root", "j");
+  assert.equal(b.view.focusId, "maple-tour-sketch");
+  b.keyDown("root", "j"); b.keyDown("root", "j");
+  assert.equal(b.view.focusId, "maple-empty-state", "j stops at the last call");
+  b.keyDown("root", "k"); b.keyDown("root", "k");
+  assert.equal(b.view.focusId, "maple-icon-set");
+  b.keyDown("root", "enter");
+  assert.deepEqual(b.drafts, ["[Board answer] maple-icon-set: A (Rounded)"]);
+  b.keyDown("root", "escape");
+  assert.equal(b.view.focusMode, false);
+  assert.equal(opacityOf(b, "card-maple-preview-screen"), 1);
+  // Chains has no Focus.
+  b.keyDown("root", "f");
+  assert.equal(b.view.focusMode, true);
+  b.view.setViewMode("chains", { notify() {} });
+  assert.equal(b.view.focusMode, false);
+});
+
+test("in Focus a card inside a topic box with no captain's call is dimmed once, like any other card", async () => {
+  // Both preview-style holds deferred: their topic box holds no captain's call.
+  const b = await board({ snapshot: changedSnapshot((s) => {
+    for (const id of ["maple-tour-sketch", "maple-empty-state"]) record(s, id).hold_bucket = "aged";
+  }) });
+  b.click("focus-toggle");
+  assert.equal(b.view.focusMode, true);
+  assert.ok(b.items.find((x) => x.id === "group-preview-style").childIds.includes("card-maple-tour-sketch"));
+  // gpui-kit's opacity applies to the element and everything in it, so what shows is the product along the path.
+  const parentOf = (id) => b.items.find((x) => x.childIds.includes(id))?.id;
+  const shown = (id) => { let o = 1; for (let at = id; at; at = parentOf(at)) o *= opacityOf(b, at); return o; };
+  assert.equal(opacityOf(b, "group-preview-style"), 0.22, "the box itself steps back with its cards");
+  assert.equal(shown("card-maple-tour-sketch"), 0.22);
+  assert.equal(shown("card-maple-empty-state"), 0.22);
+  assert.equal(shown("card-maple-preview-screen"), 0.22);
+});
+
+test("a PR link shows the PR in the layout's PR panel, and in the browser without that panel or without the mod", async () => {
+  const opened = [];
+  const exec = async (cmd, args) => { if (cmd === "open") opened.push(args[0]); return { code: 1, stdout: "", stderr: "" }; };
+  const url = "https://github.com/FlitCatz/maple-workshop/pull/42";
+  const plain = (x) => JSON.parse(JSON.stringify(x));
+  const panelLayout = { id: "root", children: [{ id: "panel", hidden: true, children: [{ id: "panel-body", active: "board",
+    children: [{ id: "board" }, { id: "pr", content: { mod: "herdr-pr-viewer" } }] }] }] };
+  // The herdr-pr-viewer panel contract: one shared request with a fresh `at`, then the panel is selected and shown.
+  const before = Date.now();
+  const inPanel = await board({ prViewer: true, exec, rootLayout: panelLayout });
+  inPanel.click("pr-maple-theme-tokens");
+  await inPanel.settle();
+  const color = inPanel.view.colorOf("maple-workshop", {});
+  assert.equal(inPanel.sharedSet.length, 1);
+  const { key, value } = plain(inPanel.sharedSet[0]);
+  assert.equal(key, "herdr-pr-viewer.show");
+  assert.ok(value.at >= before && value.at <= Date.now(), "at is the click time");
+  assert.deepEqual({ ...value, at: 0 }, { url, task: "maple-theme-tokens · maple-workshop", badge: { text: "MAW", color }, at: 0 });
+  assert.deepEqual(plain(inPanel.commands), [
+    { name: "layout.select", args: { stack: "panel-body", child: "pr" } },
+    { name: "layout.show", args: { id: "panel" } },
+  ]);
+  assert.deepEqual(opened, []);
+  // Clicking again is a new request.
+  inPanel.click("pr-maple-theme-tokens");
+  await inPanel.settle();
+  assert.equal(inPanel.sharedSet.length, 2);
+  // A layout without the PR panel opens the link in the browser and changes nothing in Herdr.
+  const noPanel = await board({ prViewer: true, exec, rootLayout: { id: "root", children: [] } });
+  noPanel.click("pr-maple-theme-tokens");
+  await noPanel.settle();
+  assert.deepEqual(opened, [url]);
+  assert.deepEqual(noPanel.commands, []);
+  assert.equal(noPanel.sharedSet.length, 0);
+  // Without the mod (Herdr reads its missing mod.json as null), the panel stays untouched too.
+  const without = await board({ exec, rootLayout: panelLayout });
+  without.click("pr-maple-theme-tokens");
+  await without.settle();
+  assert.deepEqual(opened, [url, url]);
+  assert.deepEqual(without.commands, []);
+  assert.equal(without.sharedSet.length, 0);
+});
+
+test("below the board one tab strip holds Commands, Projects with its unhandled request count, and Checks", async () => {
+  const store = memoryStore();
+  const b = await board({ store });
+  // The group sits below the task board, Commands open by default, the status on the strip's right.
+  assert.ok(b.ids.indexOf("bottom-group") > b.ids.indexOf("board"));
+  assert.deepEqual(b.ids.filter((id) => id.startsWith("bottom-tab-")), ["bottom-tab-commands", "bottom-tab-projects", "bottom-tab-checks"]);
+  assert.ok(b.ids.includes("ask-memo") && !b.ids.includes("project-list") && !b.ids.includes("checks-list"));
+  assert.ok(b.ids.includes("refresh"), "the update time rides on the strip");
+  // Unhandled Board requests, such as Memos, stay counted on the Projects tab whichever tab is open.
+  assert.ok(!b.ids.includes("projects-pending"));
+  b.view.requests = [{ body: "[Board memo] project=maple-workshop: fictional note" }, { body: "[Board memo] project=(firstmate picks): another" }];
+  b.redraw();
+  assert.equal(b.text("projects-pending"), "2 pending");
+  // Picking a tab shows it and is remembered; clicking it again folds the group, keeping the count.
+  b.click("bottom-tab-projects");
+  assert.ok(b.ids.includes("project-list") && !b.ids.includes("ask-memo"));
+  assert.equal(store.getItem("bottomTab"), "projects");
+  b.click("bottom-tab-projects");
+  assert.ok(!b.ids.includes("project-list"));
+  assert.equal(b.text("projects-pending"), "2 pending");
+  b.click("bottom-tab-checks");
+  assert.ok(b.ids.includes("checks-section"), "picking another tab unfolds the group");
+  const again = await board({ store });
+  assert.ok(again.ids.includes("checks-section"), "a new Board copy opens the remembered tab");
+});
+
+test("the NEXT MOVE card line brings its card into view and rings it in the held color, apart from the hover accent", async () => {
+  const theme = { accent: "#1f62d0", blocked: "#c93c2c", border: "#dddddd" };
+  const b = await board({ theme, store: memoryStore(), ui: { viewMode: "chains" } });
+  b.view.folded.add("card:maple-icon-set");
+  b.view.collapsed.add("held");
+  b.redraw();
+  b.click("next-move-card");
+  assert.equal(b.view.viewMode, "kanban", "the Held card lives on Kanban");
+  const ring = (id) => {
+    const calls = b.items.find((x) => x.id === id).calls;
+    return { color: calls.findLast((c) => c[0] === "border_color")[1], width: calls.findLast((c) => c[0] === "border")[1] };
+  };
+  // The pointed card wears the NEXT MOVE band's held color, not the accent hover and selection use.
+  assert.deepEqual(ring("card-maple-icon-set"), { color: theme.blocked, width: 2 });
+  b.hover("card-maple-theme-tokens");
+  assert.deepEqual(ring("card-maple-theme-tokens"), { color: theme.accent, width: 1 }, "hovering a chain card keeps the accent");
+  assert.equal(ring("card-maple-icon-set").color, theme.blocked);
+  b.hover("card-maple-theme-tokens", false);
+  assert.ok(b.ids.includes("age-maple-icon-set") || b.ids.includes("tag-maple-icon-set"), "the folded card and column show open");
+  assert.ok(b.scrollsOn("list-held").length > 0, "the Held list scrolls to it");
+  assert.ok(b.focusedOn("root"));
+  // The ring clears by itself after a few seconds; an older timer leaves a newer point alone.
+  const first = b.timers.at(-1);
+  assert.equal(first.ms, 4000);
+  b.click("next-move-card");
+  first.fn({ notify() {} });
+  assert.equal(b.redraw() && ring("card-maple-icon-set").color, theme.blocked);
+  b.timers.at(-1).fn({ notify() {} });
+  b.redraw();
+  assert.deepEqual(ring("card-maple-icon-set"), { color: theme.border, width: 1 });
+  // Escape clears it sooner.
+  b.click("next-move-card");
+  b.keyDown("root", "escape");
+  assert.deepEqual(ring("card-maple-icon-set"), { color: theme.border, width: 1 });
+});
+
+test("Parked has its own status color, apart from Held, Blocked, Working, and Review", async () => {
+  const theme = { idle: "#111111", working: "#222222", blocked: "#333333", done: "#444444", ansi1: "#555555", ansi5: "#7a45c8", unknown: "#666666" };
+  const b = await board({ theme });
+  const headRule = (col) => b.items.find((x) => x.id === `head-${col}`).calls.findLast((c) => c[0] === "border_color")[1];
+  const bar = (id) => b.items.find((x) => x.id === `bar-${id}`).calls.find((c) => c[0] === "bg")[1];
+  assert.equal(b.view.cards.find((c) => c.id === "orchard-nav-style").column, "parked");
+  assert.equal(headRule("parked"), theme.ansi5);
+  assert.equal(bar("orchard-nav-style"), theme.ansi5);
+  // Held keeps the "needs the captain" color.
+  assert.equal(headRule("held"), theme.blocked);
+  assert.equal(bar("maple-icon-set"), theme.blocked);
+  for (const col of ["held", "working", "review"].filter((c) => b.ids.includes(`head-${c}`))) {
+    assert.notEqual(headRule(col), theme.ansi5, `${col} differs from Parked`);
+  }
+});
+
+test("a Held topic box wears a hairline, not the accent that marks hover, selection, and the search match", async () => {
+  const theme = { accent: "#1f62d0", border: "#dddddd" };
+  const b = await board({ theme });
+  const outline = b.items.find((x) => x.id === "group-preview-style").calls.findLast((c) => c[0] === "border_color")[1];
+  assert.equal(outline, theme.border);
+});
+
+test("the strip's status group sits at its right end, and a card's state row wraps instead of cutting a date off", async () => {
+  const b = await board();
+  // The update time's row is pushed to the end of the strip, away from the tabs.
+  const status = b.items.find((x) => x.id === "board-status");
+  assert.ok(status.childIds.includes("refresh"));
+  assert.ok(status.calls.some((c) => c[0] === "justify_end"), "status group is right-aligned");
+  assert.ok(!status.calls.some((c) => c[0] === "justify_between"));
+  const stateRow = b.items.find((x) => x.id === "state-orchard-tile-refresh");
+  assert.ok(stateRow.childIds.includes("until-orchard-tile-refresh"));
+  assert.ok(stateRow.calls.some((c) => c[0] === "flex_wrap"), "the deferral date wraps to its own line in a narrow column");
+});
+
+test("preview props open Focus on a card or point at one, for screenshots without key presses", async () => {
+  const theme = { accent: "#1f62d0", blocked: "#c93c2c" };
+  const focus = await board({ theme, ui: { focus: "maple-tour-sketch" } });
+  assert.equal(focus.view.focusMode, true);
+  assert.ok(focus.ids.includes("focus-hint"));
+  const point = await board({ theme, ui: { point: "maple-tour-sketch" } });
+  assert.equal(point.view.pointedId, "maple-tour-sketch");
+  const ring = point.items.find((x) => x.id === "card-maple-tour-sketch").calls.findLast((c) => c[0] === "border_color")[1];
+  assert.equal(ring, theme.blocked);
 });

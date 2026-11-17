@@ -1,4 +1,5 @@
-// Firstmate board: projects on top, tasks below. Fleet data comes from
+// Firstmate board: the day's counts and the next call on top, tasks in the middle, and
+// commands, projects, and checks in a tab group below. Fleet data comes from
 // fm-fleet-snapshot.sh; this mod never changes it. Adding or removing a project
 // only sends a note through fm-inbox.sh, and firstmate does the work under its
 // project-management procedure. The Command buttons type their slash command
@@ -7,7 +8,7 @@
 // installation and operational home; the other props support preview fixtures.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel, ScrollHandle } from "gpui-base";
-import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals, checking } from "herdr";
+import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals, checking, appHome, layout, setShared } from "herdr";
 import { FolderViewer } from "./viewer.js";
 
 // Board text follows the terminal font size and grows as the Board widens. The sizes below
@@ -41,6 +42,20 @@ const BACKGROUND_ROUND_LIMIT_MS = 10000;
 const BACKGROUND_OPEN_LISTINGS = 2;
 const BACKGROUND_STALE_LISTING_MS = 60000;
 const DONE_LIMIT = 20;
+// The Ledger theme's mono face, shared with the PR viewer mod (theme-spec Ledger section): numbers,
+// task ids, timers, and tags. It ships with Herdr. Worker screen lines keep the terminal font.
+const DATA_FONT = "Geist Mono";
+// The Ledger theme's shapes: the colored bar on a card's left edge, and the opacity of
+// everything that does not need the captain while Focus is on.
+const CARD_BAR_PX = 3;
+const FOCUS_DIM = 0.22;
+// How long the ring on a card the NEXT MOVE card line pointed to stays.
+const POINT_RING_MS = 4000;
+// The separate PR viewer mod a PR link opens when it is installed. Its panel contract: the layout's
+// `pr` block in the panel-body stack shows it, and the shared value below asks it for one PR.
+const PR_VIEWER_MOD = "herdr-pr-viewer";
+const PR_PANEL = "pr";
+const PR_SHOW_KEY = "herdr-pr-viewer.show";
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
 // The most of the Board's height the compact inspector's chain takes before it scrolls.
 const COMPACT_INSPECTOR_SHARE = 0.35;
@@ -49,9 +64,10 @@ const COLLAPSED_KEY = "collapsed";
 const FOLDED_KEY = "folded";
 const VIEW_MODE_KEY = "viewMode";
 const INDEPENDENT_OPEN_KEY = "independentOpen";
-const PROJECTS = "projects";
-const COMMANDS = "commands";
-const CHECKS = "checks";
+// The tab group below the board: its folded state (in the collapsed set) and its chosen tab.
+const BOTTOM = "bottom";
+const BOTTOM_TAB_KEY = "bottomTab";
+const BOTTOM_TABS = ["commands", "projects", "checks"];
 // Reads only the list of state/*.check.sh filenames and the mtime of state/.last-check.
 // Never reads check scripts, check outputs, or private check state directories.
 const CHECKS_SCRIPT = [
@@ -81,7 +97,9 @@ const COLUMNS = [
   { id: "queued", title: "Queued", color: "idle" },
   { id: "held", title: "Held", color: "blocked", optional: true },
   { id: "working", title: "Working", color: "working" },
-  { id: "parked", title: "Parked", color: "blocked", optional: true },
+  // Parked waits on review activity, not on the captain: its own color keeps it apart from Held
+  // (the captain's call), Blocked, Working, and Review.
+  { id: "parked", title: "Parked", color: "ansi5", optional: true },
   { id: "blocked", title: "Blocked", color: "blocked", optional: true },
   { id: "paused", title: "Paused", color: "idle", optional: true },
   { id: "review", title: "Review", color: "done", optional: true },
@@ -127,6 +145,41 @@ function localTime(epochSeconds) {
   const day = d.toDateString() === new Date().toDateString() ? "" : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} `;
   return `${day}${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
+// The layout node with this id, searching the whole tree (the shape fm-tabs reads too).
+function findNode(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = findNode(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+// The Korea-time date (YYYY-MM-DD) of a moment, the calendar the backlog's done dates use.
+/** @param {number} ms */
+function koreaDate(ms) {
+  return new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 10);
+}
+// How long a hold has waited, from the backlog's hold-set stamp (a UTC time, or only a date) or,
+// for an unstamped hold, its filing date: "2h 14m" from a time, "today" or "3d" from a date.
+/** @param {string | null} stamp @param {number} now */
+function waitAge(stamp, now) {
+  if (typeof stamp !== "string") return "";
+  const ms = Date.parse(stamp);
+  if (Number.isNaN(ms)) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(stamp)) {
+    const days = Math.round((Date.parse(koreaDate(now)) - ms) / 86400000);
+    return days <= 0 ? "today" : `${days}d`;
+  }
+  const minutes = Math.max(0, Math.floor((now - ms) / 60000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+// The captain's own calls: a hold to answer now, or a worker that reported failed.
+const needsCaptain = (c) => (c.column === "held" && c.holdGroup === "now") || c.failed;
+// The decision a topic's cards share: the first of them that lists options, else the first.
+const sharedDecision = (cards) => (cards.find((c) => c.decision?.options.length) ?? cards[0])?.decision;
 const base = (path) => (path ?? "").split("/").filter(Boolean).pop() ?? "";
 // The backlog writes "-" for an item with no project; such items are firstmate's own work.
 const projectOf = (...paths) => paths.map(base).find((p) => p && p !== "-") ?? "";
@@ -1066,6 +1119,10 @@ function cardsFrom(snapshot) {
     // Which HOLD_GROUPS entry a Held card is drawn under, and the date a deferred one waits for.
     holdGroup: holdGroupOf(record),
     holdUntil: typeof record?.hold_until === "string" ? record.hold_until : null,
+    // When the hold was set (a UTC time or a date), else when the item was filed; for wait ages.
+    heldSince: record?.hold_set ?? record?.since ?? null,
+    // The day a finished item merged, reported, or was done, for the Today strip.
+    completedOn: record?.completion?.date ?? null,
     column: ownColumn,
     // The worker reported `failed:`; its card sits in Blocked and carries a red Failed label.
     failed: task?.current_state?.state === "failed",
@@ -1133,6 +1190,14 @@ export default class FmBoard extends View {
     /** @type {string | null} */
     this.hoveredCardId = null;
     this.inspectorOpen = false;
+    // Focus: everything but the captain's calls dimmed, j/k moving between them.
+    this.focusMode = false;
+    /** @type {string | null} */
+    this.focusId = null;
+    // The card a reference such as the NEXT MOVE card line brought into view, ringed until Escape.
+    /** @type {string | null} */
+    this.pointedId = null;
+    this.pointedAt = 0;
     // Folds and collapsed columns an inspector click shows open for now, without saving them.
     /** @type {Set<string>} */
     this.revealed = new Set();
@@ -1169,6 +1234,8 @@ export default class FmBoard extends View {
     this.autoChoice = null;
     try { this.autoChoice = JSON.parse(localStorage.getItem(AUTO_COLORS_KEY) ?? "{}") ?? {}; } catch {}
     this.adding = Boolean(ui.adding); this.confirm = ui.confirm ?? null; this.mode = MODES[0].id;
+    const savedTab = ui.bottomTab ?? this.loadText(BOTTOM_TAB_KEY);
+    this.bottomTab = BOTTOM_TABS.includes(savedTab) ? savedTab : "commands";
     this.source = InputState.new({ placeholder: "Repository URL (git@github.com:org/repo.git)" });
     this.name = InputState.new({ placeholder: "Name (optional)" });
     this.picked = null;
@@ -1183,6 +1250,9 @@ export default class FmBoard extends View {
     // props.ui.view (testing): open the viewer on that project's local copy.
     if (ui.view) this.openView(ui.view, { path: `${home()}/projects/${ui.view}`, title: `${ui.view} · local copy` }, cx);
     if (ui.viewTab) this.viewer.tab = ui.viewTab;
+    // props.ui.focus and props.ui.point (previews): Focus on that card, or that card pointed to.
+    if (typeof ui.focus === "string") { this.focusMode = true; this.focusId = ui.focus; }
+    if (typeof ui.point === "string") this.pointedId = ui.point;
     if (ui.pick) this.usePath(ui.pick, cx);
     this.refresh(cx);
     if (props()?.snapshot_file) return;
@@ -1486,13 +1556,13 @@ export default class FmBoard extends View {
   }
 
   button(id, label, t, onClick, strong) {
-    return div().id(id).px(6).py(2).rounded(5).cursor_pointer().text_size(this.fs(11))
+    return div().id(id).px(6).py(2).rounded(3).cursor_pointer().text_size(this.fs(11))
       .text_color(strong ? t.solid_foreground : t.muted).bg(strong ? t.solid : t.raised)
       .hover((s) => s.opacity(0.8)).on_click((_e, cx) => onClick(cx)).child(label);
   }
 
   field(state, t) {
-    return Input.new(state).h(28).px(8).rounded(6).border_1().border_color(t.input)
+    return Input.new(state).h(28).px(8).rounded(4).border_1().border_color(t.input)
       .bg(t.background).text_size(this.fs(12)).text_color(t.foreground);
   }
 
@@ -1559,30 +1629,31 @@ export default class FmBoard extends View {
 
   // The same card look as Herdr's panes.
   frame(el, t) {
-    return el.p(8).rounded(10).bg(t.background).border(1).border_color(t.border);
+    return el.p(8).rounded(8).bg(t.background).border(1).border_color(t.border);
   }
 
-  projectSection(t) {
-    const collapsed = this.collapsed.has(PROJECTS);
-    const header = h_flex().gap(6).items_center().px(6).py(4).rounded(5).bg(t.selected)
-      .child(h_flex().id("head-projects").flex_1().gap(6).items_center().cursor_pointer()
-        .hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggle(PROJECTS, cx))
-        .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
-        .child(div().text_size(this.fs(12)).font_semibold().text_color(t.foreground).child("Projects"))
-        .child(div().text_size(this.fs(11)).text_color(t.dim).child(String(this.projects.length))))
-      .child(this.button("add-open", "+ Add", t, (cx) => {
-        this.adding = !this.adding; this.collapsed.delete(PROJECTS); cx.notify();
-      }));
-    const el = this.frame(v_flex().flex_none().gap(8), t).child(header);
-    if (collapsed) return el;
+  // A section heading in the Ledger theme: no fill, a hairline under it (or a thicker rule in a
+  // column's status color).
+  ledgerHead(el, t, color = t.border, width = 1) {
+    return el.px(2).pt(2).pb(5).border_b(width).border_color(color);
+  }
+
+  // A count beside a heading, in the theme's data face.
+  count(n, t) {
+    return div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).text_color(t.dim).child(String(n));
+  }
+
+  // The Projects tab: project rows, the add form, and the Board requests firstmate has not handled.
+  projectsBody(t) {
     // Plain overflow_y_scroll, not the scrollbar wrapper: the wrapper drops max_h, so the list
     // never got a height to scroll within.
     const list = v_flex().id("project-list").gap(8).max_h(260).min_h(0).flex_shrink(1).overflow_y_scroll();
+    list.child(h_flex().justify_end().child(this.button("add-open", "+ Add", t, (cx) => { this.adding = !this.adding; cx.notify(); })));
     if (this.adding) list.child(this.addForm(t));
     list.children(this.projects.map((p) => this.projectRow(p, t)));
     if (this.requests.length) list.child(v_flex().gap(4).pt(6).border_t(1).border_color(t.border)
       .children(this.requests.map((n) => this.requestRow(n, t))));
-    return el.child(list);
+    return list;
   }
 
   // Resolve the session for both submitted requests and editable card drafts.
@@ -1732,14 +1803,9 @@ export default class FmBoard extends View {
     this.typeToFirstmate(command, `[Board request] Run ${command}`, `Typed ${command} into firstmate`, cx);
   }
 
-  commandSection(t) {
-    const collapsed = this.collapsed.has(COMMANDS);
-    const el = this.frame(v_flex().flex_none().gap(8), t)
-      .child(h_flex().id("head-commands").gap(6).items_center().px(6).py(4).rounded(5).bg(t.selected)
-        .cursor_pointer().hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggle(COMMANDS, cx))
-        .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
-        .child(div().text_size(this.fs(12)).font_semibold().text_color(t.foreground).child("Commands")));
-    if (collapsed) return el;
+  // The Commands tab: slash-command buttons, the Scout/Task/Memo field, and its project chips.
+  commandsBody(t) {
+    const el = v_flex().id("commands-body").gap(8);
     const run = (command) => (cx) => this.typeCommand(command, cx);
     const request = (kind) => (cx) => {
       const text = this.ask.value().trim();
@@ -1794,7 +1860,7 @@ export default class FmBoard extends View {
         .children(this.projects.map((p) => chip(p.name))));
   }
 
-  card(c, t, inGroup) {
+  card(c, t, inGroup, boxDimmed = false) {
     // A search shows matching cards open, without changing the remembered folds.
     const foldId = `card:${c.id}`, folded = this.folded.has(foldId) && !this.query && !this.revealed.has(foldId);
     const current = this.query && this.currentMatch === c.id;
@@ -1806,25 +1872,38 @@ export default class FmBoard extends View {
     const dimmed = Boolean(this.highlight?.dimmedIds?.has(c.id)) && !current;
     const roleBorder = role === "selected" ? t.accent : role === "upstream" ? t.working : role === "downstream" ? t.ansi6 : null;
     const pinnedBorder = pinnedRole === "selected" || pinnedRole === "upstream" || pinnedRole === "downstream";
-    const borderWidth = current || pinnedBorder ? 2 : 1;
+    // The captain's-call ring, in the held color of the NEXT MOVE band: the card its card line
+    // pointed to (for a few seconds), and the card j/k reached in Focus. Accent stays for hover,
+    // selection, and the search match. In Focus every card that is not the captain's call steps back.
+    const callRing = (this.focusMode && this.focusId === c.id) || this.pointedId === c.id;
+    const focusDim = this.focusMode && !needsCaptain(c);
+    const borderWidth = current || pinnedBorder || callRing ? 2 : 1;
     // A failed card keeps its red border unless the card is the current search match or sits on a highlighted chain.
-    const borderColor = current ? t.accent : roleBorder ?? (role === "branch" ? t.muted : c.failed ? t.ansi1 : t.border);
-    // A deferred hold shows its date when it has one.
+    const borderColor = current ? t.accent : callRing ? t.blocked
+      : roleBorder ?? (role === "branch" ? t.muted : c.failed ? t.ansi1 : t.border);
+    // A deferred hold shows its date when it has one; a hold to answer now shows how long it has waited.
     const until = c.column === "held" && c.holdGroup === "deferred" ? c.holdUntil : null;
+    const age = c.column === "held" && c.holdGroup === "now" ? waitAge(c.heldSince, Date.now()) : "";
     const badge = c.prWaiting ? div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.blocked).child("PR waiting") : null;
-    const el = v_flex().id(`card-${c.id}`).gap(4).p(8).rounded(6).bg(t.background)
+    // The bar on the left edge carries the column's status color (red for a failed worker), so a
+    // column reads at a glance; the body makes room for it.
+    const barColor = c.failed ? t.ansi1 : t[COLUMNS.find((k) => k.id === c.column)?.color ?? "unknown"];
+    const el = v_flex().id(`card-${c.id}`).relative().gap(4).p(8).pl(8 + CARD_BAR_PX + 2).rounded(4).bg(t.background)
       .border(borderWidth).border_color(borderColor)
-      .when(dimmed, (e) => e.opacity(0.35))
-      .when(!dimmed && waiting && !current && !role, (e) => e.opacity(0.6))
+      .child(div().id(`bar-${c.id}`).absolute().left(0).top(0).bottom(0).w(CARD_BAR_PX).rounded_l(4).bg(barColor))
+      .when(focusDim && !boxDimmed, (e) => e.opacity(FOCUS_DIM))
+      .when(!focusDim && dimmed, (e) => e.opacity(0.35))
+      .when(!focusDim && !dimmed && waiting && !current && !role, (e) => e.opacity(0.6))
       .when(hasDeps, (e) => e.on_hover((hovered, cx) => this.hoverChainCard(c.id, hovered, cx)))
       .child(this.foldRow(foldId, t, folded, c.title, badge)
         .child(this.askButton(foldId, [c.id], c.title, t)));
     if (folded) return el;
     // The project sits on the state row so the title keeps the full card width.
-    el.child(h_flex().gap(6).items_center().min_w(0)
+    // In a narrow column the deferral date or wait wraps to its own line instead of being cut off.
+    el.child(h_flex().id(`state-${c.id}`).gap(6).items_center().min_w(0).flex_wrap()
       .child(this.projectBadge(c.project || "firstmate", t, `tag-${c.id}`))
-      .when(c.priority !== null && c.column !== "done", (e) => e.child(div().flex_none().px(4).rounded(4).border(1)
-        .border_color(c.priority === 0 ? t.foreground : t.border).text_size(this.fs(10))
+      .when(c.priority !== null && c.column !== "done", (e) => e.child(div().flex_none().px(4).rounded(3).border(1)
+        .border_color(c.priority === 0 ? t.foreground : t.border).font_family(DATA_FONT).text_size(this.fs(10))
         .text_color(c.priority === 0 ? t.foreground : t.muted).tooltip("Backlog priority, 0 is highest").child(`P${c.priority}`)))
       // The red Failed label stands in for the "failed" state text.
       .child(c.failed
@@ -1834,7 +1913,9 @@ export default class FmBoard extends View {
           .tooltip("Task state from firstmate").child(waiting ? "waiting" : c.state))
       // The year is left out: a deferral date is always ahead, and "until 12-01" fits a narrow card.
       .when(Boolean(until), (e) => e.child(div().id(`until-${c.id}`).flex_none().text_size(this.fs(11)).font_semibold()
-        .text_color(t.muted).tooltip(`Deferred until ${until}`).child(`until ${String(until).replace(/^\d{4}-/, "")}`))));
+        .text_color(t.muted).tooltip(`Deferred until ${until}`).child(`until ${String(until).replace(/^\d{4}-/, "")}`)))
+      .when(Boolean(age), (e) => e.child(div().id(`age-${c.id}`).flex_none().font_family(DATA_FONT).text_size(this.fs(11))
+        .font_semibold().text_color(t.blocked).tooltip(`Waiting on you for ${age}`).child(age))));
     if (waiting) {
       const key = `chain:${c.id}`, shown = this.chainOpen.has(key);
       el.child(div().id(`wait-${c.id}`).min_w(0).text_size(this.fs(11)).text_color(t.blocked).truncate()
@@ -1894,7 +1975,7 @@ export default class FmBoard extends View {
     if (c.pr && /^https:\/\//.test(c.pr)) {
       el.child(div().id(`pr-${c.id}`).text_size(this.fs(11)).text_color(t.accent).truncate()
         .hover((s) => s.text_color(t.foreground))
-        .on_click(() => { exec("open", [c.pr]); })
+        .on_click((_e, cx) => this.openPr(c.pr, c, cx))
         .child(c.pr.replace("https://github.com/", "")));
     }
     const live = c.column !== "done";
@@ -1943,6 +2024,201 @@ export default class FmBoard extends View {
     return note ? `Last lines of the worker's screen. ${note.slice(0, 200)}` : "Last lines of the worker's screen";
   }
 
+  // One option's answer draft, the same from a card, a topic box, or the NEXT MOVE banner.
+  /** @param {string[]} ids @param {{ label: string, text: string }} o @param {string} decisionKey */
+  answerOption(ids, o, decisionKey, cx) {
+    this.insertCardText(`${answerHead(ids, decisionKey)} ${o.label} (${o.text})`, cx);
+  }
+
+  // Holds to answer now, longest-waiting first (unstamped ones last, in backlog order).
+  waitingHolds() {
+    const stamp = (c) => { const ms = Date.parse(c.heldSince ?? ""); return Number.isNaN(ms) ? Infinity : ms; };
+    return (this.cards ?? []).filter((c) => c.column === "held" && c.holdGroup === "now")
+      .map((c, i) => ({ c, i })).sort((a, b) => stamp(a.c) - stamp(b.c) || a.i - b.i).map((x) => x.c);
+  }
+
+  // The holds one answer covers: every hold to answer now that shares the card's topic, in backlog
+  // order as the Held column's topic box lists them, else the card alone.
+  /** @param {any} c */
+  topicHolds(c) {
+    const topic = c.decision?.topic;
+    return topic ? (this.cards ?? []).filter((x) => x.column === "held" && x.holdGroup === "now" && x.decision?.topic === topic) : [c];
+  }
+
+  /** @param {any} c */
+  answerIds(c) {
+    return this.topicHolds(c).map((x) => x.id);
+  }
+
+  // The decision an answer to the card follows, as the Held column's topic box shows it.
+  /** @param {any} c */
+  answerDecision(c) {
+    return sharedDecision(this.topicHolds(c)) ?? c.decision;
+  }
+
+  // The option a decision recommends ("B", or "B" followed by a reason), if it names one.
+  /** @param {any} decision */
+  recommendedOption(decision) {
+    const rec = String(decision?.recommended ?? "").trim();
+    return (decision?.options ?? []).find((o) => new RegExp(`^${o.label}(?![A-Za-z])`).test(rec)) ?? null;
+  }
+
+  // Five counts across the top: what landed today, what waits on the captain, what runs, what is
+  // ready to land, and what is blocked. Done today follows the backlog's own (Korea-time) dates.
+  /** @param {Record<string, string>} t @param {any[]} holds @param {boolean} stacked */
+  todayStrip(t, holds, stacked) {
+    const cards = this.cards ?? [];
+    const now = Date.now(), today = koreaDate(now);
+    const of = (col) => cards.filter((c) => c.column === col);
+    const working = of("working"), blocked = of("blocked");
+    const jobs = working.filter((c) => c.background).length;
+    const failed = blocked.filter((c) => c.failed).length;
+    const oldest = holds[0] ? waitAge(holds[0].heldSince, now) : "";
+    const cells = [
+      ["done", "Done today", of("done").filter((c) => c.completedOn === today).length, "", "done"],
+      ["waiting", "Waiting on you", holds.length, oldest ? `oldest ${oldest}` : "", "blocked"],
+      ["working", "Working", working.length, jobs ? `${jobs} background job${jobs === 1 ? "" : "s"}` : "", "working"],
+      ["ready", "Ready to land", cards.filter((c) => c.prWaiting || c.column === "review").length, "", "done"],
+      ["blocked", "Blocked", blocked.length, failed ? `${failed} failed` : "", "ansi1"],
+    ];
+    const blank = String.fromCharCode(0xa0); // keeps an empty sub-line one line tall
+    return h_flex().id("today").flex_none().rounded(8).bg(t.background).border(1).border_color(t.border)
+      .when(stacked, (e) => e.flex_wrap())
+      .children(cells.map(([id, label, n, sub, color], i) => v_flex().id(`today-${id}`).flex_1().min_w(stacked ? 110 : 0)
+        .gap(2).px(12).py(8)
+        .when(i > 0, (e) => e.border_l(1).border_color(t.border))
+        .when(this.focusMode && id !== "waiting" && id !== "blocked", (e) => e.opacity(FOCUS_DIM))
+        .child(h_flex().gap(6).items_center().min_w(0)
+          .child(div().flex_none().w(7).h(7).rounded(2).bg(t[color]))
+          .child(div().min_w(0).truncate().text_size(this.fs(11)).font_weight(500).text_color(t.muted).child(label)))
+        .child(div().font_family(DATA_FONT).text_size(this.fs(21)).font_weight(500).text_color(t.foreground).child(String(n)))
+        .child(div().min_w(0).truncate().text_size(this.fs(10)).text_color(t.dim).child(sub || blank))));
+  }
+
+  // The longest-waiting hold to answer now, at the top of the board in the Ledger idiom: a hairline
+  // frame with a bar in the held status color. Its first line names the card the decision comes
+  // from and brings that card into view; its options and Write answer put the same drafts in the
+  // firstmate input as the Held card does.
+  /** @param {Record<string, string>} t @param {any[]} holds */
+  nextMove(t, holds) {
+    const c = holds[0];
+    if (!c) return null;
+    const ids = this.answerIds(c), decision = this.answerDecision(c);
+    const options = decision?.options ?? [];
+    const rec = this.recommendedOption(decision);
+    const age = waitAge(c.heldSince, Date.now());
+    const action = (id, label, tooltip, onClick, primary) => h_flex().id(id).flex_none().gap(6).items_center()
+      .px(8).py(4).rounded(3).cursor_pointer().border(1).border_color(primary ? t.solid : t.border)
+      .bg(primary ? t.solid : t.raised).text_size(this.fs(11.5)).text_color(primary ? t.solid_foreground : t.foreground)
+      .hover((s) => s.opacity(0.8)).tooltip(tooltip)
+      .on_click((_e, cx) => onClick(cx))
+      .children(label.map((x) => (typeof x === "string" ? div().child(x) : x)));
+    const letter = (o, primary) => div().font_family(DATA_FONT).font_semibold()
+      .text_color(primary ? t.solid_foreground : t.accent).child(o.label);
+    return h_flex().id("next-move").relative().flex_none().flex_wrap().gap(14).items_center()
+      .pl(14 + CARD_BAR_PX).pr(12).py(10).rounded(8).bg(t.background).border(1).border_color(t.border)
+      .child(div().id("next-move-bar").absolute().left(0).top(0).bottom(0).w(CARD_BAR_PX).rounded_l(8).bg(t.blocked))
+      .child(v_flex().flex_1().min_w(240).gap(5)
+        .child(h_flex().gap(8).items_center().min_w(0)
+          .child(h_flex().id("next-move-card").flex_1().min_w(0).gap(8).items_center().cursor_pointer()
+            .hover((s) => s.opacity(0.75)).tooltip(`Show ${c.id} on the board`)
+            .on_click((_e, cx) => this.revealCard(c.id, cx))
+            .child(this.projectBadge(c.project || "firstmate", t, `next-tag-${c.id}`))
+            .child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).text_color(t.dim).child(c.id))
+            .child(div().min_w(0).truncate().text_size(this.fs(11.5)).font_semibold().text_color(t.muted).child(c.title)))
+          .when(Boolean(age), (e) => e.child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).font_semibold()
+            .text_color(t.blocked).child(`waiting ${age}`)))
+          .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(`Next move, 1 of ${holds.length}`)))
+        .child(div().id("next-move-question").text_size(this.fs(14)).font_semibold().text_color(t.foreground)
+          .child(decision?.question || c.detail || c.title)))
+      .child(h_flex().flex_none().gap(6).items_center().flex_wrap()
+        .children(options.map((o) => {
+          const primary = o === rec;
+          return action(`next-opt-${o.label}`, [letter(o, primary), o.text], "Put this answer in the firstmate input",
+            (cx) => this.answerOption(ids, o, "", cx), primary);
+        }))
+        .child(action("next-write", ["Write answer"], "Start an answer in the firstmate input",
+          (cx) => this.insertCardText(answerHead(ids), cx), false)));
+  }
+
+  // Brings a card on the Kanban board into view and rings it in the held color for a few seconds
+  // (or until Escape), for a reference such as the NEXT MOVE card line.
+  /** @param {string} id @param {import("gpui-kit").Context} cx */
+  revealCard(id, cx) {
+    const card = (this.cards ?? []).find((c) => c.id === id);
+    if (!card) return;
+    if (this.viewMode !== "kanban") this.setViewMode("kanban", cx);
+    const at = Date.now();
+    this.pointedId = id;
+    this.pointedAt = at;
+    // Only the latest point clears its ring: an older timer finds a newer point and leaves it.
+    cx.timer.after(POINT_RING_MS, (later) => {
+      if (this.pointedId !== id || this.pointedAt !== at) return;
+      this.pointedId = null;
+      later.notify();
+    });
+    this.keys.focus();
+    this.showCard(card, cx);
+    cx.notify();
+  }
+
+  // The captain's calls in the order Kanban draws them; Focus steps through these.
+  captainCards() {
+    return this.shownColumns().flatMap((col) => this.sections(col.id)).flatMap((s) => this.entries(s.cards))
+      .flatMap((x) => (x.topic ? x.cards : [x.card])).filter(needsCaptain);
+  }
+
+  /** @param {import("gpui-kit").Context} cx */
+  toggleFocus(cx) {
+    this.focusMode = !this.focusMode;
+    this.focusId = null;
+    if (this.focusMode) {
+      this.keys.focus();
+      this.moveFocus(0, cx);
+    }
+    cx.notify();
+  }
+
+  // Moves the Focus selection through the captain's calls (starting at the NEXT MOVE card), shows
+  // its card, and peeks at its worker: Herdr draws the terminal over the tab beside the Board
+  // without taking the keyboard, so j and k keep working.
+  /** @param {number} delta @param {import("gpui-kit").Context} cx */
+  moveFocus(delta, cx) {
+    const calls = this.captainCards();
+    const at = calls.findIndex((c) => c.id === this.focusId);
+    const start = Math.max(0, calls.findIndex((c) => c.id === this.waitingHolds()[0]?.id));
+    const c = calls[at < 0 ? start : Math.min(calls.length - 1, Math.max(0, at + delta))];
+    this.focusId = c?.id ?? null;
+    if (c) {
+      this.revealed = new Set([`card:${c.id}`, c.column]);
+      if (c.decision?.topic) this.revealed.add(`group:${c.decision.topic}`);
+      this.scrollToCard(c);
+      if (this.workerLive(c)) run("terminal.peek", { terminal: c.terminal });
+    }
+    cx.notify();
+  }
+
+  // Focus keys reach the Board only while it holds the keyboard itself, never while a field does.
+  /** @param {import("gpui-kit").KeyEvent} e @param {import("gpui-kit").Context} cx */
+  focusKey(e, cx) {
+    if (this.viewMode !== "kanban" || !this.keys.is_focused()) return false;
+    if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return false;
+    if (e.key === "f") { this.toggleFocus(cx); return true; }
+    if (!this.focusMode) return false;
+    if (e.key === "escape") { this.toggleFocus(cx); return true; }
+    if (e.key === "j" || e.key === "down") { this.moveFocus(1, cx); return true; }
+    if (e.key === "k" || e.key === "up") { this.moveFocus(-1, cx); return true; }
+    const c = (this.cards ?? []).find((x) => x.id === this.focusId);
+    if (!c) return false;
+    if (e.key === "enter") {
+      const ids = this.answerIds(c), rec = this.recommendedOption(this.answerDecision(c));
+      if (rec) this.answerOption(ids, rec, "", cx); else this.insertCardText(answerHead(ids), cx);
+      return true;
+    }
+    if (e.key === "o" && c.terminal) { this.openWorker(c, cx); return true; }
+    return false;
+  }
+
   // Options of a held decision become editable chat drafts; the owner confirms them with Enter.
   // Elsewhere they are plain text: set-aside work in Todo waits until it is brought back.
   // An open decision's options carry its key in the draft, so firstmate can close that decision.
@@ -1951,7 +2227,7 @@ export default class FmBoard extends View {
     for (const o of decision.options) {
       el.child(h_flex().id(`opt-${key}-${o.label}`).gap(6).px(4).py(2).rounded(5)
         .when(answerable, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Put this answer in the firstmate input")
-          .on_click((_e, cx) => this.insertCardText(`${answerHead(ids, decisionKey)} ${o.label} (${o.text})`, cx)))
+          .on_click((_e, cx) => this.answerOption(ids, o, decisionKey, cx)))
         .child(div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.accent).child(o.label))
         .child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.foreground).child(o.text)));
     }
@@ -2013,7 +2289,7 @@ export default class FmBoard extends View {
     this.viewMode = mode;
     this.hoveredCardId = null;
     if (mode === "kanban" && !this.inspectorOpen) this.selectedCardId = null;
-    if (mode === "chains") this.inspectorOpen = false;
+    if (mode === "chains") { this.inspectorOpen = false; this.focusMode = false; this.focusId = null; }
     try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch {}
     cx.notify();
   }
@@ -2096,14 +2372,19 @@ export default class FmBoard extends View {
     this.inspectorOpen = true;
     this.keys.focus();
     const card = (this.cards ?? []).find((c) => c.id === id);
-    if (card) {
-      if (this.filter && this.filter !== card.project) this.filter = null;
-      if (this.query && !searchText(card).includes(this.query.toLowerCase())) this.clearSearch(cx);
-      this.revealed = new Set([`card:${id}`, card.column]);
-      if (card.decision?.topic) this.revealed.add(`group:${card.decision.topic}`);
-      this.scrollToCard(card);
-    }
+    if (card) this.showCard(card, cx);
     cx.notify();
+  }
+
+  // Shows a card wherever a filter, search, or fold hides it, without saving those folds, and
+  // scrolls to it.
+  /** @param {any} card @param {import("gpui-kit").Context} cx */
+  showCard(card, cx) {
+    if (this.filter && this.filter !== card.project) this.filter = null;
+    if (this.query && !searchText(card).includes(this.query.toLowerCase())) this.clearSearch(cx);
+    this.revealed = new Set([`card:${card.id}`, card.column]);
+    if (card.decision?.topic) this.revealed.add(`group:${card.decision.topic}`);
+    this.scrollToCard(card);
   }
 
   // Brings a card's column on screen in the stacked board, or its entry (a card, a topic group,
@@ -2342,14 +2623,14 @@ export default class FmBoard extends View {
     const color = this.colorOf(name, t);
     const tag = this.tags?.get(name) ?? name.slice(0, 3).toUpperCase();
     return h_flex().id(id).flex_none().w(30).h(16).justify_center().items_center().rounded(3).bg(color)
-      .font_family(this.monoFont).text_size(this.fs(9.5)).font_semibold().text_color("#ffffff").tooltip(name).child(tag);
+      .font_family(DATA_FONT).text_size(this.fs(9.5)).font_semibold().text_color("#ffffff").tooltip(name).child(tag);
   }
 
   /** @param {string} label @param {`#${string}`} color @param {boolean} [dashed] */
   renderChainChip(label, color, dashed = false) {
     return div().flex_none().px(6).py(1).rounded(4).border(1).border_color(color)
       .when(dashed, (e) => e.border_dashed())
-      .font_family(this.monoFont).text_size(this.fs(9)).text_color(color).child(label);
+      .font_family(DATA_FONT).text_size(this.fs(9)).text_color(color).child(label);
   }
 
   /** @param {Record<string, `#${string}`>} t */
@@ -2362,7 +2643,7 @@ export default class FmBoard extends View {
       .child(item("selected", t.accent))
       .child(item("downstream", t.ansi6))
       .child(item("cross-project", t.dim, true))
-      .child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).child("L0…Ln = dependency level"));
+      .child(div().font_family(DATA_FONT).text_size(this.fs(9.5)).text_color(t.dim).child("L0…Ln = dependency level"));
   }
 
   /** @param {any} spec @param {Map<string, string>} roles @param {boolean} dimLane @param {Record<string, `#${string}`>} t */
@@ -2417,12 +2698,12 @@ export default class FmBoard extends View {
     const topRow = h_flex().h(16).gap(6).items_center().min_w(0)
       .child(node.missing
         ? div().id(`cnode-tag-${id}`).flex_none().px(4).h(16).rounded(3).border(1).border_color(t.border)
-          .font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.muted).tooltip("Not on the board").child("unknown")
+          .font_family(DATA_FONT).text_size(this.fs(9.5)).text_color(t.muted).tooltip("Not on the board").child("unknown")
         : this.chainProjectBadge(node.project || "firstmate", t, `cnode-tag-${id}`))
-      .child(div().flex_1().min_w(0).font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).truncate()
+      .child(div().flex_1().min_w(0).font_family(DATA_FONT).text_size(this.fs(9.5)).text_color(t.dim).truncate()
         .child(chainShortId(id)))
       .when(!node.missing && node.priority !== null && node.priority !== undefined && node.column !== "done", (e) =>
-        e.child(div().id(`cnode-prio-${id}`).flex_none().font_family(this.monoFont).text_size(this.fs(9.5))
+        e.child(div().id(`cnode-prio-${id}`).flex_none().font_family(DATA_FONT).text_size(this.fs(9.5))
           .when(node.priority === 0, (p) => p.font_bold())
           .text_color(node.priority === 0 ? t.foreground : t.dim)
           .child(`P${node.priority}`)));
@@ -2431,10 +2712,10 @@ export default class FmBoard extends View {
       .child(div().flex_none().w(6).h(6).rounded(3).bg(statusColor))
       .child(div().id(`cnode-status-${id}`).flex_none().text_size(this.fs(10.5)).text_color(t.muted).child(statusLabel));
     if ((node.blocksCount ?? 0) > 0 && (node.waitingIds?.length ?? 0) === 0) {
-      metaRow.child(div().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.working).truncate()
+      metaRow.child(div().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.working).truncate()
         .child(`· unblocks ${node.blocksCount}`));
     } else if ((node.waitingIds?.length ?? 0) > 1) {
-      metaRow.child(div().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.dim).truncate()
+      metaRow.child(div().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.dim).truncate()
         .child(`· ${node.waitingIds.length} blockers`));
     }
 
@@ -2445,9 +2726,9 @@ export default class FmBoard extends View {
     if (node.pr && /^https:\/\//.test(node.pr)) {
       const prLabel = node.pr.replace(/^https:\/\/github\.com\/[^/]+\/([^/]+)\/pull\/(\d+).*$/, "$1#$2")
         .replace("https://github.com/", "");
-      card.child(div().id(`cnode-pr-${id}`).font_family(this.monoFont).text_size(this.fs(10)).text_color(t.accent).truncate()
+      card.child(div().id(`cnode-pr-${id}`).font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.accent).truncate()
         .cursor_pointer().hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [node.pr]); })
+        .on_click((_e, cx) => { cx.stop_propagation(); this.openPr(node.pr, node, cx); })
         .child(prLabel));
     }
 
@@ -2470,7 +2751,7 @@ export default class FmBoard extends View {
     const body = v_flex().gap(0).min_w(layout.cols * CHAIN_CARD_W + Math.max(0, layout.cols - 1) * CHAIN_GUT);
     const ruler = h_flex().mb(8);
     for (let c = 0; c < layout.cols; c++) {
-      ruler.child(div().w(CHAIN_CARD_W).flex_none().font_family(this.monoFont).text_size(this.fs(9))
+      ruler.child(div().w(CHAIN_CARD_W).flex_none().font_family(DATA_FONT).text_size(this.fs(9))
         .text_color(t.dim).pb(4).border_b(1).border_color(t.border).child(`L${c}`));
       if (c < layout.cols - 1) ruler.child(div().w(CHAIN_GUT).flex_none());
     }
@@ -2499,9 +2780,9 @@ export default class FmBoard extends View {
             const toTag = this.tags?.get(first.project) ?? (first.project || "EXT").slice(0, 3).toUpperCase();
             const arrow = Boolean(fromNode.project && first.project && fromNode.project !== first.project) ? "┄▸" : "→";
             cell.child(v_flex().gap(2).pt(10).pr(12).items_end()
-              .child(div().font_family(this.monoFont).text_size(this.fs(9)).text_color(t.dim).child("SIDE BRANCH"))
+              .child(div().font_family(DATA_FONT).text_size(this.fs(9)).text_color(t.dim).child("SIDE BRANCH"))
               .child(div().text_size(this.fs(10.5)).text_color(t.muted).child(`forks from ${chainShortId(fromId)}`))
-              .child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).child(`${fromTag} ${arrow} ${toTag}`)));
+              .child(div().font_family(DATA_FONT).text_size(this.fs(9.5)).text_color(t.dim).child(`${fromTag} ${arrow} ${toTag}`)));
           }
         }
         rowEl.child(cell);
@@ -2540,7 +2821,7 @@ export default class FmBoard extends View {
       const isLastRow = i === subrows.length - 1;
       const rail = div().relative().w(RAIL).flex_none().when(dimLane, (e) => e.opacity(0.45));
       if (s.first) {
-        rail.child(div().absolute().left(0).top(12).font_family(this.monoFont).text_size(this.fs(9))
+        rail.child(div().absolute().left(0).top(12).font_family(DATA_FONT).text_size(this.fs(9))
           .text_color(t.dim).child(`L${s.lv}`));
       }
       if (s.spine) {
@@ -2589,7 +2870,7 @@ export default class FmBoard extends View {
         const note = [];
         if (forks.length) note.push(`forks from ${forks.map(chainShortId).join(", ")}`);
         if (joins.length) note.push(`joins ${joins.map(chainShortId).join(", ")} ↓`);
-        if (note.length) cd.child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.dim).child(note.join(" · ")));
+        if (note.length) cd.child(div().font_family(DATA_FONT).text_size(this.fs(9.5)).text_color(t.dim).child(note.join(" · ")));
       }
       content.child(cd);
       const rowEl = h_flex().items_stretch().child(rail).child(content);
@@ -2615,13 +2896,13 @@ export default class FmBoard extends View {
       .cursor_pointer().hover((s) => s.opacity(0.8))
       .on_click((_e, cx) => this.toggleFold(laneKey, cx))
       .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
-      .child(div().flex_none().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.dim).child(`CHAIN ${idx + 1}`))
+      .child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.dim).child(`CHAIN ${idx + 1}`))
       .children(projects.slice(0, 3).map((p, pIdx) => this.chainProjectBadge(p, t, `lane-tag-${comp.id}-${pIdx}`)))
       .child(div().flex_1().min_w(0).truncate().text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(comp.summaryLabel))
       .when(Boolean(comp.hasCycle), (e) => e.child(this.renderChainChip("CYCLE", t.ansi1)))
       .when(isTopChain && comp.depth > 1, (e) => e.child(this.renderChainChip("CRITICAL PATH", t.working)))
       .when(!stacked && (comp.crossProjectEdges?.length ?? 0) > 0, (e) => e.child(this.renderChainChip("CROSS-PROJECT", t.muted, true)))
-      .child(div().flex_none().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.dim)
+      .child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.dim)
         .child(stacked ? `${comp.depth} steps` : `${comp.depth} steps · ${realNodes.length} tasks${workingCount ? ` · ${workingCount} working` : ""}`));
 
     const lane = v_flex().id(`chain-lane-${comp.id}`).flex_none().gap(12).p(12).rounded(8).bg(t.surface)
@@ -2642,7 +2923,7 @@ export default class FmBoard extends View {
       const selectedCard = (this.cards ?? []).find((c) => c.id === this.selectedCardId);
       const detailWrap = v_flex().id("chain-detail").gap(6).pt(10).border_t(1).border_color(t.border)
         .child(h_flex().gap(8).items_center().justify_between()
-          .child(div().font_family(this.monoFont).text_size(this.fs(9.5)).text_color(t.accent).child(`TASK DETAIL · ${this.selectedCardId}`))
+          .child(div().font_family(DATA_FONT).text_size(this.fs(9.5)).text_color(t.accent).child(`TASK DETAIL · ${this.selectedCardId}`))
           .child(this.button("chain-detail-close", "Close", t, (cx) => this.clearChainSelection(cx))));
       if (selectedCard) detailWrap.child(this.card(selectedCard, t, false));
       else detailWrap.child(div().text_size(this.fs(11)).text_color(t.muted).child("External blocker not in the current backlog snapshot."));
@@ -2659,7 +2940,8 @@ export default class FmBoard extends View {
       ["ready", cards.filter((c) => c.column === "queued").length],
       ["held", cards.filter((c) => c.column === "held").length],
       ["paused", cards.filter((c) => c.column === "paused").length],
-      ["blocked", cards.filter((c) => c.column === "blocked" || c.column === "parked").length],
+      ["blocked", cards.filter((c) => c.column === "blocked").length],
+      ["parked", cards.filter((c) => c.column === "parked").length],
       ["review", cards.filter((c) => c.column === "review").length],
       ["todo", cards.filter((c) => c.column === "todo").length],
     ].filter(([, n]) => n > 0).map(([label, n]) => `${n} ${label}`).join(" · ");
@@ -2668,10 +2950,10 @@ export default class FmBoard extends View {
       .cursor_pointer().hover((s) => s.opacity(0.8))
       .on_click((_e, cx) => this.toggleIndependent(cx))
       .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(open ? "▾" : "▸"))
-      .child(div().flex_none().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.dim).child("INDEPENDENT"))
+      .child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.dim).child("INDEPENDENT"))
       .child(div().flex_1().min_w(0).text_size(this.fs(12)).font_semibold().text_color(t.foreground)
         .child(`${cards.length} ${cards.length === 1 ? "task" : "tasks"} without dependencies`))
-      .child(div().font_family(this.monoFont).text_size(this.fs(10)).text_color(t.dim).truncate()
+      .child(div().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.dim).truncate()
         .child(counts || "No independent tasks"));
 
     const drawer = v_flex().id("independent-drawer").flex_none().gap(10).px(12).py(10).rounded(8).bg(t.surface)
@@ -2718,6 +3000,26 @@ export default class FmBoard extends View {
       if (label === `fm-${c.id}`) { run("agent.focus", { terminal: c.terminal }); this.notice = ""; }
       else this.notice = "Worker terminal not found";
       cx.notify();
+    });
+  }
+
+  // A PR link shows the PR in the layout's PR panel when the herdr-pr-viewer mod is installed in
+  // this Herdr home, following that mod's panel contract: the request goes in a shared value whose
+  // `at` makes each click new, then the panel is selected and shown. Without the mod or without
+  // that panel in the layout, the browser opens the link.
+  // The viewer shows the card's task and its project tag in the tag's own color.
+  /** @param {string} url @param {{ id: string, project?: string }} c @param {import("gpui-kit").Context} cx */
+  openPr(url, c, cx) {
+    const project = c.project || "firstmate";
+    const badge = { text: this.tags?.get(project) ?? project.slice(0, 3).toUpperCase(), color: this.colorOf(project, theme()) };
+    const task = c.project ? `${c.id} · ${c.project}` : c.id;
+    cx.spawn(async () => {
+      let installed = false;
+      try { installed = (await readTextFile(`${appHome()}/mods/${PR_VIEWER_MOD}/mod.json`)) != null; } catch {}
+      if (!installed || !findNode(layout(), PR_PANEL)) { await exec("open", [url]); return; }
+      setShared(PR_SHOW_KEY, { url, task, badge, at: Date.now() });
+      run("layout.select", { stack: "panel-body", child: PR_PANEL });
+      run("layout.show", { id: "panel" });
     });
   }
 
@@ -2888,15 +3190,18 @@ export default class FmBoard extends View {
   // One box per topic: the question and its options once, then every task it decides.
   group(topic, cards, t) {
     const foldId = `group:${topic}`, folded = this.folded.has(foldId) && !this.query && !this.revealed.has(foldId);
-    const first = cards.find((c) => c.decision.options.length) ?? cards[0];
-    const ids = cards.map((c) => c.id), question = first.decision.question || topic;
-    const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(6).bg(t.raised).border(1).border_color(t.accent)
+    const decision = sharedDecision(cards);
+    const ids = cards.map((c) => c.id), question = decision.question || topic;
+    const boxDimmed = this.focusMode && !cards.some(needsCaptain);
+    // A hairline, not the accent: accent marks hover, selection, and the search match only.
+    const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(4).bg(t.raised).border(1).border_color(t.border)
+      .when(boxDimmed, (e) => e.opacity(FOCUS_DIM))
       .child(this.foldRow(foldId, t, folded, question,
         div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)))
         .child(this.askButton(foldId, ids, question, t)));
     if (folded) return box;
-    this.decisionLines(box, first.decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
-    return box.children(cards.map((c) => this.card(c, t, true)));
+    this.decisionLines(box, decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
+    return box.children(cards.map((c) => this.card(c, t, true, boxDimmed)));
   }
 
   // A column's entries in drawing order: a card, or a topic group at its first card's place.
@@ -3004,7 +3309,35 @@ export default class FmBoard extends View {
           .hover((s) => s.opacity(0.85))
           .tooltip(this.inspectorOpen ? "Close Dependency Inspector (Esc)" : "Open Dependency Inspector")
           .on_click((_e, cx) => this.toggleInspector(cx))
-          .child(toggleLabel)));
+          .child(toggleLabel))
+          .child(h_flex().id("focus-toggle").flex_none().gap(6).items_center().px(7).py(3.5).rounded(3).cursor_pointer()
+            .border(1).border_color(this.focusMode ? t.accent : t.border).bg(this.focusMode ? t.accent : t.raised)
+            .text_size(this.fs(11)).font_semibold().text_color(this.focusMode ? t.accent_foreground : t.muted)
+            .hover((s) => s.opacity(0.85))
+            .tooltip(this.focusMode ? "Leave Focus (F or Esc)" : "Focus: dim everything but your calls; j/k move between them (F)")
+            .on_click((_e, cx) => this.toggleFocus(cx))
+            .child(div().child("Focus"))
+            .child(this.keyCap("F", t, this.focusMode))));
+  }
+
+  // A key name drawn as a small outlined cap, for keyboard hints.
+  /** @param {string} key @param {Record<string, string>} t @param {boolean} [onAccent] */
+  keyCap(key, t, onAccent = false) {
+    return div().flex_none().px(4).rounded(3).border(1).border_color(onAccent ? t.accent_foreground : t.input)
+      .font_family(DATA_FONT).text_size(this.fs(10)).text_color(onAccent ? t.accent_foreground : t.muted).child(key);
+  }
+
+  // The keys Focus answers to, under the search row while it is on.
+  /** @param {Record<string, string>} t */
+  focusHint(t) {
+    const hint = (keys, label) => h_flex().flex_none().gap(4).items_center()
+      .children(keys.map((k) => this.keyCap(k, t)))
+      .child(div().text_size(this.fs(11)).text_color(t.muted).child(label));
+    return h_flex().id("focus-hint").flex_none().gap(12).items_center().flex_wrap()
+      .child(hint(["j", "k"], "move between your calls"))
+      .child(hint(["⏎"], "answer with the recommended option"))
+      .child(hint(["o"], "open worker"))
+      .child(hint(["Esc"], "leave Focus"));
   }
 
   cardsIn(id) {
@@ -3016,34 +3349,39 @@ export default class FmBoard extends View {
     return q ? shown.filter((c) => searchText(c).includes(q)) : shown;
   }
 
-  // A Held group's heading: the column header's strip, so the groups stand apart from the cards
-  // between them, but quieter than that header: no dot, smaller text.
+  // A Held group's heading: ruled like the column header, so the groups stand apart from the cards
+  // between them, but quieter than that header: a hairline, smaller muted text.
   holdHeading(s, t) {
-    return h_flex().gap(6).items_center().px(6).py(3).rounded(5).bg(t.selected)
-      .child(div().min_w(0).truncate().text_size(this.fs(11)).font_semibold().text_color(t.foreground).child(s.title))
-      .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(String(s.cards.length)));
+    return this.ledgerHead(h_flex().gap(6).items_center(), t)
+      .child(div().min_w(0).truncate().text_size(this.fs(10.5)).font_semibold().text_color(t.muted).child(s.title))
+      .child(this.count(s.cards.length, t));
   }
 
-  column(col, t, stacked) {
+  // Ledger columns are open lanes on the frame, split by hairlines; a rule in the column's status
+  // color under its heading names it instead of a filled strip. first is the leftmost lane.
+  column(col, t, stacked, first) {
     const cards = this.cardsIn(col.id);
     // A collapsed column that holds a match opens while the search lasts.
     const collapsed = this.collapsed.has(col.id) && !(this.query && cards.length) && !this.revealed.has(col.id);
+    // In Focus a lane without a captain's call steps back with its cards.
+    const dimHead = this.focusMode && !cards.some(needsCaptain);
     const header = h_flex().id(`head-${col.id}`).gap(6).items_center().cursor_pointer()
       .hover((s) => s.opacity(0.75))
+      .when(dimHead, (e) => e.opacity(FOCUS_DIM))
       .on_click((_e, cx) => { if (!this.query) this.toggle(col.id, cx); })
-      .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
-      .child(div().w(8).h(8).rounded(4).bg(t[col.color]));
+      .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"));
+    const lane = (el) => (stacked || first ? el : el.border_l(1).border_color(t.border));
     if (collapsed && !stacked) {
-      return v_flex().id(`col-${col.id}`).w(36).h_full().p(8).gap(6).rounded(8).bg(t.surface).items_center()
-        .child(header)
-        .child(div().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)))
+      return lane(v_flex().id(`col-${col.id}`).w(36).h_full().py(4).px(8).gap(6).items_center())
+        .child(header.child(div().w(8).h(8).rounded(4).bg(t[col.color])))
+        .child(div().font_family(DATA_FONT).text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)))
         .child(v_flex().items_center().children([...col.title].map((letter) =>
           div().text_size(this.fs(11)).font_semibold().text_color(t.foreground).child(letter))));
     }
-    header.px(6).py(4).rounded(5).bg(t.selected)
-      .child(div().text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(col.title))
-      .child(div().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)));
-    const el = v_flex().id(`col-${col.id}`).min_w(0).gap(8).p(8).rounded(8).bg(t.surface).child(header);
+    this.ledgerHead(header, t, t[col.color], 2)
+      .child(div().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child(col.title))
+      .child(this.count(cards.length, t));
+    const el = lane(v_flex().id(`col-${col.id}`).min_w(0).gap(8).py(4).px(first && !stacked ? 2 : 8)).child(header);
     if (!stacked) el.flex_1().h_full();
     else el.flex_none(); // stacked columns keep their height; the board scrolls as one list
     if (collapsed) return el;
@@ -3064,12 +3402,12 @@ export default class FmBoard extends View {
     const color = this.colorOf(name, t);
     const tag = this.tags?.get(name) ?? name.slice(0, 3).toUpperCase();
     // A fixed width (scaled with the text) keeps every tag the same size, whatever its letters.
-    return h_flex().id(id).flex_none().w(this.fs(38)).justify_center().py(1).rounded(9).bg(color)
-      .text_size(this.fs(11)).font_semibold().text_color("#ffffff").tooltip(name).child(tag);
+    return h_flex().id(id).flex_none().w(this.fs(38)).justify_center().py(1).rounded(3).bg(color)
+      .font_family(DATA_FONT).text_size(this.fs(11)).font_semibold().text_color("#ffffff").tooltip(name).child(tag);
   }
 
   badge(label, color) {
-    return div().flex_none().px(6).py(1).rounded(5).border(1).border_color(color).text_size(this.fs(11)).text_color(color).child(label);
+    return div().flex_none().px(6).py(1).rounded(3).border(1).border_color(color).font_family(DATA_FONT).text_size(this.fs(11)).text_color(color).child(label);
   }
 
   // One chip per supervision process: a dot (alive or gone), the role, and how long it
@@ -3112,30 +3450,25 @@ export default class FmBoard extends View {
       right.child(updated);
       if (this.ready !== null) right.child(this.ready ? this.badge("Receiving", t.ansi2) : this.badge("Not receiving", t.working));
     }
-    return h_flex().flex_none().gap(10).items_center().justify_between().min_w(0)
-      .child(h_flex().flex_1().min_w(0).gap(10).items_center().overflow_hidden().children(this.watcherChips(t)))
+    // The whole status group sits at the strip's right end, apart from the tabs, so a red
+    // "No watcher" never reads as another tab.
+    return h_flex().id("board-status").flex_none().gap(10).items_center().justify_end().min_w(0)
+      .child(h_flex().flex_shrink(1).min_w(0).gap(10).items_center().overflow_hidden().children(this.watcherChips(t)))
       .child(right);
   }
 
   // Compact monitoring list of registered checks (state/*.check.sh) and the home-wide last sweep time.
-  checksSection(t) {
-    const collapsed = this.collapsed.has(CHECKS);
+  checksBody(t) {
     const list = this.checks ?? [];
     const sweep = this.checks === null ? "Loading…"
       : this.checksFailed ? "Could not read"
       : (localTime(this.lastCheckSweep) || "Not recorded");
-    const header = h_flex().id("head-checks").gap(8).items_center().justify_between().px(6).py(3).rounded(5).bg(t.selected)
-      .cursor_pointer().hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggle(CHECKS, cx))
-      .child(h_flex().flex_none().gap(6).items_center()
-        .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
-        .child(div().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child("Registered checks"))
-        .when(this.checks !== null && !this.checksFailed, (e) => e.child(div().text_size(this.fs(11)).text_color(t.dim).child(String(list.length)))))
-      .child(div().id("checks-last-sweep").min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim)
-        .tooltip("Home-wide watcher check-sweep time from state/.last-check; Firstmate does not record per-check running state, last run, or result")
-        .child(`Last sweep (all checks): ${sweep}`));
-    const wrap = v_flex().id("checks-section").flex_none().gap(4).pt(6).border_t(1).border_color(t.border)
-      .child(header);
-    if (collapsed) return wrap;
+    const wrap = v_flex().id("checks-section").gap(4)
+      .child(h_flex().gap(8).items_center().justify_between()
+        .child(div().flex_none().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child("Registered checks"))
+        .child(div().id("checks-last-sweep").min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim)
+          .tooltip("Home-wide watcher check-sweep time from state/.last-check; Firstmate does not record per-check running state, last run, or result")
+          .child(`Last sweep (all checks): ${sweep}`)));
     const rows = v_flex().id("checks-list").gap(2).max_h(110).min_h(0).flex_shrink(1).overflow_y_scroll();
     if (this.checks === null) {
       rows.child(div().px(6).text_size(this.fs(11)).text_color(t.dim).child("Loading registered checks…"));
@@ -3150,6 +3483,49 @@ export default class FmBoard extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11)).text_color(t.foreground).child(c.name))));
     }
     return wrap.child(rows);
+  }
+
+  // Below the board: one strip of tabs (Commands, Projects, Checks) with the supervision status on
+  // its right, and the chosen tab's content under it. Clicking the open tab folds the content away.
+  // The Projects tab carries the count of Board requests firstmate has not handled yet, such as
+  // Memos, so they stay in view whichever tab is open.
+  /** @param {Record<string, string>} t */
+  bottomGroup(t) {
+    const folded = this.collapsed.has(BOTTOM);
+    const tab = (id, label, ...extra) => {
+      const on = this.bottomTab === id;
+      return h_flex().id(`bottom-tab-${id}`).flex_none().gap(6).items_center().px(2).pt(2).pb(6)
+        .border_b(2).border_color(on && !folded ? t.foreground : t.background)
+        .cursor_pointer().hover((s) => s.opacity(0.75))
+        .tooltip(on ? (folded ? "Show this tab" : "Fold this tab away") : `Show ${label}`)
+        .on_click((_e, cx) => this.pickBottomTab(id, cx))
+        .child(div().text_size(this.fs(12)).font_semibold().text_color(on ? t.foreground : t.muted).child(label))
+        .children(extra.filter(Boolean));
+    };
+    const pending = this.requests.length;
+    const strip = h_flex().id("bottom-tabs").gap(16).items_end().flex_wrap()
+      .when(!folded, (e) => e.border_b(1).border_color(t.border))
+      .child(tab("commands", "Commands"))
+      .child(tab("projects", "Projects", this.count(this.projects.length, t), pending > 0
+        ? div().id("projects-pending").flex_none().px(6).rounded(3).border(1).border_color(t.working)
+          .font_family(DATA_FONT).font_weight(500).text_size(this.fs(10)).text_color(t.working)
+          .tooltip("Board requests and Memos firstmate has not handled yet").child(`${pending} pending`)
+        : null))
+      .child(tab("checks", "Checks", this.checks !== null && !this.checksFailed ? this.count(this.checks.length, t) : null))
+      .child(div().flex_1().min_w(0).pb(6).child(this.footer(t)));
+    const el = this.frame(v_flex().id("bottom-group").flex_none().gap(8), t).child(strip);
+    if (folded) return el;
+    return el.child(this.bottomTab === "projects" ? this.projectsBody(t)
+      : this.bottomTab === "checks" ? this.checksBody(t) : this.commandsBody(t));
+  }
+
+  // Shows another tab, or folds or unfolds the one already shown; both are remembered.
+  /** @param {string} id @param {import("gpui-kit").Context} cx */
+  pickBottomTab(id, cx) {
+    if (this.bottomTab === id) { this.toggle(BOTTOM, cx); return; }
+    this.bottomTab = id;
+    try { localStorage.setItem(BOTTOM_TAB_KEY, id); } catch {}
+    if (this.collapsed.has(BOTTOM)) this.toggle(BOTTOM, cx); else cx.notify();
   }
 
   render(_cx) {
@@ -3195,15 +3571,24 @@ export default class FmBoard extends View {
       ? this.renderChainsView(t, stacked)
       : (stacked
         ? v_flex().id("board").overflow_y_scrollbar().track_scroll(this.boardScroll)
-        : h_flex().id("board")).flex_1().min_h(0).gap(8)
-          .children(this.shownColumns().map((c) => this.column(c, t, stacked)));
+        : h_flex().id("board")).flex_1().min_h(0).gap(stacked ? 8 : 0)
+          .children(this.shownColumns().map((c, i) => this.column(c, t, stacked, i === 0)));
     const root = v_flex().id("root").size_full().bg(t.canvas).px(8).pt(2.5).pb(3).gap(6)
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
       .track_focus(this.keys)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && (this.inspectorOpen || this.selectedCardId)) { this.clearChainSelection(cx); cx.stop_propagation(); }
-      })
-      .child(this.projectSection(t));
+        else if (e.key === "escape" && this.pointedId) { this.pointedId = null; cx.notify(); cx.stop_propagation(); }
+        else if (this.focusKey(e, cx)) cx.stop_propagation();
+      });
+    // Focus keeps only the captain's calls at full strength; the rest of the Board steps back.
+    const back = (el) => el.when(this.focusMode, (e) => e.opacity(FOCUS_DIM));
+    if (this.cards) {
+      const holds = this.waitingHolds();
+      root.child(this.todayStrip(t, holds, stacked));
+      const next = this.nextMove(t, holds);
+      if (next) root.child(next);
+    }
     if (this.filter) {
       root.child(h_flex().gap(6).items_center()
         .child(div().text_size(this.fs(11)).text_color(t.muted).child(`Filter: ${this.filter}`))
@@ -3211,9 +3596,10 @@ export default class FmBoard extends View {
     }
     root.child(this.frame(v_flex().flex_1().min_h(0).gap(6), t)
       .child(this.searchRow(t, matches))
+      .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))
-      .child(board).child(this.footer(t)).child(this.checksSection(t)))
-      .child(this.commandSection(t));
+      .child(board))
+      .child(back(this.bottomGroup(t)));
     if (this.viewer.root) {
       this.splitWasOpen = true;
       // The viewer sits on the Board's right behind a draggable divider. Herdr keeps the

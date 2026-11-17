@@ -1,6 +1,6 @@
 # Firstmate for Herdr
 
-A Herdr window with a task board, read-only Files and Changes viewer, and a tab bar with a Board button.
+A Herdr window with a task board, read-only Files and Changes viewer, and a tab bar with PR and Board buttons.
 
 ![Firstmate for Herdr](preview.png)
 
@@ -11,12 +11,23 @@ A 268px left sidebar contains the workspace brand, spaces, agents, and footer.
 The main area has a 42px tab bar, a flexible active-tab pane, a hidden right panel, and a 28px status bar.
 When the panel is shown it takes two thirds of the row and the active-tab pane one third, so both narrow and widen with the window.
 
-The tab bar sits on the chrome background and shows tabs plus Board, Files, and Changes panel buttons.
+The tab bar sits on the chrome background and shows tabs plus PR, Board, Files, and Changes panel buttons; the PR button appears only while the layout's panel stack holds a `pr` block.
 
-The board shows project rows above the task section, which holds a `Kanban | Chains` view toggle and search field with a find icon above the task board (either Kanban columns or Chains swimlanes), a footer with update and watcher status, a collapsible Registered checks section below the footer, and command controls below.
+The board shows the Today strip and the NEXT MOVE band at the top, then the task section. The task section holds a `Kanban | Chains` view toggle and a search field with a find icon above the task board (either Kanban columns or Chains swimlanes).
+Below the task section, one tab group holds `Commands` (command buttons and the Scout, Task, and Memo field), `Projects` (project rows, the add form, and pending requests), and `Checks` (the Registered checks list).
+Its tab strip carries the update and watcher status on its right. The Projects tab counts the Board requests Firstmate has not handled yet, such as Memos, as `N pending`, so they stay in view whichever tab is open.
+Clicking another tab shows it, and clicking the open tab folds the group down to its strip. The chosen tab and the fold are remembered.
 Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a three-letter abbreviation and a color of its own: a project gets the first palette color no other project holds when it is first seen and keeps it when others are added or removed, and its color is freed once a successful read finds it in neither the registry nor any card, so projects get distinct colors while free palette colors remain.
 When none is free, or local storage cannot be used, a project takes a color derived from its name and keeps it even after a color is freed; a project with a chosen color keeps its automatic color reserved for when Auto is chosen again; in those cases two projects can share a color.
 Each Board copy's text follows Herdr's terminal font size and grows with that copy's width.
+The board uses the Ledger look, which it shares with the separate PR viewer mod. Headings sit on a hairline instead of a filled strip, and Kanban columns are open lanes split by hairlines, each heading underlined in its column's status color. Every card has a 3px bar on its left edge in that color (red for a failed worker). Counts, task ids, project tags, priorities, and wait times use Geist Mono, which ships with Herdr, while the worker screen lines keep the terminal font.
+The Today strip shows five counts with one line under each.
+`Done today` counts finished backlog items whose merged, reported, or done date is today in Korea time.
+`Waiting on you` counts holds to answer now and shows the oldest one's wait, `Working` counts working cards and their background jobs, `Ready to land` counts cards in Review or with a PR waiting, and `Blocked` counts Blocked cards and how many failed.
+While a hold waits to be answered now, a NEXT MOVE band sits below the strip. It is a plain frame on the theme's background with a bar in the held (blocked) color on its left edge, and it shows the longest-waiting hold to answer now.
+Its first line names the card the decision comes from: the project tag, task id, and title, then the wait and its place among the holds to answer now. Clicking that card line switches to Kanban if needed, shows the card where a filter, search, or fold hides it, scrolls to it, and rings it in the held (blocked) color for 4 seconds or until `Esc`. That ring is the NEXT MOVE band's color, so it is not mistaken for the accent ring that hovering or selecting a card in a dependency chain draws.
+The hold's question follows in the normal text color; for a hold with a topic, the band shows the topic's shared question and options, as the Held column's topic box does.
+Holds are ordered by the backlog's hold-set time, else their filing date, with ties kept in backlog order.
 
 ## How it behaves
 
@@ -29,12 +40,14 @@ The panel buttons select or hide their panel; the chosen panel is remembered per
 Todo, Queued, Working, and Done columns always appear.
 Held, Parked, Blocked, Paused, Review, and Unknown appear while they contain cards.
 The Held column draws its cards in up to three labelled groups, each with its card count and shown only while it holds a card: `Answer now`, then `Deferred`, then `Waiting on other work`.
-Each group starts with a heading strip across the column that carries its name and card count.
+Each group starts with a hairline-ruled heading that carries its name and card count.
 The fleet snapshot's `hold_bucket` places a card: `live` is answered now, `dated` and `aged` are deferred, and `blocked` waits on other work.
 Only captain holds have a bucket: an `external` hold waits on other work, and a captain hold with no bucket is answered now.
 A deferred card that has a `hold_until` date shows it on its state row as `until <month>-<day>`, such as `until 12-01`.
 There is no Failed column: a task whose worker reported `failed:` sits in the Blocked column, marked with a red `Failed` label on its state row and a red border (and `failed` in red on its Chains node and in card dependency chain lists), and keeps its detail text.
-Their header dots use the theme's idle, working, blocked, done, and unknown colors as appropriate.
+Their heading rules and card bars (and a folded column's dot) use the theme's idle, working, blocked, done, and unknown colors as appropriate.
+Held and Blocked use the blocked color. Parked uses the theme's `ansi5`, because a parked task waits on review activity rather than on the captain.
+A hold to answer now shows how long it has waited on its state row, such as `2h 14m` from a hold-set time or `3d` from a date.
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.
 The board search matches task ids and the title, note, and decision text on cards, ignoring case.
 Enter or the find icon applies it: in Kanban each column then shows only matching cards, columns and cards holding a match open even when folded, and the current match gets an accent border; in Chains only lanes holding a match are shown, open even when folded, with non-matching nodes dimmed, and the `Independent` drawer opens to list only matching tasks.
@@ -60,6 +73,7 @@ A card lists every decision its worker's status log still holds open, from the s
 A detail line that would only repeat one of those decisions is left out.
 An unobservable worker uses recorded status evidence when available, otherwise it appears in Unknown.
 Cards with a finished worker and a review link show a PR waiting badge while the backlog and worker detail still indicate pending review.
+Clicking a PR link on a card or a Chains node shows that PR in the layout's PR panel when the separate `herdr-pr-viewer` mod is installed in the Herdr home, following that mod's panel contract. It sets the shared value `herdr-pr-viewer.show` to the link, the card's task (`<task id> · <project>`), its project tag and color, and the click time, which makes every click a new request. Then it selects the `pr` child of the panel stack and shows the panel. Without the mod, or in a layout without that panel, the link opens in the browser.
 The board does not query the forge to check whether the link has merged.
 
 Clicking an option of a held decision puts `[Board answer] <ids>: <label> (<option text>) ` into the Firstmate chat input, ready to edit and confirm with Enter.
@@ -67,6 +81,11 @@ The Ask icon inserts `` `[Board card] <ids>: <title or group question>` `` follo
 Clicking an open decision's text puts `[Board answer] <id> [key=<key>]: ` there, and clicking one of its options puts `[Board answer] <id> [key=<key>]: <label> (<option text>) `; the key names that one decision, so Firstmate can close it with `fm-send.sh --resolve-key <key>` even when the card has several.
 All these drafts stay on one line with a trailing space, and the input receives focus so you can keep typing.
 Held cards without options use the chat input for free-text answers; a hold's options outside the Held column are shown as plain text.
+The NEXT MOVE band's options put the same drafts in the chat input as the Held card's options, covering every hold to answer now that shares its topic. Its options are the board's ordinary raised buttons, with the recommended one as the solid primary button, and `Write answer` starts a free-text draft.
+In Kanban, the toolbar's `Focus` button (or `F` while the Board itself has the keyboard) turns Focus on and off.
+Focus dims everything except the captain's calls (holds to answer now and failed workers) and rings the selected call in the held (blocked) color, starting with the NEXT MOVE card. A key row under the search field lists its keys.
+`j`/`k` (or the arrow keys) move between the calls in drawing order, showing each card open and scrolling to it. When the call has a live worker terminal, Focus runs Herdr's peek of that terminal, which shows it over the tab beside the Board without taking the keyboard.
+`Enter` drafts the recommended answer (or starts a free-text draft), `o` opens the worker, and `Esc` or `F` leaves Focus; switching to Chains also leaves it.
 Live cards can open their worker with a terminal icon, and the read-only Files and Changes viewer with a `Files · Changes` button when the snapshot reports the worker's copy of the project as present (`paths.worktree`); the viewer's source picker then offers that copy beside the project's local copy.
 When the card's worker terminal is live and still labeled with the card's task, the card ends in a Live strip set apart by a light tint of the theme's working color, so the card body above keeps the shape of cards in other columns.
 The strip's header holds a working-color dot, the worker terminal's own status as Herdr reports it (`Worker working`, `Worker blocked`, or `Worker idle`, which also covers a finished turn; `Live` when the terminal reports none), the Open worker icon, and a Peek icon that opens Herdr's peek of that terminal over the current tab without focusing, switching, or typing anything; both icons have tooltips and screen reader labels.
@@ -100,7 +119,7 @@ Command buttons submit Bearings, Ahoy, Stow, Quiet, Quiet off, AFK, or Update co
 On each insertion or send, the board asks `home/bin/fm-inbox.sh ready` to inspect the session lock and uses its PID only when the lock is held by a live harness.
 It matches that PID to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.
 If the lock cannot be read or no terminal can be proven, commands and Scout or Task requests fall back to the Firstmate inbox, while card drafts only show a notice and file nothing.
-The Memo button beside Task never types into the terminal: it always saves the text as a Firstmate inbox note (`fm-inbox.sh note`) that asks Firstmate to file it in the backlog without starting work, so it is written to disk at once whether Firstmate is running, stopped on a usage limit, or closed, and it shows in the Projects list as a pending request.
+The Memo button beside Task never types into the terminal: it always saves the text as a Firstmate inbox note (`fm-inbox.sh note`) that asks Firstmate to file it in the backlog without starting work, so it is written to disk at once whether Firstmate is running, stopped on a usage limit, or closed, and it shows in the Projects tab as a pending request, counted on the tab.
 A failed save keeps the text in the field.
 
 The tab bar marks working tabs with a spinner, blocked and done tabs with status dots, and zoomed tabs with a `Z` suffix.
@@ -109,29 +128,29 @@ Tabs without a custom name follow useful live agent session titles, and the acti
 Smooth wheel gestures accumulate and debounce small events, while each wheel notch switches one tab.
 Invalid saved panel data falls back to an empty per-space panel history.
 Controls highlight on hover, and project badges and several buttons have explanatory tooltips.
-The board watches the home's state and data folders and has a 30-second refresh fallback; each refresh is bounded by a 15-second deadline (showing `Update failed` on timeout while keeping the last board on screen so later refreshes can still run), and its footer `Updated` time is displayed in Korea time; clicking it, or the `Update failed` notice, refreshes immediately.
-Below the footer, the collapsible Registered checks section lists one row per `state/*.check.sh` file (named from the filename) and shows the home-wide last check-sweep timestamp from `state/.last-check` in the viewer's local time, labeled `Last sweep (all checks)` (or `Not recorded` when absent); when the read fails or times out, it shows `Could not read registered checks` instead of a list or sweep time. Per-check running state, per-check last-run time, and check results are not recorded by Firstmate, so the board does not display per-check values and never reads check scripts, outputs, or private check state directories.
+The board watches the home's state and data folders and has a 30-second refresh fallback; each refresh is bounded by a 15-second deadline (showing `Update failed` on timeout while keeping the last board on screen so later refreshes can still run), and the `Updated` time on the tab strip is displayed in Korea time; clicking it, or the `Update failed` notice, refreshes immediately.
+The Checks tab's Registered checks section lists one row per `state/*.check.sh` file (named from the filename) and shows the home-wide last check-sweep timestamp from `state/.last-check` in the viewer's local time, labeled `Last sweep (all checks)` (or `Not recorded` when absent); when the read fails or times out, it shows `Could not read registered checks` instead of a list or sweep time. Per-check running state, per-check last-run time, and check results are not recorded by Firstmate, so the board does not display per-check values and never reads check scripts, outputs, or private check state directories.
 
 ## Built from
 
 `layouts/firstmate.json` is a row with a 268px sidebar and a flexible work column. The work column contains the 42px `fm-tabs` block, a row with an active-tab block (weight 1, at least 480px) and a hidden panel stack (weight 2, at least 280px), and a 28px `workspace-status` block.
 
-The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-board` mod. Its `home` prop is the path to the Firstmate home; set it before using the layout.
+The panel stack contains Herdr's shipped `files` and `changes` mods, the `fm-board` mod, and a `pr` block showing the separate `herdr-pr-viewer` mod. Its `home` prop is the path to the Firstmate home; set it before using the layout.
 
-`fm-tabs` is based on Herdr 0.1.16's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, `settings`, and `checking`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` icon.
+`fm-tabs` is based on Herdr 0.1.16's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, `settings`, and `checking`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` and `pr.svg` icons.
 
-`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, and `checking` from `herdr`.
+`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, `checking`, `appHome`, `layout`, and `setShared` from `herdr`.
 It draws Herdr's shipped `files` folder icon and `workspace-chrome` search, terminal, and layers icons.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals and `hc read` to read live worker screens for the card lines.
-Its Peek icon runs Herdr's `terminal.peek` command.
+Its Peek icon and Focus mode run Herdr's `terminal.peek` command, and its PR links run `layout.select` and `layout.show` to show the PR panel.
 Card drafts use macOS `pbpaste` and `pbcopy` to save clipboard text to a temporary file and restore it around Herdr's `terminal.paste` action; they verify terminal focus before pasting and leave Enter to the owner.
 They first read the clipboard types with `osascript`; plain text is restored as is, and rich text such as HTML, RTF, or a web archive is restored as plain text with its formatting dropped.
 If the clipboard holds an image, files, or RTFD, which can carry attachments, or holds no plain text at all, nothing is inserted, the clipboard is left untouched, and a notice asks you to paste it first.
-It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, `/bin/ps` to list processes for the cards' background job rows, `sh` with `stat` to list `state/*.check.sh` filenames and read the `state/.last-check` mtime (bounded by a 3-second timeout, without reading file contents), and `open` for folders or review URLs.
+It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, `/bin/ps` to list processes for the cards' background job rows, `sh` with `stat` to list `state/*.check.sh` filenames and read the `state/.last-check` mtime (bounded by a 3-second timeout, without reading file contents), and `open` for folders, and for review URLs when the PR viewer mod or the layout's PR panel is missing.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
 The viewer cancels its pending folder watch when its root changes or it closes.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.
-Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews.
+Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews. Among the `ui` props, `focus` opens Focus on a card and `point` rings a card as the NEXT MOVE card line does, so previews can show those states without key presses.
 During `herdr-app check`, the Board skips startup reads, helper commands, watches, and refresh timers, and the tab bar skips panel persistence and layout commands.
 
 ## Watch out
@@ -153,7 +172,6 @@ Whether dragging the divider saves a share or a pixel width has not been tested.
 With all 11 columns open at about 1,320px pane width, card titles wrap heavily.
 A Done card's PR waiting badge can overlap its title and leave the title wrapping one letter per line.
 Collapse some columns or give the board more width when this happens.
-The preview shows a search for one fictional project's tasks and the temporary capture mod's name in the pane header.
 The board shows at most 20 Done cards.
 The viewer bounds listings to 500 entries per folder and 5,000 total, changes to 1,000 files, and diffs to 1,500 lines.
 The Files and Changes viewer does not edit, commit, stage, or discard files.
@@ -164,7 +182,7 @@ The layout and mods expect Herdr's shipped `workspace-chrome`, `spaces`, `agents
 
 Both mod folders pass `herdr-app check`.
 
-`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files · Changes` button, the Held groups, the open decisions with their answer drafts, and the Registered checks section.
+`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files · Changes` button, the Held groups, the open decisions with their answer drafts, the Today strip, NEXT MOVE, card bars, Focus keys, PR links with and without the PR viewer mod, the tab group below the board, and the Registered checks section.
 
 The layout opens with the configured Firstmate home, displays the board and panel controls, and switching spaces restores each space's selected panel.
 

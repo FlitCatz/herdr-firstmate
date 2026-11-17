@@ -148,10 +148,11 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   const {
     FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout,
     chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor,
-    CHAIN_CARD_W, CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
+    CHAIN_CARD_W, CHAIN_GUT, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_PORT_MAX,
+    CHAIN_ROW_PAD, CHAIN_LANE_GAP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
     waitingLabel, blocksLabel,
   } = vm.runInNewContext(
-    `${source}\n({ FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout, chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor, CHAIN_CARD_W, CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H, waitingLabel, blocksLabel })`,
+    `${source}\n({ FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout, chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor, CHAIN_CARD_W, CHAIN_GUT, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_PORT_MAX, CHAIN_ROW_PAD, CHAIN_LANE_GAP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H, waitingLabel, blocksLabel })`,
     scope,
   );
   const view = new FmBoard();
@@ -197,7 +198,8 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   return {
     view, registry, reload, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout,
     chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor,
-    CHAIN_CARD_W, CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
+    CHAIN_CARD_W, CHAIN_GUT, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_PORT_MAX,
+    CHAIN_ROW_PAD, CHAIN_LANE_GAP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
     waitingLabel, blocksLabel, initEffects,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
@@ -2240,12 +2242,21 @@ test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce a
   const {
     cardsFrom, dependencyGraph,
     chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs,
-    CHAIN_GUT, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
+    CHAIN_GUT, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_PORT_MAX,
+    CHAIN_ROW_PAD, CHAIN_LANE_GAP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
   } = b;
+
+  // Widened Chains spacing constants preserve generous separation while keeping arrowheads on the card edge.
+  assert.equal(CHAIN_GUT, 72);
+  assert.equal(CHAIN_PORT_TOP, 14);
+  assert.equal(CHAIN_PORT_STEP, 24);
+  assert.equal(CHAIN_PORT_MAX, 68);
+  assert.equal(CHAIN_ROW_PAD, 24);
+  assert.equal(CHAIN_LANE_GAP, 10);
 
   // chainJoint keeps an odd head height centered on the 1px line slot [y, y+1] across every port height.
   assert.equal(CHAIN_HEAD_H % 2, 1);
-  for (const y of [18, 34, 50, 66]) {
+  for (const y of [CHAIN_PORT_TOP, CHAIN_PORT_TOP + CHAIN_PORT_STEP, CHAIN_PORT_TOP + 2 * CHAIN_PORT_STEP, CHAIN_PORT_MAX]) {
     const j = chainJoint(y);
     assert.equal(j.lineTop, y);
     assert.equal(j.lineH, 1);
@@ -2315,7 +2326,12 @@ test("chainJoint, placeChainLane, chainGutterSpecs, and chainCellSpecs produce a
   }));
   assert.equal(assertCleanRouting(b, placeChainLane(rg.components[0], rg.nodes), "reordered blockers"), 0);
 
-  // Skip-level pass-through across empty cell (r=2, c=2) draws a horizontal bar at maple-skip's outgoing port 18.
+  // Three-way join spreads its arrowheads across the card edge with >=20px step.
+  const releasePorts = [edge("maple-panel", "maple-release").p2, edge("orchard-icons", "maple-release").p2, edge("maple-skip", "maple-release").p2];
+  assert.ok(releasePorts[1] - releasePorts[0] >= 20, `3-way fan-in top gap: ${releasePorts}`);
+  assert.ok(releasePorts[2] - releasePorts[1] >= 20, `3-way fan-in bottom gap: ${releasePorts}`);
+
+  // Skip-level pass-through across empty cell (r=2, c=2) draws a horizontal bar at maple-skip's outgoing port.
   const pass = chainCellSpecs(layout, 2, 2);
   assert.equal(pass.length, 1);
   assert.equal(pass[0].top, edge("maple-skip", "maple-release").p1);
@@ -2356,6 +2372,19 @@ test("Chains routes a skip-level edge around the cards it passes instead of thro
   assert.ok(underB[0].bottom >= 0 && underB[0].bottom < diamond.rowPad[0], "lane sits in the row padding");
   // The only row is the last one, yet it keeps padding for the lane.
   assert.ok(diamond.rowPad[0] > 0);
+
+  // Overlapping skip-level detours keep CHAIN_LANE_GAP separation and >= CHAIN_R clearance from cards.
+  const dualDetour = lane([
+    { id: "D0", title: "D0", unresolved_blocker_ids: [] },
+    { id: "D1", title: "D1", unresolved_blocker_ids: ["D0"] },
+    { id: "D2", title: "D2", unresolved_blocker_ids: ["D1", "D0"] },
+    { id: "D3", title: "D3", unresolved_blocker_ids: ["D2", "D1"] },
+  ]);
+  assertCleanRouting(b, dualDetour, "dual detour");
+  const detourChans = dualDetour.edges.filter((e) => e.chan != null).map((e) => e.chan).sort((x, y) => x - y);
+  assert.equal(detourChans.length, 2);
+  assert.equal(detourChans[1] - detourChans[0], b.CHAIN_LANE_GAP);
+  assert.ok(detourChans[0] >= b.CHAIN_R && dualDetour.rowPad[0] - detourChans[1] >= b.CHAIN_R);
 
   // Side branch X -> Y -> Z on row 1, plus X -> Z (same row, past Y) and X -> S3 (up to the spine, past Y).
   const branch = lane([
@@ -2496,7 +2525,7 @@ test("Chains keeps a join's arrowheads apart when the card beside it unblocks ma
 });
 
 test("Chains connector lines, arrowheads, and elbows obey all alignment rules in wide and narrow views across selection states", async () => {
-  // Exercises all 4 elbow directions (tr, bl, br, tl), multi-port joins (18, 34, 50),
+  // Exercises all 4 elbow directions (tr, bl, br, tl), multi-port joins,
   // cross-project dashed links, pass-through cells, and narrow stepper branch heads.
   const records = [
     { id: "maple-token", state: "in_flight", repo: "maple-workshop", title: "Token", priority: "0", structured: true, unresolved_blocker_ids: [] },

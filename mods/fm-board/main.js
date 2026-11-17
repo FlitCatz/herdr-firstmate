@@ -798,14 +798,14 @@ function chainSpineLayout(comp, nodesMap) {
 }
 
 const CHAIN_CARD_W = 200;
-const CHAIN_GUT = 44;
-const CHAIN_PORT_TOP = 18;
-const CHAIN_PORT_STEP = 16;
+const CHAIN_GUT = 72;
+const CHAIN_PORT_TOP = 14;
+const CHAIN_PORT_STEP = 24;
 // Lowest port a card offers, so every arrowhead stays on the edge of even the shortest (~78px) card.
-const CHAIN_PORT_MAX = 66;
+const CHAIN_PORT_MAX = 68;
 const CHAIN_R = 6;
-const CHAIN_ROW_PAD = 12;
-const CHAIN_LANE_GAP = 4;
+const CHAIN_ROW_PAD = 24;
+const CHAIN_LANE_GAP = 10;
 const CHAIN_HEAD_W = 6;
 const CHAIN_HEAD_H = 9;
 
@@ -906,7 +906,7 @@ function placeChainLane(comp, nodesMap) {
     let i = rowLanes.findIndex((used) => used.every(([a, b]) => to < a || from > b));
     if (i < 0) i = rowLanes.push([]) - 1;
     rowLanes[i].push([from, to]);
-    e.chan = CHAIN_R + CHAIN_LANE_GAP * i;
+    e.chan = Math.floor(CHAIN_ROW_PAD / 2) + CHAIN_LANE_GAP * i;
   }
   const rowPad = grid.map((_, r) => {
     const n = lanes.get(r)?.length ?? 0;
@@ -2973,7 +2973,7 @@ export default class FmBoard extends View {
   renderChainsView(t, stacked) {
     const chains = this.visibleChains();
     const independent = this.independentCards();
-    const wrap = v_flex().id("chains-board").flex_1().min_h(0).gap(8).overflow_y_scrollbar();
+    const wrap = v_flex().id("chains-board").flex_1().min_h(0).gap(12).overflow_y_scrollbar();
     if (chains.length) wrap.child(this.renderChainLegend(t));
     if (!chains.length) {
       if (this.query && !independent.length) {

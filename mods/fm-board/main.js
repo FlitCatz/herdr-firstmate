@@ -513,8 +513,7 @@ function prWaiting(record, task) {
 // backlog item is marked done or merged. Scouts never have a branch to land.
 function branchReady(record, task) {
   if (task?.mode !== "local-only" || (task?.kind && task.kind !== "ship")) return false;
-  const r = record ?? task?.backlog;
-  if (r?.state === "done" || r?.merged) return false;
+  if (record?.state === "done" || record?.merged) return false;
   if (task?.pr?.url) return false;
   const state = task?.current_state?.state;
   if (state === "done") return true;

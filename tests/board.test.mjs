@@ -92,7 +92,7 @@ function geometry(items) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null, prViewer = false, rootLayout = null } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null, prViewer = false, rootLayout = null, terminals = [] } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
@@ -121,7 +121,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
     props: () => ({ home: HOME, ...(preview ? { snapshot_file: snapshotFile } : {}), collapsed: [], ui }),
     checking: () => checkMode,
-    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null,
+    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => terminals, focused: () => null,
     run: (name, args) => { commands.push({ name, args }); },
     openOverlay: (spec) => { overlays.push(spec); return `overlay-${overlays.length}`; },
     layout: () => rootLayout, setShared: (key, value) => { sharedSet.push({ key, value }); },
@@ -130,8 +130,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     readTextFile: async (file) => {
       initEffects.push("read");
       if (file === "/fictional/herdr-home/mods/herdr-pr-viewer/mod.json") {
-        if (prViewer) return "{}";
-        throw new Error(`no such file: ${file}`);
+        return prViewer ? "{}" : null;
       }
       if (file === snapshotFile) return customSnapshot ? JSON.stringify(customSnapshot) : readFile(file, "utf8");
       if (file === `${HOME}/data/projects.md`) {
@@ -2667,14 +2666,36 @@ const opacityOf = (b, id) => b.items.find((x) => x.id === id)?.calls.findLast((c
 const koreaToday = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
 
 test("the Today strip counts what landed today, what waits on the captain, what runs, what is ready, and what is blocked", async () => {
-  const b = await board({ snapshot: changedSnapshot((s) => { record(s, "orchard-seed-data").completion = { verb: "merged", date: koreaToday() }; }) });
+  const task = (s, id) => s.tasks.find((t) => t.id === id);
+  // The fixture's five workers, placed by hand: maple-preview-screen works, idle in its terminal
+  // while a test run continues; maple-theme-tokens finished with an open PR and maple-button-labels
+  // reported done with a PR, both ready to land; orchard-nav-style reported blocked and
+  // orchard-export-check failed, both blocked.
+  const changed = changedSnapshot((s) => {
+    record(s, "orchard-seed-data").completion = { verb: "merged", date: koreaToday() };
+    Object.assign(task(s, "maple-theme-tokens").current_state, { state: "done", detail: "finished" });
+    const labels = task(s, "maple-button-labels");
+    Object.assign(labels.hints, { pending_decision: false, open_decisions: [], last_event_text: "done: labels shipped" });
+    labels.pr.url = "https://github.com/FlitCatz/maple-workshop/pull/43";
+    task(s, "orchard-nav-style").hints.pending_decision = false;
+    Object.assign(task(s, "orchard-export-check").current_state, { state: "failed", detail: "mirror check failed" });
+  });
+  const exec = async (cmd) => (cmd === "/bin/ps"
+    ? { code: 0, stdout: "500 1 claude\n501 500 node --test tests/\n", stderr: "" }
+    : { code: 1, stdout: "", stderr: "" });
+  const b = await board({ snapshot: changed, exec,
+    terminals: [{ address: "t1", state: "live", status: "idle", pid: 500, labels: { "firstmate.task": "fm-maple-preview-screen" } }] });
+  const listings = [];
+  b.view.readBackground({ notify() {}, spawn: (fn) => listings.push(fn({ notify() {} })) });
+  await Promise.all(listings);
+  b.redraw();
   const cell = (id) => b.text(`today-${id}`);
   assert.match(cell("done"), /^Done today 1/);
   // The three holds to answer now; held-since falls back to the filing date, days ago.
   assert.match(cell("waiting"), /^Waiting on you 3 oldest \d+d$/);
-  assert.match(cell("working"), /^Working \d+/);
-  assert.match(cell("ready"), /^Ready to land \d+/);
-  assert.match(cell("blocked"), /^Blocked \d+/);
+  assert.equal(cell("working"), "Working 1 1 background job");
+  assert.match(cell("ready"), /^Ready to land 2\s*$/);
+  assert.equal(cell("blocked"), "Blocked 2 1 failed");
   // A finished item from another day is not today's.
   const old = await board();
   assert.match(old.text("today-done"), /^Done today 0/);
@@ -2751,7 +2772,7 @@ test("Focus dims everything but the captain's calls, j/k move between them, and 
   assert.equal(b.view.focusMode, false);
 });
 
-test("a PR link shows the PR in the layout's PR panel, in a pane without that panel, and in the browser without the mod", async () => {
+test("a PR link shows the PR in the layout's PR panel, and in the browser without that panel or without the mod", async () => {
   const opened = [];
   const exec = async (cmd, args) => { if (cmd === "open") opened.push(args[0]); return { code: 1, stdout: "", stderr: "" }; };
   const url = "https://github.com/FlitCatz/maple-workshop/pull/42";
@@ -2778,18 +2799,18 @@ test("a PR link shows the PR in the layout's PR panel, in a pane without that pa
   inPanel.click("pr-maple-theme-tokens");
   await inPanel.settle();
   assert.equal(inPanel.sharedSet.length, 2);
-  // A layout without the PR panel gets the viewer in a pane beside the current one.
+  // A layout without the PR panel opens the link in the browser and changes nothing in Herdr.
   const noPanel = await board({ prViewer: true, exec, rootLayout: { id: "root", children: [] } });
   noPanel.click("pr-maple-theme-tokens");
   await noPanel.settle();
-  assert.deepEqual(plain(noPanel.commands), [{ name: "pane.split", args: { direction: "right", mod: "herdr-pr-viewer",
-    props: { url, task: "maple-theme-tokens · maple-workshop", badge: { text: "MAW", color } } } }]);
+  assert.deepEqual(opened, [url]);
+  assert.deepEqual(noPanel.commands, []);
   assert.equal(noPanel.sharedSet.length, 0);
-  // Without the mod, the browser opens the link and nothing in Herdr changes.
+  // Without the mod (Herdr reads its missing mod.json as null), the panel stays untouched too.
   const without = await board({ exec, rootLayout: panelLayout });
   without.click("pr-maple-theme-tokens");
   await without.settle();
-  assert.deepEqual(opened, [url]);
+  assert.deepEqual(opened, [url, url]);
   assert.deepEqual(without.commands, []);
   assert.equal(without.sharedSet.length, 0);
 });

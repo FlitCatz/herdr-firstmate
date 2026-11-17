@@ -70,7 +70,7 @@ A card lists every decision its worker's status log still holds open, from the s
 A detail line that would only repeat one of those decisions is left out.
 An unobservable worker uses recorded status evidence when available, otherwise it appears in Unknown.
 Cards with a finished worker and a review link show a PR waiting badge while the backlog and worker detail still indicate pending review.
-Clicking a PR link on a card or a Chains node shows that PR in the layout's PR panel when the separate `herdr-pr-viewer` mod is installed in the Herdr home, following that mod's panel contract. It sets the shared value `herdr-pr-viewer.show` to the link, the card's task (`<task id> · <project>`), its project tag and color, and the click time, which makes every click a new request. Then it selects the `pr` child of the panel stack and shows the panel. In a layout without that panel it opens the viewer in a pane to the right instead. Without the mod, the link opens in the browser.
+Clicking a PR link on a card or a Chains node shows that PR in the layout's PR panel when the separate `herdr-pr-viewer` mod is installed in the Herdr home, following that mod's panel contract. It sets the shared value `herdr-pr-viewer.show` to the link, the card's task (`<task id> · <project>`), its project tag and color, and the click time, which makes every click a new request. Then it selects the `pr` child of the panel stack and shows the panel. Without the mod, or in a layout without that panel, the link opens in the browser.
 The board does not query the forge to check whether the link has merged.
 
 Clicking an option of a held decision puts `[Board answer] <ids>: <label> (<option text>) ` into the Firstmate chat input, ready to edit and confirm with Enter.

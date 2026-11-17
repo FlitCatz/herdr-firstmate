@@ -2947,8 +2947,8 @@ export default class FmBoard extends View {
 
   // A PR link shows the PR in the layout's PR panel when the herdr-pr-viewer mod is installed in
   // this Herdr home, following that mod's panel contract: the request goes in a shared value whose
-  // `at` makes each click new, then the panel is selected and shown. A layout without the panel
-  // gets the viewer in a pane beside the current one; without the mod, the browser opens the link.
+  // `at` makes each click new, then the panel is selected and shown. Without the mod or without
+  // that panel in the layout, the browser opens the link.
   // The viewer shows the card's task and its project tag in the tag's own color.
   /** @param {string} url @param {{ id: string, project?: string }} c @param {import("gpui-kit").Context} cx */
   openPr(url, c, cx) {
@@ -2957,15 +2957,11 @@ export default class FmBoard extends View {
     const task = c.project ? `${c.id} · ${c.project}` : c.id;
     cx.spawn(async () => {
       let installed = false;
-      try { await readTextFile(`${appHome()}/mods/${PR_VIEWER_MOD}/mod.json`); installed = true; } catch {}
-      if (!installed) { await exec("open", [url]); return; }
-      if (findNode(layout(), PR_PANEL)) {
-        setShared(PR_SHOW_KEY, { url, task, badge, at: Date.now() });
-        run("layout.select", { stack: "panel-body", child: PR_PANEL });
-        run("layout.show", { id: "panel" });
-      } else {
-        run("pane.split", { direction: "right", mod: PR_VIEWER_MOD, props: { url, task, badge } });
-      }
+      try { installed = (await readTextFile(`${appHome()}/mods/${PR_VIEWER_MOD}/mod.json`)) != null; } catch {}
+      if (!installed || !findNode(layout(), PR_PANEL)) { await exec("open", [url]); return; }
+      setShared(PR_SHOW_KEY, { url, task, badge, at: Date.now() });
+      run("layout.select", { stack: "panel-body", child: PR_PANEL });
+      run("layout.show", { id: "panel" });
     });
   }
 

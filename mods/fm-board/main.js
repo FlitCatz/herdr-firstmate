@@ -2115,10 +2115,7 @@ export default class FmBoard extends View {
             (cx) => this.answerOption(ids, o, "", cx), primary);
         }))
         .child(action("next-write", ["Write answer"], "Start an answer in the firstmate input",
-          (cx) => this.insertCardText(answerHead(ids), cx), false))
-        .when(Boolean(c.terminal), (e) => e.child(action("next-worker",
-          [svg("mods/workspace-chrome/terminal.svg").size(this.fs(14)).text_color(t.muted), "Worker"], "Open worker",
-          (cx) => this.openWorker(c, cx), false))));
+          (cx) => this.insertCardText(answerHead(ids), cx), false)));
   }
 
   // Brings a card on the Kanban board into view and rings it until Escape, for a reference
@@ -3163,13 +3160,13 @@ export default class FmBoard extends View {
     const foldId = `group:${topic}`, folded = this.folded.has(foldId) && !this.query && !this.revealed.has(foldId);
     const first = cards.find((c) => c.decision.options.length) ?? cards[0];
     const ids = cards.map((c) => c.id), question = first.decision.question || topic;
-    const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(4).bg(t.raised).border(1).border_color(t.accent)
-      .when(this.focusMode && !cards.some(needsCaptain), (e) => e.opacity(FOCUS_DIM))
+    const head = v_flex().gap(6).when(this.focusMode && !cards.some(needsCaptain), (e) => e.opacity(FOCUS_DIM))
       .child(this.foldRow(foldId, t, folded, question,
         div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)))
         .child(this.askButton(foldId, ids, question, t)));
+    const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(4).bg(t.raised).border(1).border_color(t.accent).child(head);
     if (folded) return box;
-    this.decisionLines(box, first.decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
+    this.decisionLines(head, first.decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
     return box.children(cards.map((c) => this.card(c, t, true)));
   }
 

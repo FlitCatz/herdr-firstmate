@@ -2779,6 +2779,22 @@ test("Focus dims everything but the captain's calls, j/k move between them, and 
   assert.equal(b.view.focusMode, false);
 });
 
+test("in Focus a card inside a topic box with no captain's call is dimmed once, like any other card", async () => {
+  // Both preview-style holds deferred: their topic box holds no captain's call.
+  const b = await board({ snapshot: changedSnapshot((s) => {
+    for (const id of ["maple-tour-sketch", "maple-empty-state"]) record(s, id).hold_bucket = "aged";
+  }) });
+  b.click("focus-toggle");
+  assert.equal(b.view.focusMode, true);
+  assert.ok(b.items.find((x) => x.id === "group-preview-style").childIds.includes("card-maple-tour-sketch"));
+  // gpui-kit's opacity applies to the element and everything in it, so what shows is the product along the path.
+  const parentOf = (id) => b.items.find((x) => x.childIds.includes(id))?.id;
+  const shown = (id) => { let o = 1; for (let at = id; at; at = parentOf(at)) o *= opacityOf(b, at); return o; };
+  assert.equal(shown("card-maple-tour-sketch"), 0.22);
+  assert.equal(shown("card-maple-empty-state"), 0.22);
+  assert.equal(shown("card-maple-preview-screen"), 0.22);
+});
+
 test("a PR link shows the PR in the layout's PR panel, and in the browser without that panel or without the mod", async () => {
   const opened = [];
   const exec = async (cmd, args) => { if (cmd === "open") opened.push(args[0]); return { code: 1, stdout: "", stderr: "" }; };

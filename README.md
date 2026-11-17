@@ -1,6 +1,6 @@
 # Firstmate for Herdr
 
-A Herdr layout with a Firstmate task board, read-only Files and Changes viewer, and tab bar with a Board button.
+A Herdr layout with a Firstmate task board, read-only Files and Changes viewer, and tab bar with PR and Board buttons.
 Requires Herdr 0.1.16 or later.
 It requires a Firstmate installation and home containing its `bin/`, `data/`, `state/`, and `projects/` folders, plus `hc` and the usual Unix command-line tools.
 
@@ -8,6 +8,7 @@ To add it using Herdr's sharing steps:
 
 1. Read [RECIPE.md](RECIPE.md) and the files first: the board runs programs, including Firstmate scripts and `hc`, and reads the Firstmate home and selected project folders outside the mod folder.
 2. Copy `layouts/firstmate.json` into your Herdr home's `layouts/` and the two `mods/` folders into its `mods/`, leaving the recipe, preview, and tests out.
+   The layout's PR panel shows the separate [herdr-pr-viewer](https://github.com/FlitCatz/herdr-pr-viewer) mod: install it as its README says, or remove the `pr` block from the layout's panel stack if you do not want it (the tab bar's PR button only appears while that block exists).
    The default Herdr home is `~/.config/herdr-app`.
    Never overwrite a name: rename the incoming layout or mod and update its layout references and `mods/<name>/` asset paths if a name is taken.
 3. Set the `home` prop on the layout's `fm-board` block to the absolute path of your Firstmate installation and home.

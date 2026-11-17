@@ -135,7 +135,9 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "board"];
+    // The PR panel exists only where the layout gives the PR viewer a slot in the panel stack.
+    const hasPr = Boolean(body?.children?.some((c) => c?.id === "pr"));
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "board", ...(hasPr ? ["pr"] : [])];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -154,6 +156,7 @@ export default class Tabs extends View {
         .on_size_change((_size, cx) => { if (active >= 0) { this.scroll.scroll_to_item(active); cx.notify(); } })
         .children(shown.map(item)))
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
+      .when(hasPr, el => el.child(panelButton("pr", "PR", "mods/fm-tabs/pr.svg")))
       .child(panelButton("board", "Board", "mods/fm-tabs/board.svg"))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))

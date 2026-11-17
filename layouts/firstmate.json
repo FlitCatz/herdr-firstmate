@@ -154,6 +154,13 @@
                           "home": ""
                         }
                       }
+                    },
+                    {
+                      "id": "pr",
+                      "type": "block",
+                      "content": {
+                        "mod": "herdr-pr-viewer"
+                      }
                     }
                   ],
                   "active": "files"

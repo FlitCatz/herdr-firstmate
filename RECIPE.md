@@ -1,6 +1,6 @@
 # Firstmate for Herdr
 
-A Herdr window with a task board, read-only Files and Changes viewer, and a tab bar with a Board button.
+A Herdr window with a task board, read-only Files and Changes viewer, and a tab bar with PR and Board buttons.
 
 ![Firstmate for Herdr](preview.png)
 
@@ -11,7 +11,7 @@ A 268px left sidebar contains the workspace brand, spaces, agents, and footer.
 The main area has a 42px tab bar, a flexible active-tab pane, a hidden right panel, and a 28px status bar.
 When the panel is shown it takes two thirds of the row and the active-tab pane one third, so both narrow and widen with the window.
 
-The tab bar sits on the chrome background and shows tabs plus Board, Files, and Changes panel buttons.
+The tab bar sits on the chrome background and shows tabs plus PR, Board, Files, and Changes panel buttons; the PR button appears only while the layout's panel stack holds a `pr` block.
 
 The board shows the Today strip and the NEXT MOVE band at the top, then the task section. The task section holds a `Kanban | Chains` view toggle and a search field with a find icon above the task board (either Kanban columns or Chains swimlanes).
 Below the task section, one tab group holds `Commands` (command buttons and the Scout, Task, and Memo field), `Projects` (project rows, the add form, and pending requests), and `Checks` (the Registered checks list).
@@ -132,9 +132,9 @@ The Checks tab's Registered checks section lists one row per `state/*.check.sh` 
 
 `layouts/firstmate.json` is a row with a 268px sidebar and a flexible work column. The work column contains the 42px `fm-tabs` block, a row with an active-tab block (weight 1, at least 480px) and a hidden panel stack (weight 2, at least 280px), and a 28px `workspace-status` block.
 
-The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-board` mod. Its `home` prop is the path to the Firstmate home; set it before using the layout.
+The panel stack contains Herdr's shipped `files` and `changes` mods, the `fm-board` mod, and a `pr` block showing the separate `herdr-pr-viewer` mod. Its `home` prop is the path to the Firstmate home; set it before using the layout.
 
-`fm-tabs` is based on Herdr 0.1.16's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, `settings`, and `checking`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` icon.
+`fm-tabs` is based on Herdr 0.1.16's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, `settings`, and `checking`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` and `pr.svg` icons.
 
 `fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, `checking`, `openOverlay`, and `appHome` from `herdr`.
 It draws Herdr's shipped `files` folder icon and `workspace-chrome` search, terminal, and layers icons.

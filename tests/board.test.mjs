@@ -1820,6 +1820,7 @@ async function tabs({ saved = null, checkMode = false, spaceList = [], paneList 
       return scrolls.map((s) => s.handle === handle ? s.idx : `other handle at ${s.idx}`);
     },
     text: (id) => items.find((x) => x.id === id)?.text,
+    get ids() { return items.map((x) => x.id); },
     click(id) { items.find((x) => x.id === id).click(); },
     wheel(delta, at, extra = {}) { now = at; handler(null, "on_scroll_wheel")({ delta: { x: 0, y: delta }, touch_phase: "moved", ...extra }); },
     resize(id) { handler(id, "on_size_change")({}, { notify() {} }); },
@@ -1847,6 +1848,23 @@ test("tabs keep the Board control and restore Board as a saved panel", async () 
   t.click("panel-board");
   assert.equal(t.actions.at(-2).args.child, "board");
   assert.equal(t.actions.at(-1).action, "layout.show");
+});
+
+test("tabs show a PR button beside Board only when the layout gives the PR viewer a panel slot", async () => {
+  const spaceList = [{ id: "s1", active: true, tabs: [] }];
+  const without = await tabs({ spaceList, rootLayout: { children: [{ id: "panel", hidden: true }, { id: "panel-body", active: "files" }] } });
+  assert.ok(!without.ids.includes("panel-pr"));
+  const withPr = await tabs({ spaceList, rootLayout: { children: [{ id: "panel", hidden: true },
+    { id: "panel-body", active: "files", children: [{ id: "files" }, { id: "changes" }, { id: "board" }, { id: "pr" }] }] } });
+  assert.equal(withPr.text("panel-pr"), "PR");
+  assert.equal(withPr.ids.indexOf("panel-pr") + 1, withPr.ids.indexOf("panel-board"), "PR sits right before Board");
+  withPr.click("panel-pr");
+  assert.deepEqual(JSON.parse(JSON.stringify(withPr.actions.slice(-2).map((x) => [x.action, x.args]))),
+    [["layout.select", { stack: "panel-body", child: "pr" }], ["layout.show", { id: "panel" }]]);
+  // A space that last showed the PR panel gets it back.
+  const restored = await tabs({ saved: '{"s1":"pr"}', spaceList, rootLayout: { children: [{ id: "panel", hidden: true },
+    { id: "panel-body", active: "files", children: [{ id: "board" }, { id: "pr" }] }] } });
+  assert.equal(restored.actions[0].args.child, "pr");
 });
 
 test("Herdr check renders tabs without reading or saving panels or changing the layout", async () => {

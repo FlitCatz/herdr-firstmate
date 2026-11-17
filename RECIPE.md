@@ -23,7 +23,7 @@ Each Board copy's text follows Herdr's terminal font size and grows with that co
 The board uses the Ledger look, which it shares with the separate PR viewer mod. Headings sit on a hairline instead of a filled strip, and Kanban columns are open lanes split by hairlines, each heading underlined in its column's status color. Every card has a 3px bar on its left edge in that color (red for a failed worker). Counts, task ids, project tags, priorities, and wait times use Geist Mono, which ships with Herdr, while the worker screen lines keep the terminal font.
 The Today strip shows five counts with one line under each.
 `Done today` counts finished backlog items whose merged, reported, or done date is today in Korea time.
-`Waiting on you` counts holds to answer now and shows the oldest one's wait, `Working` counts working cards and their background jobs, `Ready to land` counts cards in Review or with a PR waiting, and `Blocked` counts Blocked cards and how many failed.
+`Waiting on you` counts holds to answer now and shows the oldest one's wait, `Working` counts working cards and their background jobs, `Ready to land` counts cards in Review, with a PR waiting, or with a finished `local-only` branch waiting to land, and `Blocked` counts Blocked cards and how many failed.
 While a hold waits to be answered now, a NEXT MOVE band sits below the strip. It is a plain frame on the theme's background with a bar in the held (blocked) color on its left edge, and it shows the longest-waiting hold to answer now.
 Its first line names the card the decision comes from: the project tag, task id, and title, then the wait and its place among the holds to answer now. Clicking that card line switches to Kanban if needed, shows the card where a filter, search, or fold hides it, scrolls to it, and rings it in the held (blocked) color for 4 seconds or until `Esc`. That ring is the NEXT MOVE band's color, so it is not mistaken for the accent ring that hovering or selecting a card in a dependency chain draws.
 The hold's question follows in the normal text color; for a hold with a topic, the band shows the topic's shared question and options, as the Held column's topic box does.
@@ -72,7 +72,7 @@ Held decisions with the same explicit topic share a question and options; in the
 A card lists every decision its worker's status log still holds open, from the snapshot's `hints.open_decisions`, oldest first: the decision's verb (`needs-decision` or `blocked`) and key, its text up to 240 characters, and its options when the text has them.
 A detail line that would only repeat one of those decisions is left out.
 An unobservable worker uses recorded status evidence when available, otherwise it appears in Unknown.
-Cards with a finished worker and a review link show a PR waiting badge while the backlog and worker detail still indicate pending review.
+Cards with a finished worker and a review link show a PR waiting badge while the backlog and worker detail still indicate pending review; finished `local-only` ship tasks whose backlog item is not yet done show a Ready branch badge in the same slot and styling.
 Clicking a PR link on a card or a Chains node shows that PR in the layout's PR panel when the separate `herdr-pr-viewer` mod is installed in the Herdr home, following that mod's panel contract. It sets the shared value `herdr-pr-viewer.show` to the link, the card's task (`<task id> · <project>`), its project tag and color, and the click time, which makes every click a new request. Then it selects the `pr` child of the panel stack and shows the panel. Without the mod, or in a layout without that panel, the link opens in the browser.
 The board does not query the forge to check whether the link has merged.
 
@@ -170,7 +170,7 @@ The active-tab pane keeps at least 480px and the panel at least 280px; with the 
 `layout.resize` with `weight` on `panel` changes the share and keeps it flexible; with `px` it pins a pixel width, and then only the pane's 480px minimum still holds in a narrow window.
 Whether dragging the divider saves a share or a pixel width has not been tested.
 With all 11 columns open at about 1,320px pane width, card titles wrap heavily.
-A Done card's PR waiting badge can overlap its title and leave the title wrapping one letter per line.
+A Done card's PR waiting or Ready branch badge can overlap its title and leave the title wrapping one letter per line.
 Collapse some columns or give the board more width when this happens.
 The board shows at most 20 Done cards.
 The viewer bounds listings to 500 entries per folder and 5,000 total, changes to 1,000 files, and diffs to 1,500 lines.

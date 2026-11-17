@@ -178,6 +178,8 @@ function waitAge(stamp, now) {
 }
 // The captain's own calls: a hold to answer now, or a worker that reported failed.
 const needsCaptain = (c) => (c.column === "held" && c.holdGroup === "now") || c.failed;
+// The decision a topic's cards share: the first of them that lists options, else the first.
+const sharedDecision = (cards) => (cards.find((c) => c.decision?.options.length) ?? cards[0])?.decision;
 const base = (path) => (path ?? "").split("/").filter(Boolean).pop() ?? "";
 // The backlog writes "-" for an item with no project; such items are firstmate's own work.
 const projectOf = (...paths) => paths.map(base).find((p) => p && p !== "-") ?? "";
@@ -2035,13 +2037,23 @@ export default class FmBoard extends View {
       .map((c, i) => ({ c, i })).sort((a, b) => stamp(a.c) - stamp(b.c) || a.i - b.i).map((x) => x.c);
   }
 
-  // The ids one answer covers: every hold to answer now that shares the card's topic, in backlog
+  // The holds one answer covers: every hold to answer now that shares the card's topic, in backlog
   // order as the Held column's topic box lists them, else the card alone.
   /** @param {any} c */
-  answerIds(c) {
+  topicHolds(c) {
     const topic = c.decision?.topic;
-    return topic ? (this.cards ?? []).filter((x) => x.column === "held" && x.holdGroup === "now" && x.decision?.topic === topic)
-      .map((x) => x.id) : [c.id];
+    return topic ? (this.cards ?? []).filter((x) => x.column === "held" && x.holdGroup === "now" && x.decision?.topic === topic) : [c];
+  }
+
+  /** @param {any} c */
+  answerIds(c) {
+    return this.topicHolds(c).map((x) => x.id);
+  }
+
+  // The decision an answer to the card follows, as the Held column's topic box shows it.
+  /** @param {any} c */
+  answerDecision(c) {
+    return sharedDecision(this.topicHolds(c)) ?? c.decision;
   }
 
   // The option a decision recommends ("B", or "B" followed by a reason), if it names one.
@@ -2091,9 +2103,9 @@ export default class FmBoard extends View {
   nextMove(t, holds) {
     const c = holds[0];
     if (!c) return null;
-    const ids = this.answerIds(c);
-    const options = c.decision?.options ?? [];
-    const rec = this.recommendedOption(c.decision);
+    const ids = this.answerIds(c), decision = this.answerDecision(c);
+    const options = decision?.options ?? [];
+    const rec = this.recommendedOption(decision);
     const age = waitAge(c.heldSince, Date.now());
     const action = (id, label, tooltip, onClick, primary) => h_flex().id(id).flex_none().gap(6).items_center()
       .px(8).py(4).rounded(3).cursor_pointer().border(1).border_color(primary ? t.solid : t.border)
@@ -2118,7 +2130,7 @@ export default class FmBoard extends View {
             .text_color(t.blocked).child(`waiting ${age}`)))
           .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(`Next move, 1 of ${holds.length}`)))
         .child(div().id("next-move-question").text_size(this.fs(14)).font_semibold().text_color(t.foreground)
-          .child(c.decision?.question || c.detail || c.title)))
+          .child(decision?.question || c.detail || c.title)))
       .child(h_flex().flex_none().gap(6).items_center().flex_wrap()
         .children(options.map((o) => {
           const primary = o === rec;
@@ -2199,7 +2211,7 @@ export default class FmBoard extends View {
     const c = (this.cards ?? []).find((x) => x.id === this.focusId);
     if (!c) return false;
     if (e.key === "enter") {
-      const ids = this.answerIds(c), rec = this.recommendedOption(c.decision);
+      const ids = this.answerIds(c), rec = this.recommendedOption(this.answerDecision(c));
       if (rec) this.answerOption(ids, rec, "", cx); else this.insertCardText(answerHead(ids), cx);
       return true;
     }
@@ -3178,8 +3190,8 @@ export default class FmBoard extends View {
   // One box per topic: the question and its options once, then every task it decides.
   group(topic, cards, t) {
     const foldId = `group:${topic}`, folded = this.folded.has(foldId) && !this.query && !this.revealed.has(foldId);
-    const first = cards.find((c) => c.decision.options.length) ?? cards[0];
-    const ids = cards.map((c) => c.id), question = first.decision.question || topic;
+    const decision = sharedDecision(cards);
+    const ids = cards.map((c) => c.id), question = decision.question || topic;
     const boxDimmed = this.focusMode && !cards.some(needsCaptain);
     // A hairline, not the accent: accent marks hover, selection, and the search match only.
     const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(4).bg(t.raised).border(1).border_color(t.border)
@@ -3188,7 +3200,7 @@ export default class FmBoard extends View {
         div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)))
         .child(this.askButton(foldId, ids, question, t)));
     if (folded) return box;
-    this.decisionLines(box, first.decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
+    this.decisionLines(box, decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
     return box.children(cards.map((c) => this.card(c, t, true, boxDimmed)));
   }
 

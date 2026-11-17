@@ -2736,6 +2736,26 @@ test("NEXT MOVE shows the longest-waiting hold to answer now, and its options ma
   assert.match(none.text("today-waiting"), /^Waiting on you 0/);
 });
 
+test("for a topic whose oldest hold lists no options, NEXT MOVE and Focus Enter answer with the topic's options", async () => {
+  // The oldest preview-style hold only points at its sibling, which carries the question and options.
+  const snapshot = changedSnapshot((s) => {
+    record(s, "maple-tour-sketch").hold_reason = "[topic=preview-style] Same call as the empty state";
+    record(s, "maple-tour-sketch").hold_set = "2026-11-01T08:00:00Z";
+  });
+  const b = await board({ snapshot });
+  assert.match(b.text("next-move-card"), /maple-tour-sketch/);
+  assert.equal(b.text("next-move-question"), "Choose the preview style");
+  assert.ok(b.ids.includes("next-opt-A") && b.ids.includes("next-opt-B"));
+  assert.match(b.text("group-preview-style"), /Choose the preview style/);
+  b.click("next-opt-A");
+  assert.deepEqual(b.drafts, ["[Board answer] maple-tour-sketch, maple-empty-state: A (Soft)"]);
+  const f = await board({ snapshot });
+  f.click("focus-toggle");
+  assert.equal(f.view.focusId, "maple-tour-sketch");
+  f.keyDown("root", "enter");
+  assert.deepEqual(f.drafts, ["[Board answer] maple-tour-sketch, maple-empty-state: A (Soft)"]);
+});
+
 test("every card carries a left bar in its column's status color, and a hold to answer now shows its wait", async () => {
   const theme = { idle: "#111111", working: "#222222", blocked: "#333333", done: "#444444", ansi1: "#555555", unknown: "#666666" };
   const b = await board({ theme,

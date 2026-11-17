@@ -1850,7 +1850,7 @@ export default class FmBoard extends View {
         .children(this.projects.map((p) => chip(p.name))));
   }
 
-  card(c, t, inGroup) {
+  card(c, t, inGroup, boxDimmed = false) {
     // A search shows matching cards open, without changing the remembered folds.
     const foldId = `card:${c.id}`, folded = this.folded.has(foldId) && !this.query && !this.revealed.has(foldId);
     const current = this.query && this.currentMatch === c.id;
@@ -1879,7 +1879,7 @@ export default class FmBoard extends View {
     const el = v_flex().id(`card-${c.id}`).relative().gap(4).p(8).pl(8 + CARD_BAR_PX + 2).rounded(4).bg(t.background)
       .border(borderWidth).border_color(borderColor)
       .child(div().id(`bar-${c.id}`).absolute().left(0).top(0).bottom(0).w(CARD_BAR_PX).rounded_l(4).bg(barColor))
-      .when(focusDim, (e) => e.opacity(FOCUS_DIM))
+      .when(focusDim && !boxDimmed, (e) => e.opacity(FOCUS_DIM))
       .when(!focusDim && dimmed, (e) => e.opacity(0.35))
       .when(!focusDim && !dimmed && waiting && !current && !role, (e) => e.opacity(0.6))
       .when(hasDeps, (e) => e.on_hover((hovered, cx) => this.hoverChainCard(c.id, hovered, cx)))
@@ -3160,14 +3160,15 @@ export default class FmBoard extends View {
     const foldId = `group:${topic}`, folded = this.folded.has(foldId) && !this.query && !this.revealed.has(foldId);
     const first = cards.find((c) => c.decision.options.length) ?? cards[0];
     const ids = cards.map((c) => c.id), question = first.decision.question || topic;
-    const head = v_flex().gap(6).when(this.focusMode && !cards.some(needsCaptain), (e) => e.opacity(FOCUS_DIM))
+    const boxDimmed = this.focusMode && !cards.some(needsCaptain);
+    const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(4).bg(t.raised).border(1).border_color(t.accent)
+      .when(boxDimmed, (e) => e.opacity(FOCUS_DIM))
       .child(this.foldRow(foldId, t, folded, question,
         div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)))
         .child(this.askButton(foldId, ids, question, t)));
-    const box = v_flex().id(`group-${topic}`).gap(6).p(8).rounded(4).bg(t.raised).border(1).border_color(t.accent).child(head);
     if (folded) return box;
-    this.decisionLines(head, first.decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
-    return box.children(cards.map((c) => this.card(c, t, true)));
+    this.decisionLines(box, first.decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
+    return box.children(cards.map((c) => this.card(c, t, true, boxDimmed)));
   }
 
   // A column's entries in drawing order: a card, or a topic group at its first card's place.

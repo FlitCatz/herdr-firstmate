@@ -2790,6 +2790,7 @@ test("in Focus a card inside a topic box with no captain's call is dimmed once, 
   // gpui-kit's opacity applies to the element and everything in it, so what shows is the product along the path.
   const parentOf = (id) => b.items.find((x) => x.childIds.includes(id))?.id;
   const shown = (id) => { let o = 1; for (let at = id; at; at = parentOf(at)) o *= opacityOf(b, at); return o; };
+  assert.equal(opacityOf(b, "group-preview-style"), 0.22, "the box itself steps back with its cards");
   assert.equal(shown("card-maple-tour-sketch"), 0.22);
   assert.equal(shown("card-maple-empty-state"), 0.22);
   assert.equal(shown("card-maple-preview-screen"), 0.22);

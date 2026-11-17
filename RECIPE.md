@@ -70,7 +70,7 @@ A card lists every decision its worker's status log still holds open, from the s
 A detail line that would only repeat one of those decisions is left out.
 An unobservable worker uses recorded status evidence when available, otherwise it appears in Unknown.
 Cards with a finished worker and a review link show a PR waiting badge while the backlog and worker detail still indicate pending review.
-Clicking a PR link on a card or a Chains node opens the separate PR viewer mod as a window when that mod is installed in the Herdr home (`mods/pr-viewer/`, or the folder the layout's `pr_viewer` prop on the Board block names), passing the link as its `url` prop. The next link replaces that window. Without the mod, the link opens in the browser.
+Clicking a PR link on a card or a Chains node shows that PR in the layout's PR panel when the separate `herdr-pr-viewer` mod is installed in the Herdr home, following that mod's panel contract. It sets the shared value `herdr-pr-viewer.show` to the link, the card's task (`<task id> · <project>`), its project tag and color, and the click time, which makes every click a new request. Then it selects the `pr` child of the panel stack and shows the panel. In a layout without that panel it opens the viewer in a pane to the right instead. Without the mod, the link opens in the browser.
 The board does not query the forge to check whether the link has merged.
 
 Clicking an option of a held decision puts `[Board answer] <ids>: <label> (<option text>) ` into the Firstmate chat input, ready to edit and confirm with Enter.
@@ -136,7 +136,7 @@ The panel stack contains Herdr's shipped `files` and `changes` mods, the `fm-boa
 
 `fm-tabs` is based on Herdr 0.1.16's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, `settings`, and `checking`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` and `pr.svg` icons.
 
-`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, `checking`, `openOverlay`, and `appHome` from `herdr`.
+`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, `checking`, `appHome`, `layout`, and `setShared` from `herdr`.
 It draws Herdr's shipped `files` folder icon and `workspace-chrome` search, terminal, and layers icons.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals and `hc read` to read live worker screens for the card lines.
 Its Peek icon and Focus mode run Herdr's `terminal.peek` command.

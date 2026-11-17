@@ -92,7 +92,7 @@ function geometry(items) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null, prViewer = false } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null, prViewer = false, rootLayout = null } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
@@ -102,6 +102,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   // Overlays the Board opened and Herdr commands it ran, in order.
   const overlays = [];
   const commands = [];
+  const sharedSet = [];
   const scrolled = [];
   const focused = [];
   const cx = {
@@ -123,6 +124,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null,
     run: (name, args) => { commands.push({ name, args }); },
     openOverlay: (spec) => { overlays.push(spec); return `overlay-${overlays.length}`; },
+    layout: () => rootLayout, setShared: (key, value) => { sharedSet.push({ key, value }); },
     appHome: () => "/fictional/herdr-home",
     localStorage: store,
     readTextFile: async (file) => {
@@ -198,7 +200,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     waitingLabel, blocksLabel, initEffects,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
-    click, hover, keyDown, scrolled, focused, drafts, opened, redraw, overlays, commands,
+    click, hover, keyDown, scrolled, focused, drafts, opened, redraw, overlays, commands, sharedSet,
     // Waits for the tasks the Board started, such as a PR link's install check.
     settle: () => Promise.all(pending),
     text: (id) => items.find((x) => x.id === id)?.text,
@@ -2749,27 +2751,47 @@ test("Focus dims everything but the captain's calls, j/k move between them, and 
   assert.equal(b.view.focusMode, false);
 });
 
-test("a PR link opens the PR viewer mod when it is installed, and the browser when it is not", async () => {
+test("a PR link shows the PR in the layout's PR panel, in a pane without that panel, and in the browser without the mod", async () => {
   const opened = [];
   const exec = async (cmd, args) => { if (cmd === "open") opened.push(args[0]); return { code: 1, stdout: "", stderr: "" }; };
   const url = "https://github.com/FlitCatz/maple-workshop/pull/42";
-  const withViewer = await board({ prViewer: true, exec });
-  withViewer.click("pr-maple-theme-tokens");
-  await withViewer.settle();
-  assert.equal(withViewer.overlays.length, 1);
-  // The window call and props the PR viewer's README documents: the task and the card's project tag ride along.
-  const spec = withViewer.overlays[0];
-  const color = withViewer.view.colorOf("maple-workshop", {});
-  assert.deepEqual({ ...spec, props: { ...spec.props, badge: { ...spec.props.badge } } }, {
-    kind: "window", key: "herdr-pr-viewer", mod: "herdr-pr-viewer", width: 640, height: 0.85,
-    props: { url, task: "maple-theme-tokens · maple-workshop", badge: { text: "MAW", color } },
-  });
+  const plain = (x) => JSON.parse(JSON.stringify(x));
+  const panelLayout = { id: "root", children: [{ id: "panel", hidden: true, children: [{ id: "panel-body", active: "board",
+    children: [{ id: "board" }, { id: "pr", content: { mod: "herdr-pr-viewer" } }] }] }] };
+  // The herdr-pr-viewer panel contract: one shared request with a fresh `at`, then the panel is selected and shown.
+  const before = Date.now();
+  const inPanel = await board({ prViewer: true, exec, rootLayout: panelLayout });
+  inPanel.click("pr-maple-theme-tokens");
+  await inPanel.settle();
+  const color = inPanel.view.colorOf("maple-workshop", {});
+  assert.equal(inPanel.sharedSet.length, 1);
+  const { key, value } = plain(inPanel.sharedSet[0]);
+  assert.equal(key, "herdr-pr-viewer.show");
+  assert.ok(value.at >= before && value.at <= Date.now(), "at is the click time");
+  assert.deepEqual({ ...value, at: 0 }, { url, task: "maple-theme-tokens · maple-workshop", badge: { text: "MAW", color }, at: 0 });
+  assert.deepEqual(plain(inPanel.commands), [
+    { name: "layout.select", args: { stack: "panel-body", child: "pr" } },
+    { name: "layout.show", args: { id: "panel" } },
+  ]);
   assert.deepEqual(opened, []);
-  const without = await board({ exec });
+  // Clicking again is a new request.
+  inPanel.click("pr-maple-theme-tokens");
+  await inPanel.settle();
+  assert.equal(inPanel.sharedSet.length, 2);
+  // A layout without the PR panel gets the viewer in a pane beside the current one.
+  const noPanel = await board({ prViewer: true, exec, rootLayout: { id: "root", children: [] } });
+  noPanel.click("pr-maple-theme-tokens");
+  await noPanel.settle();
+  assert.deepEqual(plain(noPanel.commands), [{ name: "pane.split", args: { direction: "right", mod: "herdr-pr-viewer",
+    props: { url, task: "maple-theme-tokens · maple-workshop", badge: { text: "MAW", color } } } }]);
+  assert.equal(noPanel.sharedSet.length, 0);
+  // Without the mod, the browser opens the link and nothing in Herdr changes.
+  const without = await board({ exec, rootLayout: panelLayout });
   without.click("pr-maple-theme-tokens");
   await without.settle();
-  assert.equal(without.overlays.length, 0);
   assert.deepEqual(opened, [url]);
+  assert.deepEqual(without.commands, []);
+  assert.equal(without.sharedSet.length, 0);
 });
 
 test("below the board one tab strip holds Commands, Projects with its unhandled request count, and Checks", async () => {

@@ -17,7 +17,7 @@ To add it using Herdr's sharing steps:
 The board uses the Ledger look it shares with the separate PR viewer mod: hairline-ruled headings, columns split by hairlines, a status-colored bar on each card's left edge, and Geist Mono for counts and ids.
 A Today strip counts what was done today, what waits on you, what is working, what is ready to land, and what is blocked. Below it, a NEXT MOVE band shows the longest-waiting hold to answer now, with its options as answer drafts.
 `Focus` (or `F`) dims everything but your calls, `j`/`k` move between them while peeking at each worker's terminal beside the board, and `Enter` drafts the recommended answer.
-PR links open the separate PR viewer mod when it is installed, and the browser otherwise.
+PR links show the PR in the layout's PR panel (the separate herdr-pr-viewer mod, opened with the tab bar's PR button) when that mod is installed, and in the browser otherwise.
 Card headers fold and unfold; their Ask icons and held decisions' options prepare editable chat input as described in [RECIPE.md](RECIPE.md#how-it-behaves).
 The Held column groups its cards under the headings `Answer now`, `Deferred` (with a card's `until` date when it has one), and `Waiting on other work`.
 There is no Failed column: a task whose worker reported `failed:` is drawn in the Blocked column with a red `Failed` label and a red border.

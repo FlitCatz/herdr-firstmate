@@ -8,7 +8,7 @@
 // installation and operational home; the other props support preview fixtures.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel, ScrollHandle } from "gpui-base";
-import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals, checking, openOverlay, appHome } from "herdr";
+import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals, checking, appHome, layout, setShared } from "herdr";
 import { FolderViewer } from "./viewer.js";
 
 // Board text follows the terminal font size and grows as the Board widens. The sizes below
@@ -49,10 +49,11 @@ const DATA_FONT = "Geist Mono";
 // everything that does not need the captain while Focus is on.
 const CARD_BAR_PX = 3;
 const FOCUS_DIM = 0.22;
-// The separate PR viewer mod (herdr-pr-viewer) a PR link opens, when installed; the layout's
-// `pr_viewer` prop on this block names another folder. Its README documents the window call and
-// the props it takes: url, and optionally task and badge.
+// The separate PR viewer mod a PR link opens when it is installed. Its panel contract: the layout's
+// `pr` block in the panel-body stack shows it, and the shared value below asks it for one PR.
 const PR_VIEWER_MOD = "herdr-pr-viewer";
+const PR_PANEL = "pr";
+const PR_SHOW_KEY = "herdr-pr-viewer.show";
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
 // The most of the Board's height the compact inspector's chain takes before it scrolls.
 const COMPACT_INSPECTOR_SHARE = 0.35;
@@ -139,6 +140,15 @@ function localTime(epochSeconds) {
   const pad = (n) => String(n).padStart(2, "0");
   const day = d.toDateString() === new Date().toDateString() ? "" : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} `;
   return `${day}${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+// The layout node with this id, searching the whole tree (the shape fm-tabs reads too).
+function findNode(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = findNode(child, id);
+    if (found) return found;
+  }
+  return null;
 }
 // The Korea-time date (YYYY-MM-DD) of a moment, the calendar the backlog's done dates use.
 /** @param {number} ms */
@@ -2935,21 +2945,27 @@ export default class FmBoard extends View {
     });
   }
 
-  // A PR link opens the separate PR viewer mod when it is installed in this Herdr home, as a window
-  // whose key keeps one spot that the next link replaces, and the browser otherwise. The viewer
-  // shows the card's task and its project tag in the tag's own color.
+  // A PR link shows the PR in the layout's PR panel when the herdr-pr-viewer mod is installed in
+  // this Herdr home, following that mod's panel contract: the request goes in a shared value whose
+  // `at` makes each click new, then the panel is selected and shown. A layout without the panel
+  // gets the viewer in a pane beside the current one; without the mod, the browser opens the link.
+  // The viewer shows the card's task and its project tag in the tag's own color.
   /** @param {string} url @param {{ id: string, project?: string }} c @param {import("gpui-kit").Context} cx */
   openPr(url, c, cx) {
-    const named = props()?.pr_viewer;
-    const mod = typeof named === "string" && /^[\w.-]+$/.test(named) ? named : PR_VIEWER_MOD;
     const project = c.project || "firstmate";
     const badge = { text: this.tags?.get(project) ?? project.slice(0, 3).toUpperCase(), color: this.colorOf(project, theme()) };
     const task = c.project ? `${c.id} · ${c.project}` : c.id;
     cx.spawn(async () => {
       let installed = false;
-      try { await readTextFile(`${appHome()}/mods/${mod}/mod.json`); installed = true; } catch {}
-      if (installed) openOverlay({ kind: "window", key: mod, mod, props: { url, task, badge }, width: 640, height: 0.85 });
-      else await exec("open", [url]);
+      try { await readTextFile(`${appHome()}/mods/${PR_VIEWER_MOD}/mod.json`); installed = true; } catch {}
+      if (!installed) { await exec("open", [url]); return; }
+      if (findNode(layout(), PR_PANEL)) {
+        setShared(PR_SHOW_KEY, { url, task, badge, at: Date.now() });
+        run("layout.select", { stack: "panel-body", child: PR_PANEL });
+        run("layout.show", { id: "panel" });
+      } else {
+        run("pane.split", { direction: "right", mod: PR_VIEWER_MOD, props: { url, task, badge } });
+      }
     });
   }
 

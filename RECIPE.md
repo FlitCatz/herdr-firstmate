@@ -171,7 +171,6 @@ Whether dragging the divider saves a share or a pixel width has not been tested.
 With all 11 columns open at about 1,320px pane width, card titles wrap heavily.
 A Done card's PR waiting badge can overlap its title and leave the title wrapping one letter per line.
 Collapse some columns or give the board more width when this happens.
-The preview shows a search for one fictional project's tasks and the temporary capture mod's name in the pane header.
 The board shows at most 20 Done cards.
 The viewer bounds listings to 500 entries per folder and 5,000 total, changes to 1,000 files, and diffs to 1,500 lines.
 The Files and Changes viewer does not edit, commit, stage, or discard files.

@@ -34,7 +34,7 @@ The Commands section's Memo button saves what is typed in the field as a Firstma
 
 Below the board, one tab strip holds `Commands`, `Projects` (with its count of unhandled requests), and `Checks`, with supervision watcher status and the latest refresh time on its right. Clicking the open tab folds the group away, and the chosen tab is remembered. The Checks tab lists `state/*.check.sh` filenames alongside the home-wide `state/.last-check` sweep time in local time (`Last sweep (all checks)`). Per-check running state, last-run time, and results are not recorded by Firstmate and are not displayed, and the Board never reads check scripts, outputs, or private check state directories.
 
-The preview uses fictional projects and tasks.
+The preview is a headless render of an HTML replica of the board, using fictional projects and tasks.
 
 `node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, registered checks, tab behavior, folder-watch cleanup, and check-mode side-effect guards; it needs only Node.js, not Herdr.
 This repository has no CI and declares that to no-mistakes in `.no-mistakes.yaml`.

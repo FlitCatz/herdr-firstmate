@@ -92,13 +92,16 @@ function geometry(items) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null, prViewer = false } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
   const initEffects = [];
+  // Overlays the Board opened and Herdr commands it ran, in order.
+  const overlays = [];
+  const commands = [];
   const scrolled = [];
   const focused = [];
   const cx = {
@@ -117,10 +120,17 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
     props: () => ({ home: HOME, ...(preview ? { snapshot_file: snapshotFile } : {}), collapsed: [], ui }),
     checking: () => checkMode,
-    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null, run() {},
+    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => [], focused: () => null,
+    run: (name, args) => { commands.push({ name, args }); },
+    openOverlay: (spec) => { overlays.push(spec); return `overlay-${overlays.length}`; },
+    appHome: () => "/fictional/herdr-home",
     localStorage: store,
     readTextFile: async (file) => {
       initEffects.push("read");
+      if (file === "/fictional/herdr-home/mods/pr-viewer/mod.json") {
+        if (prViewer) return "{}";
+        throw new Error(`no such file: ${file}`);
+      }
       if (file === snapshotFile) return customSnapshot ? JSON.stringify(customSnapshot) : readFile(file, "utf8");
       if (file === `${HOME}/data/projects.md`) {
         if (registry.fails) throw new Error("registry unreadable");
@@ -188,7 +198,9 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     waitingLabel, blocksLabel, initEffects,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
-    click, hover, keyDown, scrolled, focused, drafts, opened, redraw,
+    click, hover, keyDown, scrolled, focused, drafts, opened, redraw, overlays, commands,
+    // Waits for the tasks the Board started, such as a PR link's install check.
+    settle: () => Promise.all(pending),
     text: (id) => items.find((x) => x.id === id)?.text,
     // Every scroll so far, as its index when it went through the handle the drawn element with
     // this id tracks, so a scroll on any other handle (which moves nothing there) shows up.
@@ -2620,4 +2632,118 @@ test("Chains dims every connector piece of an unselected chain, including lines 
   const pieces = maplePieces();
   assert.ok(pieces.length > 0);
   for (const piece of pieces) assert.ok(shown(piece) <= 0.45, `${piece.id} is dimmed with its chain (${shown(piece)})`);
+});
+
+// The fixture with changes, without touching the shared copy.
+/** @param {(s: any) => void} change */
+function changedSnapshot(change) {
+  const copy = JSON.parse(JSON.stringify(snapshot));
+  change(copy);
+  return copy;
+}
+const record = (s, id) => s.backlog.records.find((r) => r.id === id);
+const opacityOf = (b, id) => b.items.find((x) => x.id === id)?.calls.findLast((c) => c[0] === "opacity")?.[1] ?? 1;
+const koreaToday = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+
+test("the Today strip counts what landed today, what waits on the captain, what runs, what is ready, and what is blocked", async () => {
+  const b = await board({ snapshot: changedSnapshot((s) => { record(s, "orchard-seed-data").completion = { verb: "merged", date: koreaToday() }; }) });
+  const cell = (id) => b.text(`today-${id}`);
+  assert.match(cell("done"), /^Done today 1/);
+  // The three holds to answer now; held-since falls back to the filing date, days ago.
+  assert.match(cell("waiting"), /^Waiting on you 3 oldest \d+d$/);
+  assert.match(cell("working"), /^Working \d+/);
+  assert.match(cell("ready"), /^Ready to land \d+/);
+  assert.match(cell("blocked"), /^Blocked \d+/);
+  // A finished item from another day is not today's.
+  const old = await board();
+  assert.match(old.text("today-done"), /^Done today 0/);
+});
+
+test("NEXT MOVE shows the longest-waiting hold to answer now, and its options make the Held card's drafts", async () => {
+  // With equal filing dates the backlog order decides: the icon set comes first.
+  const b = await board();
+  assert.match(b.text("next-move"), /maple-icon-set .*Next move, 1 of 3 Choose an icon style/);
+  b.click("next-opt-A");
+  b.click("next-write");
+  assert.deepEqual(b.drafts, ["[Board answer] maple-icon-set: A (Rounded)", "[Board answer] maple-icon-set:"]);
+  // A stamped hold that has waited longest wins, and a topic's answer covers every hold sharing it.
+  const stamped = await board({ snapshot: changedSnapshot((s) => { record(s, "maple-empty-state").hold_set = "2026-11-01T08:00:00Z"; }) });
+  assert.match(stamped.text("next-move"), /maple-empty-state .*Choose the preview style/);
+  stamped.click("next-opt-B");
+  assert.deepEqual(stamped.drafts, ["[Board answer] maple-tour-sketch, maple-empty-state: B (Bright)"]);
+  // The recommended option is the filled one: the band's ink on the solid band.
+  const inked = await board({ theme: { solid: "#000000", solid_foreground: "#ffffff" } });
+  const fill = (id) => inked.items.find((x) => x.id === id).calls.find((c) => c[0] === "bg")[1];
+  assert.equal(fill("next-move"), "#000000");
+  assert.equal(fill("next-opt-A"), "#ffffff");
+  assert.equal(fill("next-opt-B"), "#000000");
+  // No hold to answer now, no banner.
+  const none = await board({ snapshot: changedSnapshot((s) => {
+    for (const id of ["maple-icon-set", "maple-tour-sketch", "maple-empty-state"]) record(s, id).hold_bucket = "aged";
+  }) });
+  assert.ok(!none.ids.includes("next-move"));
+  assert.match(none.text("today-waiting"), /^Waiting on you 0/);
+});
+
+test("every card carries a left bar in its column's status color, and a hold to answer now shows its wait", async () => {
+  const theme = { idle: "#111111", working: "#222222", blocked: "#333333", done: "#444444", ansi1: "#555555", unknown: "#666666" };
+  const b = await board({ theme,
+    snapshot: changedSnapshot((s) => { record(s, "maple-icon-set").hold_set = new Date(Date.now() - 135 * 60000).toISOString().slice(0, 19) + "Z"; }) });
+  const barColor = (id) => b.items.find((x) => x.id === `bar-${id}`)?.calls.find((c) => c[0] === "bg")?.[1];
+  assert.equal(barColor("maple-preview-screen"), theme.working);
+  assert.equal(barColor("maple-icon-set"), theme.blocked);
+  assert.equal(barColor("orchard-seed-data"), theme.done);
+  assert.equal(barColor("maple-card-layout"), theme.idle);
+  assert.equal(b.text("age-maple-icon-set"), "2h 15m");
+  // Deferred holds keep their date and show no wait.
+  assert.ok(!b.ids.includes("age-orchard-tile-refresh"));
+});
+
+test("Focus dims everything but the captain's calls, j/k move between them, and Enter drafts the recommended answer", async () => {
+  const b = await board();
+  // Keys reach Focus only while the Board itself holds the keyboard.
+  b.keyDown("root", "f");
+  assert.equal(b.view.focusMode, false);
+  b.click("focus-toggle");
+  assert.equal(b.view.focusMode, true);
+  assert.ok(b.focusedOn("root"));
+  assert.ok(b.ids.includes("focus-hint"));
+  assert.equal(b.view.focusId, "maple-icon-set");
+  assert.equal(opacityOf(b, "card-maple-preview-screen"), 0.22);
+  assert.equal(opacityOf(b, "card-maple-icon-set"), 1);
+  assert.equal(opacityOf(b, "card-orchard-tile-refresh"), 0.22, "a deferred hold steps back too");
+  b.keyDown("root", "j");
+  assert.equal(b.view.focusId, "maple-tour-sketch");
+  b.keyDown("root", "j"); b.keyDown("root", "j");
+  assert.equal(b.view.focusId, "maple-empty-state", "j stops at the last call");
+  b.keyDown("root", "k"); b.keyDown("root", "k");
+  assert.equal(b.view.focusId, "maple-icon-set");
+  b.keyDown("root", "enter");
+  assert.deepEqual(b.drafts, ["[Board answer] maple-icon-set: A (Rounded)"]);
+  b.keyDown("root", "escape");
+  assert.equal(b.view.focusMode, false);
+  assert.equal(opacityOf(b, "card-maple-preview-screen"), 1);
+  // Chains has no Focus.
+  b.keyDown("root", "f");
+  assert.equal(b.view.focusMode, true);
+  b.view.setViewMode("chains", { notify() {} });
+  assert.equal(b.view.focusMode, false);
+});
+
+test("a PR link opens the PR viewer mod when it is installed, and the browser when it is not", async () => {
+  const opened = [];
+  const exec = async (cmd, args) => { if (cmd === "open") opened.push(args[0]); return { code: 1, stdout: "", stderr: "" }; };
+  const url = "https://github.com/FlitCatz/maple-workshop/pull/42";
+  const withViewer = await board({ prViewer: true, exec });
+  withViewer.click("pr-maple-theme-tokens");
+  await withViewer.settle();
+  assert.equal(withViewer.overlays.length, 1);
+  assert.deepEqual({ ...withViewer.overlays[0], props: { ...withViewer.overlays[0].props } },
+    { mod: "pr-viewer", props: { url }, kind: "window", key: "pr-viewer", width: 0.6, height: 0.85 });
+  assert.deepEqual(opened, []);
+  const without = await board({ exec });
+  without.click("pr-maple-theme-tokens");
+  await without.settle();
+  assert.equal(without.overlays.length, 0);
+  assert.deepEqual(opened, [url]);
 });

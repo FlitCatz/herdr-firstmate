@@ -17,6 +17,12 @@ The board shows project rows above the task section, which holds a `Kanban | Cha
 Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a three-letter abbreviation and a color of its own: a project gets the first palette color no other project holds when it is first seen and keeps it when others are added or removed, and its color is freed once a successful read finds it in neither the registry nor any card, so projects get distinct colors while free palette colors remain.
 When none is free, or local storage cannot be used, a project takes a color derived from its name and keeps it even after a color is freed; a project with a chosen color keeps its automatic color reserved for when Auto is chosen again; in those cases two projects can share a color.
 Each Board copy's text follows Herdr's terminal font size and grows with that copy's width.
+The board uses the Ledger look, which it shares with the separate PR viewer mod. Headings sit on a hairline instead of a filled strip, and Kanban columns are open lanes split by hairlines, each heading underlined in its column's status color. Every card has a 3px bar on its left edge in that color (red for a failed worker). Counts, task ids, project tags, priorities, and wait times use Geist Mono, which ships with Herdr, while the worker screen lines keep the terminal font.
+Above the projects, a Today strip shows five counts with one line under each.
+`Done today` counts finished backlog items whose merged, reported, or done date is today in Korea time.
+`Waiting on you` counts holds to answer now and shows the oldest one's wait, `Working` counts working cards and their background jobs, `Ready to land` counts cards in Review or with a PR waiting, and `Blocked` counts Blocked cards and how many failed.
+While a hold waits to be answered now, a NEXT MOVE band sits below the strip. It is filled with the theme's solid color, the board's only filled band, and shows the longest-waiting hold: its project, task id, wait, place among the holds to answer now, and question.
+Holds are ordered by the backlog's hold-set time, else their filing date, with ties kept in backlog order.
 
 ## How it behaves
 
@@ -29,12 +35,13 @@ The panel buttons select or hide their panel; the chosen panel is remembered per
 Todo, Queued, Working, and Done columns always appear.
 Held, Parked, Blocked, Paused, Review, and Unknown appear while they contain cards.
 The Held column draws its cards in up to three labelled groups, each with its card count and shown only while it holds a card: `Answer now`, then `Deferred`, then `Waiting on other work`.
-Each group starts with a heading strip across the column that carries its name and card count.
+Each group starts with a hairline-ruled heading that carries its name and card count.
 The fleet snapshot's `hold_bucket` places a card: `live` is answered now, `dated` and `aged` are deferred, and `blocked` waits on other work.
 Only captain holds have a bucket: an `external` hold waits on other work, and a captain hold with no bucket is answered now.
 A deferred card that has a `hold_until` date shows it on its state row as `until <month>-<day>`, such as `until 12-01`.
 There is no Failed column: a task whose worker reported `failed:` sits in the Blocked column, marked with a red `Failed` label on its state row and a red border (and `failed` in red on its Chains node and in card dependency chain lists), and keeps its detail text.
-Their header dots use the theme's idle, working, blocked, done, and unknown colors as appropriate.
+Their heading rules and card bars (and a folded column's dot) use the theme's idle, working, blocked, done, and unknown colors as appropriate.
+A hold to answer now shows how long it has waited on its state row, such as `2h 14m` from a hold-set time or `3d` from a date.
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.
 The board search matches task ids and the title, note, and decision text on cards, ignoring case.
 Enter or the find icon applies it: in Kanban each column then shows only matching cards, columns and cards holding a match open even when folded, and the current match gets an accent border; in Chains only lanes holding a match are shown, open even when folded, with non-matching nodes dimmed, and the `Independent` drawer opens to list only matching tasks.
@@ -60,6 +67,7 @@ A card lists every decision its worker's status log still holds open, from the s
 A detail line that would only repeat one of those decisions is left out.
 An unobservable worker uses recorded status evidence when available, otherwise it appears in Unknown.
 Cards with a finished worker and a review link show a PR waiting badge while the backlog and worker detail still indicate pending review.
+Clicking a PR link on a card or a Chains node opens the separate PR viewer mod as a window when that mod is installed in the Herdr home (`mods/pr-viewer/`, or the folder the layout's `pr_viewer` prop on the Board block names), passing the link as its `url` prop. The next link replaces that window. Without the mod, the link opens in the browser.
 The board does not query the forge to check whether the link has merged.
 
 Clicking an option of a held decision puts `[Board answer] <ids>: <label> (<option text>) ` into the Firstmate chat input, ready to edit and confirm with Enter.
@@ -67,6 +75,11 @@ The Ask icon inserts `` `[Board card] <ids>: <title or group question>` `` follo
 Clicking an open decision's text puts `[Board answer] <id> [key=<key>]: ` there, and clicking one of its options puts `[Board answer] <id> [key=<key>]: <label> (<option text>) `; the key names that one decision, so Firstmate can close it with `fm-send.sh --resolve-key <key>` even when the card has several.
 All these drafts stay on one line with a trailing space, and the input receives focus so you can keep typing.
 Held cards without options use the chat input for free-text answers; a hold's options outside the Held column are shown as plain text.
+The NEXT MOVE band's options put the same drafts in the chat input as the Held card's options, covering every hold to answer now that shares its topic. Its recommended option is filled, and `Write answer` starts a free-text draft. When the hold has a worker terminal, a `Worker` button opens it.
+In Kanban, the toolbar's `Focus` button (or `F` while the Board itself has the keyboard) turns Focus on and off.
+Focus dims everything except the captain's calls (holds to answer now and failed workers) and rings the selected call, starting with the NEXT MOVE card. A key row under the search field lists its keys.
+`j`/`k` (or the arrow keys) move between the calls in drawing order, showing each card open and scrolling to it. When the call has a live worker terminal, Focus runs Herdr's peek of that terminal, which shows it over the tab beside the Board without taking the keyboard.
+`Enter` drafts the recommended answer (or starts a free-text draft), `o` opens the worker, and `Esc` or `F` leaves Focus; switching to Chains also leaves it.
 Live cards can open their worker with a terminal icon, and the read-only Files and Changes viewer with a `Files · Changes` button when the snapshot reports the worker's copy of the project as present (`paths.worktree`); the viewer's source picker then offers that copy beside the project's local copy.
 When the card's worker terminal is live and still labeled with the card's task, the card ends in a Live strip set apart by a light tint of the theme's working color, so the card body above keeps the shape of cards in other columns.
 The strip's header holds a working-color dot, the worker terminal's own status as Herdr reports it (`Worker working`, `Worker blocked`, or `Worker idle`, which also covers a finished turn; `Live` when the terminal reports none), the Open worker icon, and a Peek icon that opens Herdr's peek of that terminal over the current tab without focusing, switching, or typing anything; both icons have tooltips and screen reader labels.
@@ -120,14 +133,14 @@ The panel stack contains Herdr's shipped `files` and `changes` mods and the `fm-
 
 `fm-tabs` is based on Herdr 0.1.16's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, `settings`, and `checking`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` icon.
 
-`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, and `checking` from `herdr`.
+`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, `checking`, `openOverlay`, and `appHome` from `herdr`.
 It draws Herdr's shipped `files` folder icon and `workspace-chrome` search, terminal, and layers icons.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals and `hc read` to read live worker screens for the card lines.
-Its Peek icon runs Herdr's `terminal.peek` command.
+Its Peek icon and Focus mode run Herdr's `terminal.peek` command.
 Card drafts use macOS `pbpaste` and `pbcopy` to save clipboard text to a temporary file and restore it around Herdr's `terminal.paste` action; they verify terminal focus before pasting and leave Enter to the owner.
 They first read the clipboard types with `osascript`; plain text is restored as is, and rich text such as HTML, RTF, or a web archive is restored as plain text with its formatting dropped.
 If the clipboard holds an image, files, or RTFD, which can carry attachments, or holds no plain text at all, nothing is inserted, the clipboard is left untouched, and a notice asks you to paste it first.
-It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, `/bin/ps` to list processes for the cards' background job rows, `sh` with `stat` to list `state/*.check.sh` filenames and read the `state/.last-check` mtime (bounded by a 3-second timeout, without reading file contents), and `open` for folders or review URLs.
+It uses `agent.focus` to focus Firstmate or show a matching worker, `ps` to check supervision processes and the session lock holder's parent processes, `/bin/ps` to list processes for the cards' background job rows, `sh` with `stat` to list `state/*.check.sh` filenames and read the `state/.last-check` mtime (bounded by a 3-second timeout, without reading file contents), and `open` for folders, and for review URLs when the PR viewer mod is not installed.
 Its `viewer.js` reads selected project or worker folders, lists files through `sh`, and runs read-only Git status and diff commands with optional locks disabled.
 The viewer cancels its pending folder watch when its root changes or it closes.
 The viewer has Files and Changes tabs, read-only syntax-highlighted file contents, diff lines, a source picker for local or worker copies, and a draggable divider beside the board.

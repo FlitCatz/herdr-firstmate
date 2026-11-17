@@ -13,12 +13,15 @@ When the panel is shown it takes two thirds of the row and the active-tab pane o
 
 The tab bar sits on the chrome background and shows tabs plus Board, Files, and Changes panel buttons.
 
-The board shows project rows above the task section, which holds a `Kanban | Chains` view toggle and search field with a find icon above the task board (either Kanban columns or Chains swimlanes), a footer with update and watcher status, a collapsible Registered checks section below the footer, and command controls below.
+The board shows the Today strip and the NEXT MOVE band at the top, then the task section. The task section holds a `Kanban | Chains` view toggle and a search field with a find icon above the task board (either Kanban columns or Chains swimlanes).
+Below the task section, one tab group holds `Commands` (command buttons and the Scout, Task, and Memo field), `Projects` (project rows, the add form, and pending requests), and `Checks` (the Registered checks list).
+Its tab strip carries the update and watcher status on its right. The Projects tab counts the Board requests Firstmate has not handled yet, such as Memos, as `N pending`, so they stay in view whichever tab is open.
+Clicking another tab shows it, and clicking the open tab folds the group down to its strip. The chosen tab and the fold are remembered.
 Its surfaces, borders, text, and status dots use the active Herdr theme; project badges use a three-letter abbreviation and a color of its own: a project gets the first palette color no other project holds when it is first seen and keeps it when others are added or removed, and its color is freed once a successful read finds it in neither the registry nor any card, so projects get distinct colors while free palette colors remain.
 When none is free, or local storage cannot be used, a project takes a color derived from its name and keeps it even after a color is freed; a project with a chosen color keeps its automatic color reserved for when Auto is chosen again; in those cases two projects can share a color.
 Each Board copy's text follows Herdr's terminal font size and grows with that copy's width.
 The board uses the Ledger look, which it shares with the separate PR viewer mod. Headings sit on a hairline instead of a filled strip, and Kanban columns are open lanes split by hairlines, each heading underlined in its column's status color. Every card has a 3px bar on its left edge in that color (red for a failed worker). Counts, task ids, project tags, priorities, and wait times use Geist Mono, which ships with Herdr, while the worker screen lines keep the terminal font.
-Above the projects, a Today strip shows five counts with one line under each.
+The Today strip shows five counts with one line under each.
 `Done today` counts finished backlog items whose merged, reported, or done date is today in Korea time.
 `Waiting on you` counts holds to answer now and shows the oldest one's wait, `Working` counts working cards and their background jobs, `Ready to land` counts cards in Review or with a PR waiting, and `Blocked` counts Blocked cards and how many failed.
 While a hold waits to be answered now, a NEXT MOVE band sits below the strip. It is filled with the theme's solid color, the board's only filled band, and shows the longest-waiting hold: its project, task id, wait, place among the holds to answer now, and question.
@@ -113,7 +116,7 @@ Command buttons submit Bearings, Ahoy, Stow, Quiet, Quiet off, AFK, or Update co
 On each insertion or send, the board asks `home/bin/fm-inbox.sh ready` to inspect the session lock and uses its PID only when the lock is held by a live harness.
 It matches that PID to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.
 If the lock cannot be read or no terminal can be proven, commands and Scout or Task requests fall back to the Firstmate inbox, while card drafts only show a notice and file nothing.
-The Memo button beside Task never types into the terminal: it always saves the text as a Firstmate inbox note (`fm-inbox.sh note`) that asks Firstmate to file it in the backlog without starting work, so it is written to disk at once whether Firstmate is running, stopped on a usage limit, or closed, and it shows in the Projects list as a pending request.
+The Memo button beside Task never types into the terminal: it always saves the text as a Firstmate inbox note (`fm-inbox.sh note`) that asks Firstmate to file it in the backlog without starting work, so it is written to disk at once whether Firstmate is running, stopped on a usage limit, or closed, and it shows in the Projects tab as a pending request, counted on the tab.
 A failed save keeps the text in the field.
 
 The tab bar marks working tabs with a spinner, blocked and done tabs with status dots, and zoomed tabs with a `Z` suffix.
@@ -122,8 +125,8 @@ Tabs without a custom name follow useful live agent session titles, and the acti
 Smooth wheel gestures accumulate and debounce small events, while each wheel notch switches one tab.
 Invalid saved panel data falls back to an empty per-space panel history.
 Controls highlight on hover, and project badges and several buttons have explanatory tooltips.
-The board watches the home's state and data folders and has a 30-second refresh fallback; each refresh is bounded by a 15-second deadline (showing `Update failed` on timeout while keeping the last board on screen so later refreshes can still run), and its footer `Updated` time is displayed in Korea time; clicking it, or the `Update failed` notice, refreshes immediately.
-Below the footer, the collapsible Registered checks section lists one row per `state/*.check.sh` file (named from the filename) and shows the home-wide last check-sweep timestamp from `state/.last-check` in the viewer's local time, labeled `Last sweep (all checks)` (or `Not recorded` when absent); when the read fails or times out, it shows `Could not read registered checks` instead of a list or sweep time. Per-check running state, per-check last-run time, and check results are not recorded by Firstmate, so the board does not display per-check values and never reads check scripts, outputs, or private check state directories.
+The board watches the home's state and data folders and has a 30-second refresh fallback; each refresh is bounded by a 15-second deadline (showing `Update failed` on timeout while keeping the last board on screen so later refreshes can still run), and the `Updated` time on the tab strip is displayed in Korea time; clicking it, or the `Update failed` notice, refreshes immediately.
+The Checks tab's Registered checks section lists one row per `state/*.check.sh` file (named from the filename) and shows the home-wide last check-sweep timestamp from `state/.last-check` in the viewer's local time, labeled `Last sweep (all checks)` (or `Not recorded` when absent); when the read fails or times out, it shows `Could not read registered checks` instead of a list or sweep time. Per-check running state, per-check last-run time, and check results are not recorded by Firstmate, so the board does not display per-check values and never reads check scripts, outputs, or private check state directories.
 
 ## Built from
 
@@ -177,7 +180,7 @@ The layout and mods expect Herdr's shipped `workspace-chrome`, `spaces`, `agents
 
 Both mod folders pass `herdr-app check`.
 
-`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files · Changes` button, the Held groups, the open decisions with their answer drafts, and the Registered checks section.
+`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files · Changes` button, the Held groups, the open decisions with their answer drafts, the Today strip, NEXT MOVE, card bars, Focus keys, PR links with and without the PR viewer mod, the tab group below the board, and the Registered checks section.
 
 The layout opens with the configured Firstmate home, displays the board and panel controls, and switching spaces restores each space's selected panel.
 

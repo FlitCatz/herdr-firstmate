@@ -127,7 +127,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     localStorage: store,
     readTextFile: async (file) => {
       initEffects.push("read");
-      if (file === "/fictional/herdr-home/mods/pr-viewer/mod.json") {
+      if (file === "/fictional/herdr-home/mods/herdr-pr-viewer/mod.json") {
         if (prViewer) return "{}";
         throw new Error(`no such file: ${file}`);
       }
@@ -346,7 +346,7 @@ const MANY_PROJECTS = ["maple-workshop", "orchard-atlas", "birch-ledger", "cedar
   "meadow-queue", "nettle-vault"];
 
 test("the Projects list is a scroll area that holds every project", async () => {
-  const b = await board({ projects: MANY_PROJECTS });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: MANY_PROJECTS });
   assert.deepEqual(b.ids.filter((id) => id.startsWith("ptag-")), MANY_PROJECTS.map((name) => `ptag-${name}`));
   const list = b.items.find((x) => x.id === "project-list");
   assert.ok(list, "no project-list drawn");
@@ -385,7 +385,7 @@ const tagColors = (items) => Object.fromEntries(items.filter((x) => x.id.startsW
   .map((x) => [x.id.slice(5), x.calls.find((c) => c[0] === "bg")[1]]));
 
 test("a project keeps its tag color when other projects are added or removed", async () => {
-  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"] });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"] });
   const before = tagColors(b.items);
   // aspen-docs sorts before every project, which used to move each one's place in the color list.
   const same = (colors, names) => names.every((name) => colors[name] === before[name]);
@@ -397,15 +397,15 @@ test("a project keeps its tag color when other projects are added or removed", a
 
 test("a fresh Board sharing the store keeps every saved project color", async () => {
   const store = memoryStore();
-  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
   b.view.projects.unshift({ name: "aspen-docs", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
   const before = tagColors(b.redraw());
-  const again = tagColors((await board({ projects: ["aspen-docs", "maple-workshop"], store })).items);
+  const again = tagColors((await board({ ui: { bottomTab: "projects" }, projects: ["aspen-docs", "maple-workshop"], store })).items);
   assert.deepEqual(again, { "aspen-docs": before["aspen-docs"], "maple-workshop": before["maple-workshop"] });
 });
 
 test("the first 14 projects get distinct palette colors in name order, and the 15th one from its name", async () => {
-  const b = await board({ projects: MANY_PROJECTS, store: memoryStore() });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: MANY_PROJECTS, store: memoryStore() });
   const palette = paletteOf(b);
   const colors = tagColors(b.items);
   const sorted = [...MANY_PROJECTS].sort();
@@ -420,7 +420,7 @@ test("the first 14 projects get distinct palette colors in name order, and the 1
 });
 
 test("a picked color holds its hue against new projects, and Auto returns to the saved color", async () => {
-  const b = await board({ store: memoryStore() });
+  const b = await board({ ui: { bottomTab: "projects" }, store: memoryStore() });
   const palette = paletteOf(b);
   assert.deepEqual(tagColors(b.items), { "maple-workshop": palette[0], "orchard-atlas": palette[1] });
   b.view.pickColor("maple-workshop", palette[2], { notify() {} });
@@ -432,7 +432,7 @@ test("a picked color holds its hue against new projects, and Auto returns to the
 
 test("a removed project frees its hue for the next new project, and no other color changes", async () => {
   const store = memoryStore();
-  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
   const palette = paletteOf(b);
   const before = tagColors(b.items);
   assert.deepEqual(before, { "birch-ledger": palette[0], "cedar-signal": palette[1], "maple-workshop": palette[2], "orchard-atlas": palette[3] });
@@ -442,13 +442,13 @@ test("a removed project frees its hue for the next new project, and no other col
   const after = tagColors(await b.reload());
   // cedar-signal's hue is the lowest free one, so the new project takes it even though it sorts last.
   assert.deepEqual(after, { "birch-ledger": palette[0], "maple-workshop": palette[2], "orchard-atlas": palette[3], "zinnia-board": palette[1] });
-  const again = tagColors((await board({ projects: ["birch-ledger", "maple-workshop", "orchard-atlas", "zinnia-board"], store })).items);
+  const again = tagColors((await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "maple-workshop", "orchard-atlas", "zinnia-board"], store })).items);
   assert.deepEqual(again, after);
 });
 
 test("a project removed from the registry keeps its hue while its cards remain", async () => {
   const store = memoryStore();
-  const b = await board({ projects: ["maple-workshop", "orchard-atlas", "birch-ledger"], store });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["maple-workshop", "orchard-atlas", "birch-ledger"], store });
   const palette = paletteOf(b);
   // maple-workshop still has cards in the snapshot.
   b.registry.projects = ["orchard-atlas", "birch-ledger"];
@@ -462,7 +462,7 @@ test("a project removed from the registry keeps its hue while its cards remain",
 
 test("an empty or failed registry read, or no read yet, frees no hue", async () => {
   const store = memoryStore();
-  const b = await board({ projects: ["birch-ledger", "maple-workshop", "orchard-atlas"], store });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "maple-workshop", "orchard-atlas"], store });
   const saved = store.getItem("autoProjectColors");
   b.registry.projects = [];
   await b.reload();
@@ -472,15 +472,15 @@ test("an empty or failed registry read, or no read yet, frees no hue", async () 
   assert.ok(b.view.error);
   assert.equal(store.getItem("autoProjectColors"), saved);
   // A Board whose first read fails has nothing on screen and must not touch the saved colors.
-  const fresh = await board({ projects: ["maple-workshop"], store, registryFails: true });
+  const fresh = await board({ ui: { bottomTab: "projects" }, projects: ["maple-workshop"], store, registryFails: true });
   assert.ok(fresh.view.error);
   assert.equal(store.getItem("autoProjectColors"), saved);
 });
 
 test("two Board copies sharing the store never overwrite each other's colors", async () => {
   const store = memoryStore();
-  const a = await board({ store });
-  const b = await board({ store });
+  const a = await board({ ui: { bottomTab: "projects" }, store });
+  const b = await board({ ui: { bottomTab: "projects" }, store });
   const palette = paletteOf(a);
   // Copy A sees zeta-tools first; copy B, which loaded before that, then sees alpha-notes and zeta-tools together.
   a.view.projects.push({ name: "zeta-tools", mode: "no-mistakes", yolo: false, desc: "Fictional project." });
@@ -500,7 +500,7 @@ test("two Board copies sharing the store never overwrite each other's colors", a
 test("on a fresh store whose unset keys read as undefined, the first projects still get distinct saved colors", async () => {
   const data = new Map();
   const store = { getItem: (key) => data.get(key), setItem: (key, value) => { data.set(key, String(value)); } };
-  const b = await board({ projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: ["birch-ledger", "cedar-signal", "maple-workshop", "orchard-atlas"], store });
   const palette = paletteOf(b);
   const expected = { "birch-ledger": palette[0], "cedar-signal": palette[1], "maple-workshop": palette[2], "orchard-atlas": palette[3] };
   assert.deepEqual(tagColors(b.items), expected);
@@ -509,7 +509,7 @@ test("on a fresh store whose unset keys read as undefined, the first projects st
 
 test("a store that cannot be read or written still draws, with colors from the names", async () => {
   const broken = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("denied"); } };
-  const b = await board({ store: broken });
+  const b = await board({ ui: { bottomTab: "projects" }, store: broken });
   const palette = paletteOf(b);
   const expected = Object.fromEntries(["maple-workshop", "orchard-atlas"].map((name) => [name, palette[fnv1a(name) % palette.length]]));
   assert.deepEqual(tagColors(b.items), expected);
@@ -517,7 +517,7 @@ test("a store that cannot be read or written still draws, with colors from the n
 });
 
 test("a project's tag color is one of the palette colors, the same on its cards, and a picked color wins", async () => {
-  const b = await board({ projects: MANY_PROJECTS });
+  const b = await board({ ui: { bottomTab: "projects" }, projects: MANY_PROJECTS });
   // The picker lists the palette only for an open project row.
   b.view.open.add("maple-workshop");
   const swatches = b.redraw().filter((x) => x.id.startsWith("color-maple-workshop-") && !x.id.endsWith("-auto"))
@@ -1242,7 +1242,7 @@ test("Chains view groups components, orders lanes by most blocking / deepest fir
   assert.ok(b.ids.indexOf("chain-branches-chain-1") > b.ids.indexOf("chain-spine-chain-1"));
 
   // Each node shows project, priority, status, and PR link when present.
-  assert.equal(b.text("cnode-tag-maple-theme-tokens"), b.text("ptag-maple-workshop"));
+  assert.equal(b.text("cnode-tag-maple-theme-tokens"), b.view.tags.get("maple-workshop"));
   assert.equal(b.text("cnode-prio-maple-theme-tokens"), "P0");
   assert.equal(b.text("cnode-status-maple-theme-tokens"), "working");
   assert.equal(b.text("cnode-pr-maple-theme-tokens"), "maple-workshop#42");
@@ -1674,7 +1674,7 @@ test("Registered checks section lists state/*.check.sh names and home-wide state
   // Viewer in Asia/Seoul (UTC+9): 2026-11-10T03:05:09Z -> 11-10 12:05:09.
   process.env.TZ = "Asia/Seoul";
   const store = memoryStore();
-  const b = await board({ exec: realChecksExec, store });
+  const b = await board({ ui: { bottomTab: "checks" }, exec: realChecksExec, store });
   assert.ok(b.ids.includes("checks-section"));
   assert.ok(b.ids.indexOf("checks-section") > b.ids.indexOf("board"), "registered checks belong in the monitoring area, not cards");
   assert.deepEqual(
@@ -1684,7 +1684,7 @@ test("Registered checks section lists state/*.check.sh names and home-wide state
   assert.equal(b.text("check-alpha-audit"), "alpha-audit");
   assert.equal(b.text("check-beta-sync"), "beta-sync");
   assert.equal(b.text("check-gamma-digest"), "gamma-digest");
-  assert.match(b.text("head-checks"), /^▾ Registered checks 3 /);
+  assert.equal(b.text("bottom-tab-checks"), "Checks 3");
   assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): 11-10 12:05:09");
   // Ensure no check script contents or private state file contents leaked into the rendered tree.
   const allText = b.items.map((x) => x.text).join(" ");
@@ -1703,13 +1703,13 @@ test("Registered checks section lists state/*.check.sh names and home-wide state
   await b.reload();
   assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): 07:08:09");
 
-  // Collapsing the section hides rows, keeps Last sweep visible in the header, and saves state.
-  b.click("head-checks");
+  // Clicking the open Checks tab folds the tab group away, keeps the count on the tab, and saves state.
+  b.click("bottom-tab-checks");
   assert.ok(!b.ids.includes("checks-list"));
   assert.ok(!b.ids.includes("check-alpha-audit"));
-  assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): 07:08:09");
-  assert.deepEqual(JSON.parse(store.getItem("collapsed")), ["checks"]);
-  b.click("head-checks");
+  assert.equal(b.text("bottom-tab-checks"), "Checks 3");
+  assert.deepEqual(JSON.parse(store.getItem("collapsed")), ["bottom"]);
+  b.click("bottom-tab-checks");
   assert.ok(b.ids.includes("check-alpha-audit"));
 
   // Missing state/.last-check shows Not recorded; empty checks shows No registered checks.
@@ -1720,19 +1720,20 @@ test("Registered checks section lists state/*.check.sh names and home-wide state
   await b.reload();
   assert.equal(b.text("checks-last-sweep"), "Last sweep (all checks): Not recorded");
   assert.equal(b.text("checks-list"), "No registered checks");
-  assert.match(b.text("head-checks"), /^▾ Registered checks 0 /);
+  assert.equal(b.text("bottom-tab-checks"), "Checks 0");
 });
 
 test("Registered checks section reports a failed read instead of claiming no checks or no sweep", async () => {
-  const failed = await board({
+  const failed = await board({ ui: { bottomTab: "checks" },
     exec: async () => ({ code: 1, stdout: "", stderr: "permission denied" }),
   });
   assert.equal(failed.view.error, null);
   assert.equal(failed.text("checks-list"), "Could not read registered checks");
   assert.equal(failed.text("checks-last-sweep"), "Last sweep (all checks): Could not read");
-  assert.match(failed.text("head-checks"), /^▾ Registered checks Last sweep/);
+  // A failed read claims no count on the tab.
+  assert.equal(failed.text("bottom-tab-checks"), "Checks");
 
-  const rejected = await board({
+  const rejected = await board({ ui: { bottomTab: "checks" },
     exec: async (cmd, args) => {
       if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") throw new Error("timed out");
       return { code: 1, stdout: "", stderr: "" };
@@ -1750,7 +1751,7 @@ test("Registered checks section reports an unlistable state folder as a failed r
   await writeFile(join(stateDir, ".last-check"), "");
   await chmod(stateDir, 0o000);
   t.after(async () => { await chmod(stateDir, 0o755); await rm(tempHome, { recursive: true, force: true }); });
-  const b = await board({
+  const b = await board({ ui: { bottomTab: "checks" },
     exec: async (cmd, args) => {
       if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") {
         try {
@@ -1769,7 +1770,7 @@ test("Registered checks section reports an unlistable state folder as a failed r
 });
 
 test("Registered checks section is read even when the first refresh fails before the inbox", async () => {
-  const b = await board({
+  const b = await board({ ui: { bottomTab: "checks" },
     registryFails: true,
     exec: async (cmd, args) => {
       if (cmd === "sh" && args[0] === "-c" && args[2] === "checks") {
@@ -2738,12 +2739,43 @@ test("a PR link opens the PR viewer mod when it is installed, and the browser wh
   withViewer.click("pr-maple-theme-tokens");
   await withViewer.settle();
   assert.equal(withViewer.overlays.length, 1);
-  assert.deepEqual({ ...withViewer.overlays[0], props: { ...withViewer.overlays[0].props } },
-    { mod: "pr-viewer", props: { url }, kind: "window", key: "pr-viewer", width: 0.6, height: 0.85 });
+  // The window call and props the PR viewer's README documents: the task and the card's project tag ride along.
+  const spec = withViewer.overlays[0];
+  const color = withViewer.view.colorOf("maple-workshop", {});
+  assert.deepEqual({ ...spec, props: { ...spec.props, badge: { ...spec.props.badge } } }, {
+    kind: "window", key: "herdr-pr-viewer", mod: "herdr-pr-viewer", width: 640, height: 0.85,
+    props: { url, task: "maple-theme-tokens · maple-workshop", badge: { text: "MAW", color } },
+  });
   assert.deepEqual(opened, []);
   const without = await board({ exec });
   without.click("pr-maple-theme-tokens");
   await without.settle();
   assert.equal(without.overlays.length, 0);
   assert.deepEqual(opened, [url]);
+});
+
+test("below the board one tab strip holds Commands, Projects with its unhandled request count, and Checks", async () => {
+  const store = memoryStore();
+  const b = await board({ store });
+  // The group sits below the task board, Commands open by default, the status on the strip's right.
+  assert.ok(b.ids.indexOf("bottom-group") > b.ids.indexOf("board"));
+  assert.deepEqual(b.ids.filter((id) => id.startsWith("bottom-tab-")), ["bottom-tab-commands", "bottom-tab-projects", "bottom-tab-checks"]);
+  assert.ok(b.ids.includes("ask-memo") && !b.ids.includes("project-list") && !b.ids.includes("checks-list"));
+  assert.ok(b.ids.includes("refresh"), "the update time rides on the strip");
+  // Unhandled Board requests, such as Memos, stay counted on the Projects tab whichever tab is open.
+  assert.ok(!b.ids.includes("projects-pending"));
+  b.view.requests = [{ body: "[Board memo] project=maple-workshop: fictional note" }, { body: "[Board memo] project=(firstmate picks): another" }];
+  b.redraw();
+  assert.equal(b.text("projects-pending"), "2 pending");
+  // Picking a tab shows it and is remembered; clicking it again folds the group, keeping the count.
+  b.click("bottom-tab-projects");
+  assert.ok(b.ids.includes("project-list") && !b.ids.includes("ask-memo"));
+  assert.equal(store.getItem("bottomTab"), "projects");
+  b.click("bottom-tab-projects");
+  assert.ok(!b.ids.includes("project-list"));
+  assert.equal(b.text("projects-pending"), "2 pending");
+  b.click("bottom-tab-checks");
+  assert.ok(b.ids.includes("checks-section"), "picking another tab unfolds the group");
+  const again = await board({ store });
+  assert.ok(again.ids.includes("checks-section"), "a new Board copy opens the remembered tab");
 });

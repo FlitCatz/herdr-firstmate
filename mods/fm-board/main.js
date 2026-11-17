@@ -1,4 +1,5 @@
-// Firstmate board: projects on top, tasks below. Fleet data comes from
+// Firstmate board: the day's counts and the next call on top, tasks in the middle, and
+// commands, projects, and checks in a tab group below. Fleet data comes from
 // fm-fleet-snapshot.sh; this mod never changes it. Adding or removing a project
 // only sends a note through fm-inbox.sh, and firstmate does the work under its
 // project-management procedure. The Command buttons type their slash command
@@ -48,9 +49,10 @@ const DATA_FONT = "Geist Mono";
 // everything that does not need the captain while Focus is on.
 const CARD_BAR_PX = 3;
 const FOCUS_DIM = 0.22;
-// The separate PR viewer mod a PR link opens, when installed; the layout's `pr_viewer` prop on
-// this block names another folder. It opens as a window with props { url }.
-const PR_VIEWER_MOD = "pr-viewer";
+// The separate PR viewer mod (herdr-pr-viewer) a PR link opens, when installed; the layout's
+// `pr_viewer` prop on this block names another folder. Its README documents the window call and
+// the props it takes: url, and optionally task and badge.
+const PR_VIEWER_MOD = "herdr-pr-viewer";
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
 // The most of the Board's height the compact inspector's chain takes before it scrolls.
 const COMPACT_INSPECTOR_SHARE = 0.35;
@@ -59,9 +61,10 @@ const COLLAPSED_KEY = "collapsed";
 const FOLDED_KEY = "folded";
 const VIEW_MODE_KEY = "viewMode";
 const INDEPENDENT_OPEN_KEY = "independentOpen";
-const PROJECTS = "projects";
-const COMMANDS = "commands";
-const CHECKS = "checks";
+// The tab group below the board: its folded state (in the collapsed set) and its chosen tab.
+const BOTTOM = "bottom";
+const BOTTOM_TAB_KEY = "bottomTab";
+const BOTTOM_TABS = ["commands", "projects", "checks"];
 // Reads only the list of state/*.check.sh filenames and the mtime of state/.last-check.
 // Never reads check scripts, check outputs, or private check state directories.
 const CHECKS_SCRIPT = [
@@ -1211,6 +1214,8 @@ export default class FmBoard extends View {
     this.autoChoice = null;
     try { this.autoChoice = JSON.parse(localStorage.getItem(AUTO_COLORS_KEY) ?? "{}") ?? {}; } catch {}
     this.adding = Boolean(ui.adding); this.confirm = ui.confirm ?? null; this.mode = MODES[0].id;
+    const savedTab = ui.bottomTab ?? this.loadText(BOTTOM_TAB_KEY);
+    this.bottomTab = BOTTOM_TABS.includes(savedTab) ? savedTab : "commands";
     this.source = InputState.new({ placeholder: "Repository URL (git@github.com:org/repo.git)" });
     this.name = InputState.new({ placeholder: "Name (optional)" });
     this.picked = null;
@@ -1615,27 +1620,17 @@ export default class FmBoard extends View {
     return div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).text_color(t.dim).child(String(n));
   }
 
-  projectSection(t) {
-    const collapsed = this.collapsed.has(PROJECTS);
-    const header = this.ledgerHead(h_flex().gap(6).items_center(), t)
-      .child(h_flex().id("head-projects").flex_1().gap(6).items_center().cursor_pointer()
-        .hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggle(PROJECTS, cx))
-        .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
-        .child(div().text_size(this.fs(12)).font_semibold().text_color(t.foreground).child("Projects"))
-        .child(this.count(this.projects.length, t)))
-      .child(this.button("add-open", "+ Add", t, (cx) => {
-        this.adding = !this.adding; this.collapsed.delete(PROJECTS); cx.notify();
-      }));
-    const el = this.frame(v_flex().flex_none().gap(8), t).child(header);
-    if (collapsed) return el;
+  // The Projects tab: project rows, the add form, and the Board requests firstmate has not handled.
+  projectsBody(t) {
     // Plain overflow_y_scroll, not the scrollbar wrapper: the wrapper drops max_h, so the list
     // never got a height to scroll within.
     const list = v_flex().id("project-list").gap(8).max_h(260).min_h(0).flex_shrink(1).overflow_y_scroll();
+    list.child(h_flex().justify_end().child(this.button("add-open", "+ Add", t, (cx) => { this.adding = !this.adding; cx.notify(); })));
     if (this.adding) list.child(this.addForm(t));
     list.children(this.projects.map((p) => this.projectRow(p, t)));
     if (this.requests.length) list.child(v_flex().gap(4).pt(6).border_t(1).border_color(t.border)
       .children(this.requests.map((n) => this.requestRow(n, t))));
-    return el.child(list);
+    return list;
   }
 
   // Resolve the session for both submitted requests and editable card drafts.
@@ -1785,14 +1780,9 @@ export default class FmBoard extends View {
     this.typeToFirstmate(command, `[Board request] Run ${command}`, `Typed ${command} into firstmate`, cx);
   }
 
-  commandSection(t) {
-    const collapsed = this.collapsed.has(COMMANDS);
-    const el = this.frame(v_flex().flex_none().gap(8), t)
-      .child(this.ledgerHead(h_flex().id("head-commands").gap(6).items_center(), t)
-        .cursor_pointer().hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggle(COMMANDS, cx))
-        .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
-        .child(div().text_size(this.fs(12)).font_semibold().text_color(t.foreground).child("Commands")));
-    if (collapsed) return el;
+  // The Commands tab: slash-command buttons, the Scout/Task/Memo field, and its project chips.
+  commandsBody(t) {
+    const el = v_flex().id("commands-body").gap(8);
     const run = (command) => (cx) => this.typeCommand(command, cx);
     const request = (kind) => (cx) => {
       const text = this.ask.value().trim();
@@ -1958,7 +1948,7 @@ export default class FmBoard extends View {
     if (c.pr && /^https:\/\//.test(c.pr)) {
       el.child(div().id(`pr-${c.id}`).text_size(this.fs(11)).text_color(t.accent).truncate()
         .hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => this.openPr(c.pr, cx))
+        .on_click((_e, cx) => this.openPr(c.pr, c, cx))
         .child(c.pr.replace("https://github.com/", "")));
     }
     const live = c.column !== "done";
@@ -2671,7 +2661,7 @@ export default class FmBoard extends View {
         .replace("https://github.com/", "");
       card.child(div().id(`cnode-pr-${id}`).font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.accent).truncate()
         .cursor_pointer().hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.openPr(node.pr, cx); })
+        .on_click((_e, cx) => { cx.stop_propagation(); this.openPr(node.pr, node, cx); })
         .child(prLabel));
     }
 
@@ -2946,15 +2936,19 @@ export default class FmBoard extends View {
   }
 
   // A PR link opens the separate PR viewer mod when it is installed in this Herdr home, as a window
-  // whose key keeps one copy that the next link replaces, and the browser otherwise.
-  /** @param {string} url @param {import("gpui-kit").Context} cx */
-  openPr(url, cx) {
+  // whose key keeps one spot that the next link replaces, and the browser otherwise. The viewer
+  // shows the card's task and its project tag in the tag's own color.
+  /** @param {string} url @param {{ id: string, project?: string }} c @param {import("gpui-kit").Context} cx */
+  openPr(url, c, cx) {
     const named = props()?.pr_viewer;
     const mod = typeof named === "string" && /^[\w.-]+$/.test(named) ? named : PR_VIEWER_MOD;
+    const project = c.project || "firstmate";
+    const badge = { text: this.tags?.get(project) ?? project.slice(0, 3).toUpperCase(), color: this.colorOf(project, theme()) };
+    const task = c.project ? `${c.id} · ${c.project}` : c.id;
     cx.spawn(async () => {
       let installed = false;
       try { await readTextFile(`${appHome()}/mods/${mod}/mod.json`); installed = true; } catch {}
-      if (installed) openOverlay({ mod, props: { url }, kind: "window", key: mod, width: 0.6, height: 0.85 });
+      if (installed) openOverlay({ kind: "window", key: mod, mod, props: { url, task, badge }, width: 640, height: 0.85 });
       else await exec("open", [url]);
     });
   }
@@ -3390,24 +3384,17 @@ export default class FmBoard extends View {
   }
 
   // Compact monitoring list of registered checks (state/*.check.sh) and the home-wide last sweep time.
-  checksSection(t) {
-    const collapsed = this.collapsed.has(CHECKS);
+  checksBody(t) {
     const list = this.checks ?? [];
     const sweep = this.checks === null ? "Loading…"
       : this.checksFailed ? "Could not read"
       : (localTime(this.lastCheckSweep) || "Not recorded");
-    const header = this.ledgerHead(h_flex().id("head-checks").gap(8).items_center().justify_between(), t)
-      .cursor_pointer().hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggle(CHECKS, cx))
-      .child(h_flex().flex_none().gap(6).items_center()
-        .child(div().text_size(this.fs(10)).text_color(t.dim).child(collapsed ? "▸" : "▾"))
-        .child(div().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child("Registered checks"))
-        .when(this.checks !== null && !this.checksFailed, (e) => e.child(this.count(list.length, t))))
-      .child(div().id("checks-last-sweep").min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim)
-        .tooltip("Home-wide watcher check-sweep time from state/.last-check; Firstmate does not record per-check running state, last run, or result")
-        .child(`Last sweep (all checks): ${sweep}`));
-    const wrap = v_flex().id("checks-section").flex_none().gap(4).pt(6).border_t(1).border_color(t.border)
-      .child(header);
-    if (collapsed) return wrap;
+    const wrap = v_flex().id("checks-section").gap(4)
+      .child(h_flex().gap(8).items_center().justify_between()
+        .child(div().flex_none().text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child("Registered checks"))
+        .child(div().id("checks-last-sweep").min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim)
+          .tooltip("Home-wide watcher check-sweep time from state/.last-check; Firstmate does not record per-check running state, last run, or result")
+          .child(`Last sweep (all checks): ${sweep}`)));
     const rows = v_flex().id("checks-list").gap(2).max_h(110).min_h(0).flex_shrink(1).overflow_y_scroll();
     if (this.checks === null) {
       rows.child(div().px(6).text_size(this.fs(11)).text_color(t.dim).child("Loading registered checks…"));
@@ -3422,6 +3409,49 @@ export default class FmBoard extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11)).text_color(t.foreground).child(c.name))));
     }
     return wrap.child(rows);
+  }
+
+  // Below the board: one strip of tabs (Commands, Projects, Checks) with the supervision status on
+  // its right, and the chosen tab's content under it. Clicking the open tab folds the content away.
+  // The Projects tab carries the count of Board requests firstmate has not handled yet, such as
+  // Memos, so they stay in view whichever tab is open.
+  /** @param {Record<string, string>} t */
+  bottomGroup(t) {
+    const folded = this.collapsed.has(BOTTOM);
+    const tab = (id, label, ...extra) => {
+      const on = this.bottomTab === id;
+      return h_flex().id(`bottom-tab-${id}`).flex_none().gap(6).items_center().px(2).pt(2).pb(6)
+        .border_b(2).border_color(on && !folded ? t.foreground : t.background)
+        .cursor_pointer().hover((s) => s.opacity(0.75))
+        .tooltip(on ? (folded ? "Show this tab" : "Fold this tab away") : `Show ${label}`)
+        .on_click((_e, cx) => this.pickBottomTab(id, cx))
+        .child(div().text_size(this.fs(12)).font_semibold().text_color(on ? t.foreground : t.muted).child(label))
+        .children(extra.filter(Boolean));
+    };
+    const pending = this.requests.length;
+    const strip = h_flex().id("bottom-tabs").gap(16).items_end().flex_wrap()
+      .when(!folded, (e) => e.border_b(1).border_color(t.border))
+      .child(tab("commands", "Commands"))
+      .child(tab("projects", "Projects", this.count(this.projects.length, t), pending > 0
+        ? div().id("projects-pending").flex_none().px(6).rounded(3).border(1).border_color(t.working)
+          .font_family(DATA_FONT).font_weight(500).text_size(this.fs(10)).text_color(t.working)
+          .tooltip("Board requests and Memos firstmate has not handled yet").child(`${pending} pending`)
+        : null))
+      .child(tab("checks", "Checks", this.checks !== null && !this.checksFailed ? this.count(this.checks.length, t) : null))
+      .child(div().flex_1().min_w(0).pb(6).child(this.footer(t)));
+    const el = this.frame(v_flex().id("bottom-group").flex_none().gap(8), t).child(strip);
+    if (folded) return el;
+    return el.child(this.bottomTab === "projects" ? this.projectsBody(t)
+      : this.bottomTab === "checks" ? this.checksBody(t) : this.commandsBody(t));
+  }
+
+  // Shows another tab, or folds or unfolds the one already shown; both are remembered.
+  /** @param {string} id @param {import("gpui-kit").Context} cx */
+  pickBottomTab(id, cx) {
+    if (this.bottomTab === id) { this.toggle(BOTTOM, cx); return; }
+    this.bottomTab = id;
+    try { localStorage.setItem(BOTTOM_TAB_KEY, id); } catch {}
+    if (this.collapsed.has(BOTTOM)) this.toggle(BOTTOM, cx); else cx.notify();
   }
 
   render(_cx) {
@@ -3484,7 +3514,6 @@ export default class FmBoard extends View {
       const next = this.nextMove(t, holds);
       if (next) root.child(next);
     }
-    root.child(back(this.projectSection(t)));
     if (this.filter) {
       root.child(h_flex().gap(6).items_center()
         .child(div().text_size(this.fs(11)).text_color(t.muted).child(`Filter: ${this.filter}`))
@@ -3494,8 +3523,8 @@ export default class FmBoard extends View {
       .child(this.searchRow(t, matches))
       .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))
-      .child(board).child(back(this.footer(t))).child(back(this.checksSection(t))))
-      .child(back(this.commandSection(t)));
+      .child(board))
+      .child(back(this.bottomGroup(t)));
     if (this.viewer.root) {
       this.splitWasOpen = true;
       // The viewer sits on the Board's right behind a draggable divider. Herdr keeps the

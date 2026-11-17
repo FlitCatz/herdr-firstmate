@@ -103,11 +103,13 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   const overlays = [];
   const commands = [];
   const sharedSet = [];
+  // One-shot timers the Board set after init, in order, so a test can let time pass.
+  const timers = [];
   const scrolled = [];
   const focused = [];
   const cx = {
     notify() {}, stop_propagation() {}, spawn(fn) { initEffects.push("spawn"); pending.push(fn(cx)); },
-    timer: { every() { initEffects.push("timer"); }, after() { initEffects.push("timer"); } },
+    timer: { every() { initEffects.push("timer"); }, after(ms, fn) { initEffects.push("timer"); timers.push({ ms, fn }); } },
     focus_handle() { const handle = { focus() { focused.push(handle); }, is_focused: () => focused.at(-1) === handle, release: () => true }; return handle; },
   };
   const input = () => { let text = ""; return { on() {}, value: () => text, set_value(v) { text = v; } }; };
@@ -199,7 +201,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     waitingLabel, blocksLabel, initEffects,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
-    click, hover, keyDown, scrolled, focused, drafts, opened, redraw, overlays, commands, sharedSet,
+    click, hover, keyDown, scrolled, focused, drafts, opened, redraw, overlays, commands, sharedSet, timers,
     // Waits for the tasks the Board started, such as a PR link's install check.
     settle: () => Promise.all(pending),
     text: (id) => items.find((x) => x.id === id)?.text,
@@ -2865,21 +2867,54 @@ test("below the board one tab strip holds Commands, Projects with its unhandled 
   assert.ok(again.ids.includes("checks-section"), "a new Board copy opens the remembered tab");
 });
 
-test("the NEXT MOVE card line brings its card into view on Kanban and rings it until Escape", async () => {
-  const theme = { accent: "#1f62d0", border: "#dddddd" };
-  const store = memoryStore();
-  const b = await board({ theme, store, ui: { viewMode: "chains" } });
+test("the NEXT MOVE card line brings its card into view and rings it in the held color, apart from the hover accent", async () => {
+  const theme = { accent: "#1f62d0", blocked: "#c93c2c", border: "#dddddd" };
+  const b = await board({ theme, store: memoryStore(), ui: { viewMode: "chains" } });
   b.view.folded.add("card:maple-icon-set");
   b.view.collapsed.add("held");
   b.redraw();
   b.click("next-move-card");
   assert.equal(b.view.viewMode, "kanban", "the Held card lives on Kanban");
-  const border = () => b.items.find((x) => x.id === "card-maple-icon-set").calls;
-  assert.ok(border().some((c) => c[0] === "border_color" && c[1] === theme.accent));
-  assert.ok(border().some((c) => c[0] === "border" && c[1] === 2));
+  const ring = (id) => {
+    const calls = b.items.find((x) => x.id === id).calls;
+    return { color: calls.findLast((c) => c[0] === "border_color")[1], width: calls.findLast((c) => c[0] === "border")[1] };
+  };
+  // The pointed card wears the NEXT MOVE band's held color, not the accent hover and selection use.
+  assert.deepEqual(ring("card-maple-icon-set"), { color: theme.blocked, width: 2 });
+  b.hover("card-maple-theme-tokens");
+  assert.deepEqual(ring("card-maple-theme-tokens"), { color: theme.accent, width: 1 }, "hovering a chain card keeps the accent");
+  assert.equal(ring("card-maple-icon-set").color, theme.blocked);
+  b.hover("card-maple-theme-tokens", false);
   assert.ok(b.ids.includes("age-maple-icon-set") || b.ids.includes("tag-maple-icon-set"), "the folded card and column show open");
   assert.ok(b.scrollsOn("list-held").length > 0, "the Held list scrolls to it");
   assert.ok(b.focusedOn("root"));
+  // The ring clears by itself after a few seconds; an older timer leaves a newer point alone.
+  const first = b.timers.at(-1);
+  assert.equal(first.ms, 4000);
+  b.click("next-move-card");
+  first.fn({ notify() {} });
+  assert.equal(b.redraw() && ring("card-maple-icon-set").color, theme.blocked);
+  b.timers.at(-1).fn({ notify() {} });
+  b.redraw();
+  assert.deepEqual(ring("card-maple-icon-set"), { color: theme.border, width: 1 });
+  // Escape clears it sooner.
+  b.click("next-move-card");
   b.keyDown("root", "escape");
-  assert.ok(!border().some((c) => c[0] === "border_color" && c[1] === theme.accent));
+  assert.deepEqual(ring("card-maple-icon-set"), { color: theme.border, width: 1 });
+});
+
+test("Parked has its own status color, apart from Held, Blocked, Working, and Review", async () => {
+  const theme = { idle: "#111111", working: "#222222", blocked: "#333333", done: "#444444", ansi1: "#555555", ansi5: "#7a45c8", unknown: "#666666" };
+  const b = await board({ theme });
+  const headRule = (col) => b.items.find((x) => x.id === `head-${col}`).calls.findLast((c) => c[0] === "border_color")[1];
+  const bar = (id) => b.items.find((x) => x.id === `bar-${id}`).calls.find((c) => c[0] === "bg")[1];
+  assert.equal(b.view.cards.find((c) => c.id === "orchard-nav-style").column, "parked");
+  assert.equal(headRule("parked"), theme.ansi5);
+  assert.equal(bar("orchard-nav-style"), theme.ansi5);
+  // Held keeps the "needs the captain" color.
+  assert.equal(headRule("held"), theme.blocked);
+  assert.equal(bar("maple-icon-set"), theme.blocked);
+  for (const col of ["held", "working", "review"].filter((c) => b.ids.includes(`head-${c}`))) {
+    assert.notEqual(headRule(col), theme.ansi5, `${col} differs from Parked`);
+  }
 });

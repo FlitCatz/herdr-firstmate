@@ -25,7 +25,7 @@ The Today strip shows five counts with one line under each.
 `Done today` counts finished backlog items whose merged, reported, or done date is today in Korea time.
 `Waiting on you` counts holds to answer now and shows the oldest one's wait, `Working` counts working cards and their background jobs, `Ready to land` counts cards in Review or with a PR waiting, and `Blocked` counts Blocked cards and how many failed.
 While a hold waits to be answered now, a NEXT MOVE band sits below the strip. It is a plain frame on the theme's background with a bar in the held (blocked) color on its left edge, and it shows the longest-waiting hold to answer now.
-Its first line names the card the decision comes from: the project tag, task id, and title, then the wait and its place among the holds to answer now. Clicking that card line switches to Kanban if needed, shows the card where a filter, search, or fold hides it, scrolls to it, and rings it until `Esc`.
+Its first line names the card the decision comes from: the project tag, task id, and title, then the wait and its place among the holds to answer now. Clicking that card line switches to Kanban if needed, shows the card where a filter, search, or fold hides it, scrolls to it, and rings it in the held (blocked) color for 4 seconds or until `Esc`. That ring is the NEXT MOVE band's color, so it is not mistaken for the accent ring that hovering or selecting a card in a dependency chain draws.
 The hold's question follows in the normal text color.
 Holds are ordered by the backlog's hold-set time, else their filing date, with ties kept in backlog order.
 
@@ -46,6 +46,7 @@ Only captain holds have a bucket: an `external` hold waits on other work, and a 
 A deferred card that has a `hold_until` date shows it on its state row as `until <month>-<day>`, such as `until 12-01`.
 There is no Failed column: a task whose worker reported `failed:` sits in the Blocked column, marked with a red `Failed` label on its state row and a red border (and `failed` in red on its Chains node and in card dependency chain lists), and keeps its detail text.
 Their heading rules and card bars (and a folded column's dot) use the theme's idle, working, blocked, done, and unknown colors as appropriate.
+Held and Blocked use the blocked color. Parked uses the theme's `ansi5`, because a parked task waits on review activity rather than on the captain.
 A hold to answer now shows how long it has waited on its state row, such as `2h 14m` from a hold-set time or `3d` from a date.
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.
 The board search matches task ids and the title, note, and decision text on cards, ignoring case.
@@ -82,7 +83,7 @@ All these drafts stay on one line with a trailing space, and the input receives 
 Held cards without options use the chat input for free-text answers; a hold's options outside the Held column are shown as plain text.
 The NEXT MOVE band's options put the same drafts in the chat input as the Held card's options, covering every hold to answer now that shares its topic. Its options are the board's ordinary raised buttons, with the recommended one as the solid primary button, and `Write answer` starts a free-text draft.
 In Kanban, the toolbar's `Focus` button (or `F` while the Board itself has the keyboard) turns Focus on and off.
-Focus dims everything except the captain's calls (holds to answer now and failed workers) and rings the selected call, starting with the NEXT MOVE card. A key row under the search field lists its keys.
+Focus dims everything except the captain's calls (holds to answer now and failed workers) and rings the selected call in the held (blocked) color, starting with the NEXT MOVE card. A key row under the search field lists its keys.
 `j`/`k` (or the arrow keys) move between the calls in drawing order, showing each card open and scrolling to it. When the call has a live worker terminal, Focus runs Herdr's peek of that terminal, which shows it over the tab beside the Board without taking the keyboard.
 `Enter` drafts the recommended answer (or starts a free-text draft), `o` opens the worker, and `Esc` or `F` leaves Focus; switching to Chains also leaves it.
 Live cards can open their worker with a terminal icon, and the read-only Files and Changes viewer with a `Files · Changes` button when the snapshot reports the worker's copy of the project as present (`paths.worktree`); the viewer's source picker then offers that copy beside the project's local copy.

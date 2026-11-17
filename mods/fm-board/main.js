@@ -49,6 +49,8 @@ const DATA_FONT = "Geist Mono";
 // everything that does not need the captain while Focus is on.
 const CARD_BAR_PX = 3;
 const FOCUS_DIM = 0.22;
+// How long the ring on a card the NEXT MOVE card line pointed to stays.
+const POINT_RING_MS = 4000;
 // The separate PR viewer mod a PR link opens when it is installed. Its panel contract: the layout's
 // `pr` block in the panel-body stack shows it, and the shared value below asks it for one PR.
 const PR_VIEWER_MOD = "herdr-pr-viewer";
@@ -95,7 +97,9 @@ const COLUMNS = [
   { id: "queued", title: "Queued", color: "idle" },
   { id: "held", title: "Held", color: "blocked", optional: true },
   { id: "working", title: "Working", color: "working" },
-  { id: "parked", title: "Parked", color: "blocked", optional: true },
+  // Parked waits on review activity, not on the captain: its own color keeps it apart from Held
+  // (the captain's call), Blocked, Working, and Review.
+  { id: "parked", title: "Parked", color: "ansi5", optional: true },
   { id: "blocked", title: "Blocked", color: "blocked", optional: true },
   { id: "paused", title: "Paused", color: "idle", optional: true },
   { id: "review", title: "Review", color: "done", optional: true },
@@ -1191,6 +1195,7 @@ export default class FmBoard extends View {
     // The card a reference such as the NEXT MOVE card line brought into view, ringed until Escape.
     /** @type {string | null} */
     this.pointedId = null;
+    this.pointedAt = 0;
     // Folds and collapsed columns an inspector click shows open for now, without saving them.
     /** @type {Set<string>} */
     this.revealed = new Set();
@@ -1862,13 +1867,15 @@ export default class FmBoard extends View {
     const dimmed = Boolean(this.highlight?.dimmedIds?.has(c.id)) && !current;
     const roleBorder = role === "selected" ? t.accent : role === "upstream" ? t.working : role === "downstream" ? t.ansi6 : null;
     const pinnedBorder = pinnedRole === "selected" || pinnedRole === "upstream" || pinnedRole === "downstream";
-    // The card j/k reached in Focus, or the one a reference brought into view, is ringed;
-    // in Focus every card that is not the captain's call steps back.
-    const focusSel = (this.focusMode && this.focusId === c.id) || this.pointedId === c.id;
+    // The captain's-call ring, in the held color of the NEXT MOVE band: the card its card line
+    // pointed to (for a few seconds), and the card j/k reached in Focus. Accent stays for hover,
+    // selection, and the search match. In Focus every card that is not the captain's call steps back.
+    const callRing = (this.focusMode && this.focusId === c.id) || this.pointedId === c.id;
     const focusDim = this.focusMode && !needsCaptain(c);
-    const borderWidth = current || pinnedBorder || focusSel ? 2 : 1;
+    const borderWidth = current || pinnedBorder || callRing ? 2 : 1;
     // A failed card keeps its red border unless the card is the current search match or sits on a highlighted chain.
-    const borderColor = current || focusSel ? t.accent : roleBorder ?? (role === "branch" ? t.muted : c.failed ? t.ansi1 : t.border);
+    const borderColor = current ? t.accent : callRing ? t.blocked
+      : roleBorder ?? (role === "branch" ? t.muted : c.failed ? t.ansi1 : t.border);
     // A deferred hold shows its date when it has one; a hold to answer now shows how long it has waited.
     const until = c.column === "held" && c.holdGroup === "deferred" ? c.holdUntil : null;
     const age = c.column === "held" && c.holdGroup === "now" ? waitAge(c.heldSince, Date.now()) : "";
@@ -2118,14 +2125,22 @@ export default class FmBoard extends View {
           (cx) => this.insertCardText(answerHead(ids), cx), false)));
   }
 
-  // Brings a card on the Kanban board into view and rings it until Escape, for a reference
-  // such as the NEXT MOVE card line.
+  // Brings a card on the Kanban board into view and rings it in the held color for a few seconds
+  // (or until Escape), for a reference such as the NEXT MOVE card line.
   /** @param {string} id @param {import("gpui-kit").Context} cx */
   revealCard(id, cx) {
     const card = (this.cards ?? []).find((c) => c.id === id);
     if (!card) return;
     if (this.viewMode !== "kanban") this.setViewMode("kanban", cx);
+    const at = Date.now();
     this.pointedId = id;
+    this.pointedAt = at;
+    // Only the latest point clears its ring: an older timer finds a newer point and leaves it.
+    cx.timer.after(POINT_RING_MS, (later) => {
+      if (this.pointedId !== id || this.pointedAt !== at) return;
+      this.pointedId = null;
+      later.notify();
+    });
     this.keys.focus();
     this.showCard(card, cx);
     cx.notify();
@@ -2909,7 +2924,8 @@ export default class FmBoard extends View {
       ["ready", cards.filter((c) => c.column === "queued").length],
       ["held", cards.filter((c) => c.column === "held").length],
       ["paused", cards.filter((c) => c.column === "paused").length],
-      ["blocked", cards.filter((c) => c.column === "blocked" || c.column === "parked").length],
+      ["blocked", cards.filter((c) => c.column === "blocked").length],
+      ["parked", cards.filter((c) => c.column === "parked").length],
       ["review", cards.filter((c) => c.column === "review").length],
       ["todo", cards.filter((c) => c.column === "todo").length],
     ].filter(([, n]) => n > 0).map(([label, n]) => `${n} ${label}`).join(" · ");

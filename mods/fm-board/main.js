@@ -222,14 +222,29 @@ function abbreviations(names) {
   return out;
 }
 
+function parseHexRgb(hex) {
+  const m = /^#([0-9a-f]{6})/i.exec(hex ?? "");
+  return m ? [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)) : null;
+}
+
+function formatHexRgb(rgb) {
+  return "#" + rgb.map((c) => Math.round(c).toString(16).padStart(2, "0")).join("");
+}
+
 // Badge text is white, so a light theme color (bright yellow or cyan) is darkened until white stays legible.
 function readableOnWhite(hex) {
-  const m = /^#([0-9a-f]{6})/i.exec(hex ?? "");
-  if (!m) return hex;
-  const rgb = [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16));
+  const rgb = parseHexRgb(hex);
+  if (!rgb) return hex;
   const lum = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
   const k = Math.min(1, 0.5 / Math.max(lum, 0.01));
-  return "#" + rgb.map((c) => Math.round(c * k).toString(16).padStart(2, "0")).join("");
+  return formatHexRgb(rgb.map((c) => c * k));
+}
+
+// Mix two #rrggbb theme colors linearly in sRGB (ratio = 0.5 gives the exact midpoint).
+function mixColor(a, b, ratio = 0.5) {
+  const ra = parseHexRgb(a), rb = parseHexRgb(b);
+  if (!ra || !rb) return ra ? formatHexRgb(ra) : rb ? formatHexRgb(rb) : (a || b);
+  return formatHexRgb(ra.map((c, i) => c * (1 - ratio) + rb[i] * ratio));
 }
 
 function parseRegistry(text) {
@@ -1924,9 +1939,10 @@ export default class FmBoard extends View {
       const depRow = h_flex().id(`deps-${c.id}`).gap(4).items_center().flex_wrap().min_w(0);
       if ((c.waitingOn?.length ?? 0) > 0) {
         const selected = this.selectedCardId === c.id;
+        const waitsColor = mixColor(t.blocked, t.working);
         depRow.child(div().id(`waits-${c.id}`).min_w(0).px(5).py(1).rounded(4).border(1)
-          .border_color(selected ? t.accent : t.ansi3).bg(t.ansi3 + "18")
-          .text_size(this.fs(10.5)).font_semibold().text_color(t.ansi3).truncate()
+          .border_color(selected ? t.accent : waitsColor).bg(waitsColor + "18")
+          .text_size(this.fs(10.5)).font_semibold().text_color(waitsColor).truncate()
           .cursor_pointer().hover((st) => st.opacity(0.8))
           .tooltip(`Inspect dependency chain · Waits on: ${c.waitingOn.join(", ")}`)
           .on_click((_e, cx) => { cx.stop_propagation(); this.selectChainCard(c.id, cx); })

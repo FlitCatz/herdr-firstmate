@@ -889,7 +889,8 @@ test("card dependency badges render in every column, not only Queued", async () 
     makeTask("P1", "paused", "ci running"),
     makeTask("R1", "unknown", "checks green: PR ready", "https://github.com/FlitCatz/maple-workshop/pull/10", "done [at=1]: PR ready"),
   ];
-  const theme = { ansi3: "#8f5d00", blocked: "#c93c2c", accent: "#1f62d0" };
+  const theme = { blocked: "#c93c2c", working: "#9a6700", ansi3: "#8f5d00", accent: "#1f62d0" };
+  const expectedLightOrange = "#b25216";
   const multi = await board({
     theme,
     snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records } },
@@ -913,18 +914,28 @@ test("card dependency badges render in every column, not only Queued", async () 
   assert.equal(multi.text("waits-Q1"), "← Waits on Held Step");
 
   // Waiting is shown only by the ← Waits on badge (no inline expandable "Waiting on" row).
-  // Its badge uses the theme's gold/orange ansi3 palette (not blocked red), keeping accent border on selection.
+  // Its badge uses a 50/50 orange mix of the theme's blocked (Held) and working colors, keeping accent border on selection.
   assert.ok(!multi.ids.includes("wait-Q1"));
   assert.ok(!multi.ids.includes("wait-H1"));
-  const badgeCall = (id, fn) => multi.items.find((x) => x.id === id)?.calls.findLast((c) => c[0] === fn)?.[1];
-  assert.equal(badgeCall("waits-Q1", "border_color"), theme.ansi3);
-  assert.equal(badgeCall("waits-Q1", "bg"), `${theme.ansi3}18`);
-  assert.equal(badgeCall("waits-Q1", "text_color"), theme.ansi3);
+  const badgeCall = (view, id, fn) => view.items.find((x) => x.id === id)?.calls.findLast((c) => c[0] === fn)?.[1];
+  assert.equal(badgeCall(multi, "waits-Q1", "border_color"), expectedLightOrange);
+  assert.equal(badgeCall(multi, "waits-Q1", "bg"), `${expectedLightOrange}18`);
+  assert.equal(badgeCall(multi, "waits-Q1", "text_color"), expectedLightOrange);
   assert.equal(multi.view.inspectorOpen, false);
   multi.click("waits-Q1");
   assert.equal(multi.view.inspectorOpen, true);
-  assert.equal(badgeCall("waits-Q1", "border_color"), theme.accent);
-  assert.equal(badgeCall("waits-Q1", "text_color"), theme.ansi3);
+  assert.equal(badgeCall(multi, "waits-Q1", "border_color"), theme.accent);
+  assert.equal(badgeCall(multi, "waits-Q1", "text_color"), expectedLightOrange);
+
+  const darkTheme = { blocked: "#e06c75", working: "#e5c07b", ansi3: "#e5c07b", accent: "#61afef" };
+  const expectedDarkOrange = "#e39678";
+  const darkMulti = await board({
+    theme: darkTheme,
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks, backlog: { records } },
+  });
+  assert.equal(badgeCall(darkMulti, "waits-Q1", "border_color"), expectedDarkOrange);
+  assert.equal(badgeCall(darkMulti, "waits-Q1", "bg"), `${expectedDarkOrange}18`);
+  assert.equal(badgeCall(darkMulti, "waits-Q1", "text_color"), expectedDarkOrange);
 });
 
 test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlights upstream/selected/downstream, dims unrelated cards only while selected, and clears on Escape or Close", async () => {

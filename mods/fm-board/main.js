@@ -873,6 +873,9 @@ function chainEdgeColor(e, roles, t) {
 // through a lane in the row padding instead: below the source row, or above it when the target
 // sits higher. Ports are ordered above < same row < below, and the vertical turns sharing a
 // gutter are ordered by where they lead, so no two lines share a stretch of track.
+/** @param {any} comp */
+const chainLaneKey = (comp) => `lane:${comp.roots?.[0] ?? comp.id}`;
+
 function placeChainLane(comp, nodesMap) {
   const levelOf = new Map();
   for (const lg of comp?.levels ?? []) {
@@ -1224,8 +1227,9 @@ export default class FmBoard extends View {
     this.revealed = new Set();
     this.rightSplitWidth = 0;
     this.splitWasOpen = false;
-    // One handle per scroll area: the stacked board, and each column's card list.
+    // One handle per scroll area: the stacked board, each column's card list, and the Chains board.
     this.boardScroll = ScrollHandle.new();
+    this.chainsScroll = ScrollHandle.new();
     this.colScrolls = new Map(COLUMNS.map((c) => [c.id, ScrollHandle.new()]));
     this.pasting = false;
     // Worker screen tails by terminal address. Display only: never logged or written anywhere.
@@ -1274,8 +1278,6 @@ export default class FmBoard extends View {
     // props.ui.focus and props.ui.point (previews): Focus on that card, or that card pointed to.
     if (typeof ui.focus === "string") { this.focusMode = true; this.focusId = ui.focus; }
     if (typeof ui.point === "string") this.pointedId = ui.point;
-    if (typeof ui.cursor === "string") this.cursorId = ui.cursor;
-    if (typeof ui.detail === "string") { this.detailCardId = ui.detail; this.cursorId = ui.detail; }
     if (ui.pick) this.usePath(ui.pick, cx);
     this.listenCommands(cx);
     this.refresh(cx);
@@ -2236,18 +2238,19 @@ export default class FmBoard extends View {
     if (cmd !== "focus") return;
     this.keys.focus();
     if (!this.focusMode) {
-      if (this.detailCardId) {
-        this.cursorId = this.detailCardId;
-      } else if (!this.cards) {
-        this.pendingInitialCursor = true;
-      } else {
-        const cards = this.boardCards();
-        if (cards.length && (!this.cursorId || !cards.some((c) => c.id === this.cursorId))) {
-          this.cursorId = cards[0].id;
-        }
-      }
+      if (this.cards) this.placeCursor();
+      else this.pendingInitialCursor = true;
     }
     cx.notify();
+  }
+
+  // Keeps the cursor on the open detail's card, or on a drawn card, starting with the first.
+  placeCursor() {
+    if (this.detailCardId) { this.cursorId = this.detailCardId; return; }
+    const cards = this.boardCards();
+    if (cards.some((c) => c.id === this.cursorId)) return;
+    this.cursorId = cards[0]?.id ?? null;
+    if (cards[0]) this.scrollToCursorCard(cards[0]);
   }
 
   // Cards in drawing order for keyboard navigation outside Focus mode.
@@ -2258,8 +2261,7 @@ export default class FmBoard extends View {
       const out = [];
       const cardById = new Map((this.cards ?? []).map((c) => [c.id, c]));
       for (const comp of this.visibleChains()) {
-        const laneKey = `chain:${comp.id}`;
-        if (this.folded.has(laneKey) && !this.query && !this.revealed.has(laneKey)) continue;
+        if (this.chainLaneFolded(comp)) continue;
         const lane = placeChainLane(comp, this.graph?.nodes ?? new Map());
         const ids = stacked
           ? lane.steps.flatMap((step) => step.nodes.map((n) => n.id))
@@ -2277,10 +2279,9 @@ export default class FmBoard extends View {
       }
       return out;
     }
-    const cols = this.shownColumns();
-    const visibleCols = cols.filter((col) => !this.collapsed.has(col.id) || Boolean(this.query) || this.revealed.has(col.id));
-    const useCols = visibleCols.length ? visibleCols : cols;
-    return useCols.flatMap((col) => this.sections(col.id)).flatMap((s) => this.entries(s.cards))
+    return this.shownColumns()
+      .filter((col) => !this.collapsed.has(col.id) || Boolean(this.query) || this.revealed.has(col.id))
+      .flatMap((col) => this.sections(col.id)).flatMap((s) => this.entries(s.cards))
       .flatMap((x) => (x.topic ? x.cards : [x.card]));
   }
 
@@ -2298,9 +2299,20 @@ export default class FmBoard extends View {
     if (this.viewMode === "kanban") {
       this.revealed = new Set([c.column, ...(this.detailCardId ? [`card:${this.detailCardId}`] : [])]);
       if (c.decision?.topic) this.revealed.add(`group:${c.decision.topic}`);
-      this.scrollToCard(c);
     }
+    this.scrollToCursorCard(c);
     cx.notify();
+  }
+
+  // Kanban scrolls its column or list to the card; Chains scrolls its board to the card's lane,
+  // or to the Independent drawer, counting the legend or empty note drawn above the lanes.
+  /** @param {any} c */
+  scrollToCursorCard(c) {
+    if (this.viewMode === "kanban") { this.scrollToCard(c); return; }
+    const chains = this.visibleChains();
+    const lead = chains.length || !this.query ? 1 : 0;
+    const laneIdx = chains.findIndex((comp) => comp.nodeIds.includes(c.id));
+    this.chainsScroll.scroll_to_item(lead + (laneIdx >= 0 ? laneIdx : chains.length));
   }
 
   /** @param {any} c @param {import("gpui-kit").Context} cx */
@@ -2381,32 +2393,26 @@ export default class FmBoard extends View {
       wrap.child(body);
     }
     const actions = h_flex().gap(6).items_center().flex_wrap();
-    let hasActions = false;
     if (c.pr && /^https:\/\//.test(c.pr)) {
-      hasActions = true;
       actions.child(div().id("card-detail-pr").text_size(this.fs(11)).text_color(t.accent).cursor_pointer()
         .hover((s) => s.text_color(t.foreground))
         .on_click((_e, cx) => this.openPr(c.pr, c, cx))
         .child(c.pr.replace("https://github.com/", "")));
     }
     if (c.column !== "done" && c.terminal) {
-      hasActions = true;
       actions.child(this.button("card-detail-open", "Open worker", t, (cx) => this.openWorker(c, cx)));
       if (this.workerLive(c)) {
         actions.child(this.button("card-detail-peek", "Peek", t, () => run("terminal.peek", { terminal: c.terminal })));
       }
     }
     if (c.column !== "done" && c.worktree && c.project) {
-      hasActions = true;
       actions.child(this.button("card-detail-files", "Files · Changes", t, (cx) =>
         this.openView(c.project, { path: c.worktree, label: c.id, title: `${c.project} · ${c.id}` }, cx)));
     }
     const cleanTitle = c.title.replace(/`/g, "'");
-    hasActions = true;
     actions.child(this.button("card-detail-ask", "Ask ?", t, (cx) =>
       this.insertCardText(`\`[Board card] ${c.id}: ${cleanTitle}\``, cx)));
-    if (hasActions) wrap.child(actions);
-    return wrap;
+    return wrap.child(actions);
   }
 
   // Board keys reach the Board only while it holds the keyboard itself, never while a field does.
@@ -2423,11 +2429,7 @@ export default class FmBoard extends View {
       this.returnToTerminal();
       return true;
     }
-    if (e.key === "f" && this.viewMode === "kanban") {
-      this.detailCardId = null;
-      this.toggleFocus(cx);
-      return true;
-    }
+    if (e.key === "f" && this.viewMode === "kanban") { this.toggleFocus(cx); return true; }
     if (this.focusMode) {
       if (this.viewMode !== "kanban") return false;
       if (e.key === "j" || e.key === "down") { this.moveFocus(1, cx); return true; }
@@ -2826,6 +2828,12 @@ export default class FmBoard extends View {
     return box.child(flow);
   }
 
+  /** @param {any} comp */
+  chainLaneFolded(comp) {
+    const key = chainLaneKey(comp);
+    return this.folded.has(key) && !this.query && !this.revealed.has(key);
+  }
+
   // Unfinished dependency chains, most-blocking then deepest first, filtered by project filter and search query.
   visibleChains() {
     const q = this.query.toLowerCase();
@@ -3123,8 +3131,8 @@ export default class FmBoard extends View {
 
   /** @param {any} comp @param {number} idx @param {Record<string, `#${string}`>} t @param {boolean} stacked */
   renderChainLane(comp, idx, t, stacked) {
-    const laneKey = `lane:${comp.roots?.[0] ?? comp.id}`;
-    const folded = this.folded.has(laneKey) && !this.query && !this.revealed.has(laneKey);
+    const laneKey = chainLaneKey(comp);
+    const folded = this.chainLaneFolded(comp);
     const realNodes = comp.nodeIds.map((id) => this.graph.nodes.get(id)).filter((n) => n && !n.missing && n.column !== "done");
     const projects = [...new Set(realNodes.map((n) => n.project || "firstmate"))];
     const workingCount = realNodes.filter((n) => n.column === "working").length;
@@ -3211,7 +3219,7 @@ export default class FmBoard extends View {
   renderChainsView(t, stacked) {
     const chains = this.visibleChains();
     const independent = this.independentCards();
-    const wrap = v_flex().id("chains-board").flex_1().min_h(0).gap(12).overflow_y_scrollbar();
+    const wrap = v_flex().id("chains-board").flex_1().min_h(0).gap(12).overflow_y_scrollbar().track_scroll(this.chainsScroll);
     if (chains.length) wrap.child(this.renderChainLegend(t));
     if (!chains.length) {
       if (this.query && !independent.length) {
@@ -3739,10 +3747,7 @@ export default class FmBoard extends View {
     this.graph = dependencyGraph(this.cards ?? []);
     if (this.pendingInitialCursor && this.cards) {
       this.pendingInitialCursor = false;
-      if (!this.focusMode) {
-        if (this.detailCardId) this.cursorId = this.detailCardId;
-        else if (!this.cursorId) this.cursorId = this.boardCards()[0]?.id ?? null;
-      }
+      if (!this.focusMode) this.placeCursor();
     }
     this.highlight = chainHighlight(this.graph, this.selectedCardId, this.hoveredCardId);
     // Hover may only change colors (`highlight`); anything that changes size or position (border

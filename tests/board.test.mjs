@@ -3156,6 +3156,21 @@ test("local-only done tasks count as Ready to land until landed, while PR and sc
   assert.deepEqual([...b.view.nodeStatus(card("pr-open"), theme, true)], ["PR waiting", theme.done]);
 });
 
+// The cards the Board draws, in drawing order: Kanban cards, and the Chains view's nodes and
+// Independent cards. The keyboard cursor must walk exactly these, never a card that is not drawn.
+const drawnCards = (b) => b.ids.filter((id) => /^(card-|chain-node-)/.test(id) && !id.startsWith("card-detail"))
+  .map((id) => id.replace(/^(card-|chain-node-)/, ""));
+// Presses j until the cursor stops moving, returning every card it rested on.
+const walkDown = (b) => {
+  const seen = [b.view.cursorId];
+  for (let i = 0; i < 100; i++) {
+    b.keyDown("root", "j");
+    if (b.view.cursorId === seen.at(-1)) return seen;
+    seen.push(b.view.cursorId);
+  }
+  assert.fail("j never stopped at the last card");
+};
+
 test("fm-board mod.json is focusable and nextCommand focus moves keyboard focus onto the Board", async () => {
   const modJson = JSON.parse(await readFile(new URL("mods/fm-board/mod.json", root), "utf8"));
   assert.equal(modJson.focusable, true);
@@ -3166,9 +3181,10 @@ test("fm-board mod.json is focusable and nextCommand focus moves keyboard focus 
   b.sendCommand("focus");
   assert.ok(b.focusedOn("root"));
   assert.equal(b.view.focusMode, false);
-  const firstCard = b.view.boardCards()[0];
-  assert.equal(b.view.cursorId, firstCard.id);
-  const ring = b.items.find((x) => x.id === `card-${firstCard.id}`).calls;
+  const firstCard = drawnCards(b)[0];
+  assert.equal(firstCard, "maple-welcome-tour");
+  assert.equal(b.view.cursorId, firstCard);
+  const ring = b.items.find((x) => x.id === `card-${firstCard}`).calls;
   assert.equal(ring.findLast((c) => c[0] === "border_color")[1], theme.accent);
   assert.equal(ring.findLast((c) => c[0] === "border")[1], 2);
 });
@@ -3191,7 +3207,7 @@ test("Board keys j/k and down/up move across all cards, enter opens detail witho
     focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t1" },
   });
   b.sendCommand("focus");
-  const all = b.view.boardCards().map((c) => c.id);
+  const all = drawnCards(b);
   assert.ok(all.length >= 6);
   assert.equal(b.view.cursorId, all[0]);
 
@@ -3254,7 +3270,9 @@ test("Board keys j/k and down/up move across all cards, enter opens detail witho
 
   // o opens the selected card's worker terminal outside Focus mode too.
   const workerIdx = all.indexOf("maple-preview-screen");
-  b.view.cursorId = all[workerIdx];
+  assert.ok(workerIdx > heldIdx);
+  for (let i = heldIdx; i < workerIdx; i++) b.keyDown("root", "j");
+  assert.equal(b.view.cursorId, "maple-preview-screen");
   b.keyDown("root", "o");
   await b.settle();
   assert.ok(b.commands.some((c) => c.name === "agent.focus" && c.args?.terminal === "t9w"));
@@ -3289,7 +3307,7 @@ test("Chains view keyboard navigation moves across chain nodes, Enter opens deta
     focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t2" },
   });
   b.sendCommand("focus");
-  const chainCards = b.view.boardCards().map((c) => c.id);
+  const chainCards = drawnCards(b);
   assert.ok(chainCards.length >= 2);
   assert.equal(b.view.cursorId, chainCards[0]);
   b.keyDown("root", "j");
@@ -3306,4 +3324,57 @@ test("Chains view keyboard navigation moves across chain nodes, Enter opens deta
   assert.deepEqual(b.commands.filter((c) => c.name === "pane.focus"), []);
   b.keyDown("root", "escape");
   assert.deepEqual(JSON.parse(JSON.stringify(b.commands.filter((c) => c.name === "pane.focus"))), [{ name: "pane.focus", args: { terminal: "t2" } }]);
+});
+
+test("Board j walks exactly the drawn cards in drawing order in Kanban and Chains, and scrolls Chains to the cursor's lane", async () => {
+  const k = await board({});
+  k.sendCommand("focus");
+  const kanban = drawnCards(k);
+  assert.deepEqual(walkDown(k), kanban);
+
+  const c = await board({ ui: { viewMode: "chains" } });
+  c.click("head-independent");
+  c.sendCommand("focus");
+  const chains = drawnCards(c);
+  assert.ok(chains.includes("orchard-map-labels") && chains.includes("maple-icon-set"));
+  assert.deepEqual(walkDown(c), chains);
+
+  // Each step scrolls the Chains board to the drawn lane (or drawer) holding the cursor.
+  const c2 = await board({ ui: { viewMode: "chains" } });
+  c2.sendCommand("focus");
+  const lanes = c2.items.find((x) => x.id === "chains-board").childIds;
+  while (c2.view.cursorId !== "orchard-map-labels") c2.keyDown("root", "j");
+  assert.equal(c2.scrollsOn("chains-board").at(-1), lanes.indexOf("chain-lane-chain-2"));
+  c2.keyDown("root", "k");
+  assert.equal(c2.scrollsOn("chains-board").at(-1), lanes.indexOf("chain-lane-chain-1"));
+});
+
+test("Board j skips a folded Chains lane and collapsed Kanban columns, and does nothing when every column is collapsed", async () => {
+  const c = await board({ ui: { viewMode: "chains" } });
+  c.click("head-chain-chain-1");
+  assert.ok(!c.ids.includes("chain-node-maple-theme-tokens"), "the folded lane draws no nodes");
+  c.sendCommand("focus");
+  const chains = drawnCards(c);
+  assert.deepEqual(chains, ["orchard-map-labels", "orchard-label-polish"]);
+  assert.deepEqual(walkDown(c), chains);
+
+  const k = await board({});
+  k.click("head-held");
+  k.click("head-working");
+  k.sendCommand("focus");
+  const kanban = drawnCards(k);
+  assert.ok(!kanban.includes("maple-icon-set") && !kanban.includes("maple-preview-screen"), "collapsed columns draw no cards");
+  assert.deepEqual(walkDown(k), kanban);
+
+  const none = await board({});
+  for (const col of none.view.shownColumns()) none.click(`head-${col.id}`);
+  none.sendCommand("focus");
+  assert.deepEqual(drawnCards(none), []);
+  assert.equal(none.view.cursorId, null);
+  none.keyDown("root", "j");
+  none.keyDown("root", "k");
+  assert.equal(none.view.cursorId, null);
+  assert.deepEqual(drawnCards(none), [], "j and k open no collapsed column");
+  none.keyDown("root", "enter");
+  assert.ok(!none.ids.includes("card-detail"));
 });

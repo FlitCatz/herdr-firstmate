@@ -1274,7 +1274,8 @@ export default class FmBoard extends View {
     // props.ui.focus and props.ui.point (previews): Focus on that card, or that card pointed to.
     if (typeof ui.focus === "string") { this.focusMode = true; this.focusId = ui.focus; }
     if (typeof ui.point === "string") this.pointedId = ui.point;
-    if (typeof ui.detail === "string") this.detailCardId = ui.detail;
+    if (typeof ui.cursor === "string") this.cursorId = ui.cursor;
+    if (typeof ui.detail === "string") { this.detailCardId = ui.detail; this.cursorId = ui.detail; }
     if (ui.pick) this.usePath(ui.pick, cx);
     this.listenCommands(cx);
     this.refresh(cx);
@@ -2235,7 +2236,9 @@ export default class FmBoard extends View {
     if (cmd !== "focus") return;
     this.keys.focus();
     if (!this.focusMode) {
-      if (!this.cards) {
+      if (this.detailCardId) {
+        this.cursorId = this.detailCardId;
+      } else if (!this.cards) {
         this.pendingInitialCursor = true;
       } else {
         const cards = this.boardCards();
@@ -2291,6 +2294,7 @@ export default class FmBoard extends View {
       : Math.min(cards.length - 1, Math.max(0, at + delta));
     const c = cards[next];
     this.cursorId = c.id;
+    if (this.detailCardId && this.detailCardId !== c.id) this.detailCardId = null;
     if (this.viewMode === "kanban") {
       this.revealed = new Set([c.column, ...(this.detailCardId ? [`card:${this.detailCardId}`] : [])]);
       if (c.decision?.topic) this.revealed.add(`group:${c.decision.topic}`);
@@ -2344,7 +2348,8 @@ export default class FmBoard extends View {
           .tooltip("Close card detail (Esc)")))
       .child(div().id("card-detail-title").text_size(this.fs(13)).font_semibold().text_color(t.foreground).child(c.title));
 
-    const body = v_flex().id("card-detail-scroll").gap(6).max_h(180).min_h(0).flex_shrink(1).overflow_y_scroll();
+    const body = v_flex().id("card-detail-scroll").gap(6)
+      .max_h(Math.max(72, Math.round((this.size?.height ?? 600) * 0.25))).min_h(0).flex_shrink(1).overflow_y_scroll();
     if (detailText) {
       body.child(div().id("card-detail-body").text_size(this.fs(11.5)).text_color(t.foreground).child(detailText));
     }
@@ -3734,7 +3739,10 @@ export default class FmBoard extends View {
     this.graph = dependencyGraph(this.cards ?? []);
     if (this.pendingInitialCursor && this.cards) {
       this.pendingInitialCursor = false;
-      if (!this.focusMode && !this.cursorId) this.cursorId = this.boardCards()[0]?.id ?? null;
+      if (!this.focusMode) {
+        if (this.detailCardId) this.cursorId = this.detailCardId;
+        else if (!this.cursorId) this.cursorId = this.boardCards()[0]?.id ?? null;
+      }
     }
     this.highlight = chainHighlight(this.graph, this.selectedCardId, this.hoveredCardId);
     // Hover may only change colors (`highlight`); anything that changes size or position (border
@@ -3785,7 +3793,7 @@ export default class FmBoard extends View {
         .child(div().text_size(this.fs(11)).text_color(t.muted).child(`Filter: ${this.filter}`))
         .child(this.button("filter-clear", "Clear", t, (cx) => { this.filter = null; cx.notify(); })));
     }
-    root.child(this.frame(v_flex().flex_1().min_h(0).gap(6), t)
+    root.child(this.frame(v_flex().flex_1().min_h(0).overflow_hidden().gap(6), t)
       .child(this.searchRow(t, matches))
       .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))

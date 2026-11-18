@@ -3208,6 +3208,29 @@ test("Board keys j/k and down/up move across all cards, enter opens detail witho
   b.keyDown("root", "up");
   assert.equal(b.view.cursorId, all[0]);
 
+  // Step to orchard-nav-style with j/k: Enter opens its detail, NEVER answers, and keeps the outline on that exact card.
+  const navIdx = all.indexOf("orchard-nav-style");
+  assert.ok(navIdx > 0);
+  const bTheme = await board({
+    theme: { accent: "#1f62d0", border: "#dddddd", blocked: "#c93c2c", ansi1: "#cc0000" },
+    focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t1" },
+  });
+  bTheme.sendCommand("focus");
+  for (let i = 0; i < navIdx; i++) bTheme.keyDown("root", "j");
+  assert.equal(bTheme.view.cursorId, "orchard-nav-style");
+  bTheme.keyDown("root", "enter");
+  assert.equal(bTheme.view.detailCardId, "orchard-nav-style");
+  assert.equal(bTheme.view.cursorId, "orchard-nav-style");
+  assert.ok(bTheme.ids.includes("card-detail"));
+  assert.match(bTheme.text("card-detail"), /TASK DETAIL · orchard-nav-style/);
+  assert.deepEqual(bTheme.drafts, [], "Enter outside Focus mode must never answer anything");
+  const cardBorder = (inst, id) => {
+    const calls = inst.items.find((x) => x.id === `card-${id}`).calls;
+    return { color: calls.findLast((c) => c[0] === "border_color")[1], width: calls.findLast((c) => c[0] === "border")[1] };
+  };
+  assert.deepEqual(cardBorder(bTheme, "orchard-nav-style"), { color: "#1f62d0", width: 2 });
+  assert.equal(cardBorder(bTheme, all[0]).width, 1);
+
   // Step to a Held decision card: outside Focus mode, Enter opens card detail and NEVER answers.
   const heldIdx = all.indexOf("maple-icon-set");
   assert.ok(heldIdx > 0);

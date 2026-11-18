@@ -3256,6 +3256,8 @@ test("Board keys j/k and down/up move across all cards, enter opens detail witho
   assert.equal(b.view.detailCardId, "maple-icon-set");
   assert.ok(b.ids.includes("card-detail"));
   assert.match(b.text("card-detail"), /TASK DETAIL · maple-icon-set/);
+  assert.deepEqual(Array.from(b.items.find((x) => x.id === "card-detail-scroll").childIds), ["card-maple-icon-set"],
+    "the detail shows the card itself, as the Chains detail does");
   assert.deepEqual(b.drafts, [], "Enter outside Focus mode must never answer anything");
 
   // First Escape closes card detail without returning to the terminal yet.
@@ -3377,4 +3379,15 @@ test("Board j skips a folded Chains lane and collapsed Kanban columns, and does 
   assert.deepEqual(drawnCards(none), [], "j and k open no collapsed column");
   none.keyDown("root", "enter");
   assert.ok(!none.ids.includes("card-detail"));
+});
+
+test("Board focus puts the cursor back in view when its card's topic group was folded", async () => {
+  const b = await board({});
+  b.sendCommand("focus");
+  while (b.view.cursorId !== "maple-tour-sketch") b.keyDown("root", "j");
+  b.click("fold-group:preview-style");
+  assert.ok(!drawnCards(b).includes("maple-tour-sketch"), "folding the group hides its cards");
+  b.sendCommand("focus");
+  assert.equal(b.view.cursorId, "maple-tour-sketch");
+  assert.ok(drawnCards(b).includes("maple-tour-sketch"), "the cursor never rests on a card that is not drawn");
 });

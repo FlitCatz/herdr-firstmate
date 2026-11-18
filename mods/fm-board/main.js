@@ -2248,9 +2248,9 @@ export default class FmBoard extends View {
   placeCursor() {
     if (this.detailCardId) { this.cursorId = this.detailCardId; return; }
     const cards = this.boardCards();
-    if (cards.some((c) => c.id === this.cursorId)) return;
-    this.cursorId = cards[0]?.id ?? null;
-    if (cards[0]) this.scrollToCursorCard(cards[0]);
+    const c = cards.find((x) => x.id === this.cursorId) ?? cards[0];
+    this.cursorId = c?.id ?? null;
+    if (c) this.showCursorCard(c);
   }
 
   // Cards in drawing order for keyboard navigation outside Focus mode.
@@ -2296,19 +2296,21 @@ export default class FmBoard extends View {
     const c = cards[next];
     this.cursorId = c.id;
     if (this.detailCardId && this.detailCardId !== c.id) this.detailCardId = null;
-    if (this.viewMode === "kanban") {
-      this.revealed = new Set([c.column, ...(this.detailCardId ? [`card:${this.detailCardId}`] : [])]);
-      if (c.decision?.topic) this.revealed.add(`group:${c.decision.topic}`);
-    }
-    this.scrollToCursorCard(c);
+    this.showCursorCard(c);
     cx.notify();
   }
 
-  // Kanban scrolls its column or list to the card; Chains scrolls its board to the card's lane,
-  // or to the Independent drawer, counting the legend or empty note drawn above the lanes.
+  // Kanban opens the card's column and topic group and scrolls its column or list to the card;
+  // Chains scrolls its board to the card's lane, or to the Independent drawer, counting the
+  // legend or empty note drawn above the lanes.
   /** @param {any} c */
-  scrollToCursorCard(c) {
-    if (this.viewMode === "kanban") { this.scrollToCard(c); return; }
+  showCursorCard(c) {
+    if (this.viewMode === "kanban") {
+      this.revealed = new Set([c.column, ...(this.detailCardId ? [`card:${this.detailCardId}`] : [])]);
+      if (c.decision?.topic) this.revealed.add(`group:${c.decision.topic}`);
+      this.scrollToCard(c);
+      return;
+    }
     const chains = this.visibleChains();
     const lead = chains.length || !this.query ? 1 : 0;
     const laneIdx = chains.findIndex((comp) => comp.nodeIds.includes(c.id));
@@ -2333,86 +2335,14 @@ export default class FmBoard extends View {
     else if (target?.pane) run("pane.focus", { pane: target.pane });
   }
 
-  /** @param {any} c @param {Record<string, `#${string}`>} t */
-  renderCardDetail(c, t) {
-    const barColor = c.failed ? t.ansi1 : t[COLUMNS.find((k) => k.id === c.column)?.color ?? "unknown"];
-    const until = c.column === "held" && c.holdGroup === "deferred" ? c.holdUntil : null;
-    const age = c.column === "held" && c.holdGroup === "now" ? waitAge(c.heldSince, Date.now()) : "";
-    const detailText = c.waitingFor ? `Waiting for: ${c.waitingFor}` : c.detail;
-    const wrap = v_flex().id("card-detail").relative().flex_none().overflow_hidden().gap(6).p(10).pl(10 + CARD_BAR_PX)
-      .rounded(6).bg(t.surface).border(1).border_color(t.accent)
-      .child(div().id("card-detail-bar").absolute().left(0).top(0).bottom(0).w(CARD_BAR_PX).rounded_l(6).bg(barColor))
-      .child(h_flex().gap(8).items_center().justify_between().min_w(0)
-        .child(h_flex().flex_1().min_w(0).gap(6).items_center().flex_wrap()
-          .child(div().font_family(DATA_FONT).text_size(this.fs(10)).font_semibold().text_color(t.accent)
-            .child(`TASK DETAIL · ${c.id}`))
-          .child(this.projectBadge(c.project || "firstmate", t, "card-detail-tag"))
-          .when(c.priority !== null && c.column !== "done", (e) => e.child(div().flex_none().px(4).rounded(3).border(1)
-            .border_color(c.priority === 0 ? t.foreground : t.border).font_family(DATA_FONT).text_size(this.fs(10))
-            .text_color(c.priority === 0 ? t.foreground : t.muted).child(`P${c.priority}`)))
-          .child(div().flex_none().text_size(this.fs(11)).text_color(c.failed ? t.ansi1 : t.muted)
-            .child(c.failed ? "Failed" : c.state || c.column))
-          .when(Boolean(until), (e) => e.child(div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.muted)
-            .child(`until ${String(until).replace(/^\d{4}-/, "")}`)))
-          .when(Boolean(age), (e) => e.child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).font_semibold()
-            .text_color(t.blocked).child(age))))
-        .child(this.button("card-detail-close", "Close", t, (cx) => { this.detailCardId = null; cx.notify(); })
-          .tooltip("Close card detail (Esc)")))
-      .child(div().id("card-detail-title").text_size(this.fs(13)).font_semibold().text_color(t.foreground).child(c.title));
-
-    const body = v_flex().id("card-detail-scroll").gap(6)
-      .max_h(Math.max(72, Math.round((this.size?.height ?? 600) * 0.25))).min_h(0).flex_shrink(1).overflow_y_scroll();
-    if (detailText) {
-      body.child(div().id("card-detail-body").text_size(this.fs(11.5)).text_color(t.foreground).child(detailText));
-    }
-    if (c.sourceDetail && c.sourceDetail !== c.detail) {
-      body.child(div().id("card-detail-source").font_family(DATA_FONT).text_size(this.fs(10.5)).text_color(t.dim).child(c.sourceDetail));
-    }
-    if (c.waitingOn?.length) {
-      body.child(div().id("card-detail-waits").text_size(this.fs(11)).text_color(t.muted)
-        .child(`Waits on: ${c.waitingOn.join(", ")}`));
-    }
-    if (c.blocksOn?.length) {
-      body.child(div().id("card-detail-blocks").text_size(this.fs(11)).text_color(t.muted)
-        .child(`Blocks: ${c.blocksOn.join(", ")}`));
-    }
-    const ownDecision = c.decision && !c.decision.topic ? c.decision : null;
-    if (ownDecision) {
-      this.decisionLines(body, ownDecision, t, `detail-${c.id}`, [c.id], c.column === "held");
-    }
-    c.openDecisions.forEach((d, i) => {
-      const rowId = `detail-open-${c.id}-${i}`;
-      body.child(v_flex().id(rowId).gap(2).px(6).py(4).rounded(4).bg(t.background).border(1).border_color(t.border)
-        .child(h_flex().gap(6).items_center().min_w(0)
-          .child(div().flex_none().text_size(this.fs(10)).font_semibold().text_color(t.blocked).child(d.verb))
-          .child(div().flex_1().min_w(0).truncate().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.dim).child(d.key)))
-        .child(div().text_size(this.fs(11)).text_color(t.foreground).child(d.decision?.question || d.summary)));
-      if (d.decision) this.decisionLines(body, d.decision, t, rowId, [c.id], true, d.key);
-    });
-    if (detailText || (c.sourceDetail && c.sourceDetail !== c.detail) || c.waitingOn?.length || c.blocksOn?.length || ownDecision || c.openDecisions.length) {
-      wrap.child(body);
-    }
-    const actions = h_flex().gap(6).items_center().flex_wrap();
-    if (c.pr && /^https:\/\//.test(c.pr)) {
-      actions.child(div().id("card-detail-pr").text_size(this.fs(11)).text_color(t.accent).cursor_pointer()
-        .hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => this.openPr(c.pr, c, cx))
-        .child(c.pr.replace("https://github.com/", "")));
-    }
-    if (c.column !== "done" && c.terminal) {
-      actions.child(this.button("card-detail-open", "Open worker", t, (cx) => this.openWorker(c, cx)));
-      if (this.workerLive(c)) {
-        actions.child(this.button("card-detail-peek", "Peek", t, () => run("terminal.peek", { terminal: c.terminal })));
-      }
-    }
-    if (c.column !== "done" && c.worktree && c.project) {
-      actions.child(this.button("card-detail-files", "Files · Changes", t, (cx) =>
-        this.openView(c.project, { path: c.worktree, label: c.id, title: `${c.project} · ${c.id}` }, cx)));
-    }
-    const cleanTitle = c.title.replace(/`/g, "'");
-    actions.child(this.button("card-detail-ask", "Ask ?", t, (cx) =>
-      this.insertCardText(`\`[Board card] ${c.id}: ${cleanTitle}\``, cx)));
-    return wrap.child(actions);
+  // A TASK DETAIL header with a Close button above a card's detail, in Kanban and in a Chains lane.
+  /** @param {string} elId @param {string} id @param {any} body @param {Record<string, `#${string}`>} t @param {(cx: import("gpui-kit").Context) => void} close */
+  taskDetail(elId, id, body, t, close) {
+    return v_flex().id(elId).gap(6)
+      .child(h_flex().gap(8).items_center().justify_between()
+        .child(div().font_family(DATA_FONT).text_size(this.fs(9.5)).text_color(t.accent).child(`TASK DETAIL · ${id}`))
+        .child(this.button(`${elId}-close`, "Close", t, close)))
+      .child(body);
   }
 
   // Board keys reach the Board only while it holds the keyboard itself, never while a field does.
@@ -3167,13 +3097,10 @@ export default class FmBoard extends View {
 
     if (this.selectedCardId && comp.nodeIds.includes(this.selectedCardId)) {
       const selectedCard = (this.cards ?? []).find((c) => c.id === this.selectedCardId);
-      const detailWrap = v_flex().id("chain-detail").gap(6).pt(10).border_t(1).border_color(t.border)
-        .child(h_flex().gap(8).items_center().justify_between()
-          .child(div().font_family(DATA_FONT).text_size(this.fs(9.5)).text_color(t.accent).child(`TASK DETAIL · ${this.selectedCardId}`))
-          .child(this.button("chain-detail-close", "Close", t, (cx) => this.clearChainSelection(cx))));
-      if (selectedCard) detailWrap.child(this.card(selectedCard, t, false));
-      else detailWrap.child(div().text_size(this.fs(11)).text_color(t.muted).child("External blocker not in the current backlog snapshot."));
-      lane.child(detailWrap);
+      const body = selectedCard ? this.card(selectedCard, t, false)
+        : div().text_size(this.fs(11)).text_color(t.muted).child("External blocker not in the current backlog snapshot.");
+      lane.child(this.taskDetail("chain-detail", this.selectedCardId, body, t, (cx) => this.clearChainSelection(cx))
+        .pt(10).border_t(1).border_color(t.border));
     }
     return lane;
   }
@@ -3802,7 +3729,10 @@ export default class FmBoard extends View {
       .child(this.searchRow(t, matches))
       .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))
-      .when(Boolean(detailCard), (e) => e.child(this.renderCardDetail(detailCard, t)))
+      .when(Boolean(detailCard), (e) => e.child(this.taskDetail("card-detail", detailCard.id,
+        div().id("card-detail-scroll").max_h(Math.max(72, Math.round((this.size?.height ?? 600) * 0.25))).overflow_y_scroll()
+          .child(this.card(detailCard, t, false)),
+        t, (cx) => { this.detailCardId = null; cx.notify(); }).flex_none()))
       .child(board))
       .child(back(this.bottomGroup(t)));
     if (this.viewer.root) {

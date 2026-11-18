@@ -240,11 +240,11 @@ function readableOnWhite(hex) {
   return formatHexRgb(rgb.map((c) => c * k));
 }
 
-// Mix two #rrggbb theme colors linearly in sRGB (ratio = 0.5 gives the exact midpoint).
-function mixColor(a, b, ratio = 0.5) {
+// Midpoint of two #rrggbb theme colors in sRGB.
+function mixColor(a, b) {
   const ra = parseHexRgb(a), rb = parseHexRgb(b);
-  if (!ra || !rb) return ra ? formatHexRgb(ra) : rb ? formatHexRgb(rb) : (a || b);
-  return formatHexRgb(ra.map((c, i) => c * (1 - ratio) + rb[i] * ratio));
+  if (!ra || !rb) return a;
+  return formatHexRgb(ra.map((c, i) => (c + rb[i]) / 2));
 }
 
 function parseRegistry(text) {

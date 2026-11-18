@@ -88,7 +88,8 @@ Focus dims everything except the captain's calls (holds to answer now and failed
 `Enter` drafts the recommended answer (or starts a free-text draft), `o` opens the worker, and `Esc` or `f` leaves Focus; switching to Chains also leaves it.
 
 Outside Focus mode, `fm-board` is focusable (`"focusable": true` in `mod.json`) and accepts `focus` via `nextCommand()` (from `fm-board.focus` or `pane.go`):
-- `j`/`k` or `Down`/`Up` move selection across all drawn cards (in Kanban or Chains), ringing the selected card in the accent color and scrolling to it.
+- `j`/`k` or `Down`/`Up` move selection within the current column in Kanban (stopping at its first and last card) or across all drawn cards in Chains, ringing the selected card in the accent color and scrolling to it.
+- `h`/`l` or `Left`/`Right` in Kanban move selection to the previous/next non-empty expanded column at the same position (or its last card when the column is shorter), skipping collapsed and empty columns; when nothing is selected yet, any of `h`/`j`/`k`/`l` or arrow keys selects the first card of the first non-empty expanded column.
 - `Enter` opens the selected card's detail (`TASK DETAIL` card detail box in Kanban, or `#chain-detail` in Chains), never answering any decision.
 - `o` opens the selected card's worker terminal.
 - `Esc` closes any open view first (Files · Changes viewer, card detail, Focus mode, Dependency Inspector / Chains detail, or NEXT MOVE ring), and when nothing is open returns keyboard focus to the terminal that last had it (`pane.focus`).

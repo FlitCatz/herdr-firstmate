@@ -3189,7 +3189,7 @@ test("fm-board mod.json is focusable and nextCommand focus moves keyboard focus 
   assert.equal(ring.findLast((c) => c[0] === "border")[1], 2);
 });
 
-test("Board keys j/k and down/up move across all cards, enter opens detail without answering, and escape closes detail then returns to terminal", async () => {
+test("Board keys j/k, h/l, and arrows move within/across columns, enter opens detail without answering, and escape closes detail then returns to terminal", async () => {
   const exec = async (cmd, args) => {
     if (cmd === "hc" && args[0] === "get" && args[1] === "t9w") {
       return { code: 0, stdout: JSON.stringify({ labels: { "firstmate.task": "fm-maple-preview-screen" } }), stderr: "" };
@@ -3209,30 +3209,30 @@ test("Board keys j/k and down/up move across all cards, enter opens detail witho
   b.sendCommand("focus");
   const all = drawnCards(b);
   assert.ok(all.length >= 6);
-  assert.equal(b.view.cursorId, all[0]);
+  assert.equal(b.view.cursorId, "maple-welcome-tour");
 
-  // j / down move forward; k / up move back across every card, including non-decision cards.
+  // l moves to queued; j / down move down and k / up move back up inside queued without crossing columns.
+  b.keyDown("root", "l");
+  assert.equal(b.view.cursorId, "orchard-map-labels");
   b.keyDown("root", "j");
-  assert.equal(b.view.cursorId, all[1]);
+  assert.equal(b.view.cursorId, "maple-card-layout");
   b.keyDown("root", "down");
-  assert.equal(b.view.cursorId, all[2]);
+  assert.equal(b.view.cursorId, "orchard-theme-sync");
   b.keyDown("root", "k");
-  assert.equal(b.view.cursorId, all[1]);
+  assert.equal(b.view.cursorId, "maple-card-layout");
   b.keyDown("root", "up");
-  assert.equal(b.view.cursorId, all[0]);
-  // Stops at the first card.
+  assert.equal(b.view.cursorId, "orchard-map-labels");
+  // Stops at the first card of the current column (does not cross back into todo).
   b.keyDown("root", "up");
-  assert.equal(b.view.cursorId, all[0]);
+  assert.equal(b.view.cursorId, "orchard-map-labels");
 
-  // Step to orchard-nav-style with j/k: Enter opens its detail, NEVER answers, and keeps the outline on that exact card.
-  const navIdx = all.indexOf("orchard-nav-style");
-  assert.ok(navIdx > 0);
+  // Step to orchard-nav-style in parked with l: Enter opens its detail, NEVER answers, and keeps the outline on that exact card.
   const bTheme = await board({
     theme: { accent: "#1f62d0", border: "#dddddd", blocked: "#c93c2c", ansi1: "#cc0000" },
     focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t1" },
   });
   bTheme.sendCommand("focus");
-  for (let i = 0; i < navIdx; i++) bTheme.keyDown("root", "j");
+  for (let i = 0; i < 4; i++) bTheme.keyDown("root", "l");
   assert.equal(bTheme.view.cursorId, "orchard-nav-style");
   bTheme.keyDown("root", "enter");
   assert.equal(bTheme.view.detailCardId, "orchard-nav-style");
@@ -3247,10 +3247,8 @@ test("Board keys j/k and down/up move across all cards, enter opens detail witho
   assert.deepEqual(cardBorder(bTheme, "orchard-nav-style"), { color: "#1f62d0", width: 2 });
   assert.equal(cardBorder(bTheme, all[0]).width, 1);
 
-  // Step to a Held decision card: outside Focus mode, Enter opens card detail and NEVER answers.
-  const heldIdx = all.indexOf("maple-icon-set");
-  assert.ok(heldIdx > 0);
-  for (let i = 0; i < heldIdx; i++) b.keyDown("root", "j");
+  // Step to a Held decision card with l: outside Focus mode, Enter opens card detail and NEVER answers.
+  b.keyDown("root", "l");
   assert.equal(b.view.cursorId, "maple-icon-set");
   b.keyDown("root", "enter");
   assert.equal(b.view.detailCardId, "maple-icon-set");
@@ -3271,9 +3269,8 @@ test("Board keys j/k and down/up move across all cards, enter opens detail witho
   assert.deepEqual(JSON.parse(JSON.stringify(b.commands.filter((c) => c.name === "pane.focus"))), [{ name: "pane.focus", args: { terminal: "t1" } }]);
 
   // o opens the selected card's worker terminal outside Focus mode too.
-  const workerIdx = all.indexOf("maple-preview-screen");
-  assert.ok(workerIdx > heldIdx);
-  for (let i = heldIdx; i < workerIdx; i++) b.keyDown("root", "j");
+  b.keyDown("root", "l");
+  b.keyDown("root", "j");
   assert.equal(b.view.cursorId, "maple-preview-screen");
   b.keyDown("root", "o");
   await b.settle();
@@ -3328,11 +3325,14 @@ test("Chains view keyboard navigation moves across chain nodes, Enter opens deta
   assert.deepEqual(JSON.parse(JSON.stringify(b.commands.filter((c) => c.name === "pane.focus"))), [{ name: "pane.focus", args: { terminal: "t2" } }]);
 });
 
-test("Board j walks exactly the drawn cards in drawing order in Kanban and Chains, and scrolls Chains to the cursor's lane", async () => {
+test("Board j walks within a Kanban column and across drawn Chains cards, and scrolls Chains to the cursor's lane", async () => {
   const k = await board({});
   k.sendCommand("focus");
-  const kanban = drawnCards(k);
-  assert.deepEqual(walkDown(k), kanban);
+  assert.deepEqual(walkDown(k), ["maple-welcome-tour"]);
+  k.keyDown("root", "l");
+  assert.deepEqual(walkDown(k), [
+    "orchard-map-labels", "maple-card-layout", "orchard-theme-sync", "maple-panel-polish", "maple-release-bundle",
+  ]);
 
   const c = await board({ ui: { viewMode: "chains" } });
   c.click("head-independent");
@@ -3351,7 +3351,7 @@ test("Board j walks exactly the drawn cards in drawing order in Kanban and Chain
   assert.equal(c2.scrollsOn("chains-board").at(-1), lanes.indexOf("chain-lane-chain-1"));
 });
 
-test("Board j skips a folded Chains lane and collapsed Kanban columns, and does nothing when every column is collapsed", async () => {
+test("Board skips folded Chains lanes and collapsed Kanban columns, and does nothing when every column is collapsed", async () => {
   const c = await board({ ui: { viewMode: "chains" } });
   c.click("head-chain-chain-1");
   assert.ok(!c.ids.includes("chain-node-maple-theme-tokens"), "the folded lane draws no nodes");
@@ -3366,17 +3366,21 @@ test("Board j skips a folded Chains lane and collapsed Kanban columns, and does 
   k.sendCommand("focus");
   const kanban = drawnCards(k);
   assert.ok(!kanban.includes("maple-icon-set") && !kanban.includes("maple-preview-screen"), "collapsed columns draw no cards");
-  assert.deepEqual(walkDown(k), kanban);
+  k.keyDown("root", "l");
+  assert.equal(k.view.cursorId, "orchard-map-labels");
+  k.keyDown("root", "l");
+  assert.equal(k.view.cursorId, "orchard-nav-style", "l skips collapsed held and working columns");
+  k.keyDown("root", "h");
+  assert.equal(k.view.cursorId, "orchard-map-labels", "h skips collapsed working and held columns");
 
   const none = await board({});
   for (const col of none.view.shownColumns()) none.click(`head-${col.id}`);
   none.sendCommand("focus");
   assert.deepEqual(drawnCards(none), []);
   assert.equal(none.view.cursorId, null);
-  none.keyDown("root", "j");
-  none.keyDown("root", "k");
+  for (const key of ["j", "k", "h", "l", "down", "up", "left", "right"]) none.keyDown("root", key);
   assert.equal(none.view.cursorId, null);
-  assert.deepEqual(drawnCards(none), [], "j and k open no collapsed column");
+  assert.deepEqual(drawnCards(none), [], "navigation keys open no collapsed column");
   none.keyDown("root", "enter");
   assert.ok(!none.ids.includes("card-detail"));
 });
@@ -3384,12 +3388,120 @@ test("Board j skips a folded Chains lane and collapsed Kanban columns, and does 
 test("Board focus puts the cursor back in view when its card's topic group was folded", async () => {
   const b = await board({});
   b.sendCommand("focus");
-  while (b.view.cursorId !== "maple-tour-sketch") b.keyDown("root", "j");
+  b.keyDown("root", "l");
+  b.keyDown("root", "l");
+  b.keyDown("root", "j");
+  assert.equal(b.view.cursorId, "maple-tour-sketch");
   b.click("fold-group:preview-style");
   assert.ok(!drawnCards(b).includes("maple-tour-sketch"), "folding the group hides its cards");
   b.sendCommand("focus");
   assert.equal(b.view.cursorId, "maple-tour-sketch");
   assert.ok(drawnCards(b).includes("maple-tour-sketch"), "the cursor never rests on a card that is not drawn");
+});
+
+test("Kanban j/k and down/up stay within the current column and stop at its ends", async () => {
+  const b = await board({});
+  b.sendCommand("focus");
+  assert.equal(b.view.cursorId, "maple-welcome-tour");
+  b.keyDown("root", "j");
+  b.keyDown("root", "down");
+  assert.equal(b.view.cursorId, "maple-welcome-tour", "single-card column stops on j and down");
+  b.keyDown("root", "k");
+  b.keyDown("root", "up");
+  assert.equal(b.view.cursorId, "maple-welcome-tour", "single-card column stops on k and up");
+
+  // Multi-card column: queued has 5 cards.
+  b.keyDown("root", "l");
+  assert.equal(b.view.cursorId, "orchard-map-labels");
+  b.keyDown("root", "k");
+  assert.equal(b.view.cursorId, "orchard-map-labels", "k stops at first card without crossing to todo");
+  for (let i = 0; i < 6; i++) b.keyDown("root", "j");
+  assert.equal(b.view.cursorId, "maple-release-bundle", "j stops at last card without crossing to held or wrapping");
+  for (let i = 0; i < 6; i++) b.keyDown("root", "k");
+  assert.equal(b.view.cursorId, "orchard-map-labels", "k returns to first card and stops there");
+
+  // Multi-section column: held crosses section headings within the same column and stops at its end.
+  b.keyDown("root", "l");
+  assert.deepEqual(walkDown(b), [
+    "maple-icon-set", "maple-tour-sketch", "maple-empty-state",
+    "orchard-license-renewal", "orchard-tile-refresh", "maple-old-palette",
+    "orchard-label-polish", "maple-release-notes",
+  ]);
+  b.keyDown("root", "down");
+  assert.equal(b.view.cursorId, "maple-release-notes", "down stops at the last card of held");
+});
+
+test("Kanban h/l and left/right preserve row, clamp to shorter columns, and stop at first/last columns", async () => {
+  const b = await board({});
+  b.sendCommand("focus");
+  // At first column (todo): h / left do nothing.
+  b.keyDown("root", "h");
+  b.keyDown("root", "left");
+  assert.equal(b.view.cursorId, "maple-welcome-tour");
+
+  // Move to queued row 4 (5th card) -> held row 4 -> working (only 2 cards, clamps to row 1) -> parked row 1 -> paused (1 card, clamps to row 0) -> done row 0.
+  b.keyDown("root", "right");
+  for (let i = 0; i < 4; i++) b.keyDown("root", "j");
+  assert.equal(b.view.cursorId, "maple-release-bundle");
+  b.keyDown("root", "l");
+  assert.equal(b.view.cursorId, "orchard-tile-refresh", "lands at row 4 in held");
+  b.keyDown("root", "right");
+  assert.equal(b.view.cursorId, "maple-preview-screen", "clamps row 4 to last card (row 1) of working");
+  b.keyDown("root", "l");
+  assert.equal(b.view.cursorId, "maple-button-labels", "lands at row 1 in parked");
+  b.keyDown("root", "l");
+  assert.equal(b.view.cursorId, "orchard-export-check", "clamps row 1 to last card (row 0) of paused");
+  b.keyDown("root", "l");
+  assert.equal(b.view.cursorId, "orchard-seed-data", "lands at row 0 in done");
+
+  // At last column (done): l / right do nothing.
+  b.keyDown("root", "l");
+  b.keyDown("root", "right");
+  assert.equal(b.view.cursorId, "orchard-seed-data");
+
+  // Moving left from queued row 2 clamps to todo row 0; from held row 2 returns to queued row 2.
+  b.keyDown("root", "left");
+  b.keyDown("root", "h");
+  b.keyDown("root", "h");
+  b.keyDown("root", "h");
+  assert.equal(b.view.cursorId, "maple-icon-set");
+  b.keyDown("root", "j");
+  b.keyDown("root", "j");
+  assert.equal(b.view.cursorId, "maple-empty-state");
+  b.keyDown("root", "left");
+  assert.equal(b.view.cursorId, "orchard-theme-sync", "h from held row 2 lands on queued row 2");
+  b.keyDown("root", "h");
+  assert.equal(b.view.cursorId, "maple-welcome-tour", "h from queued row 2 clamps to todo row 0");
+});
+
+test("Kanban h/l skip empty non-optional columns and no-selection starts at the first card of the first non-empty expanded column", async () => {
+  // Drop todo and working cards so non-optional columns todo and working are empty.
+  const emptyCols = changedSnapshot((s) => {
+    const drop = new Set(["maple-welcome-tour", "maple-theme-tokens", "maple-preview-screen"]);
+    s.tasks = s.tasks.filter((t) => !drop.has(t.id));
+    s.backlog.records = s.backlog.records.filter((r) => !drop.has(r.id));
+  });
+
+  // With no selection (cursorId === null), any of j/k/h/l/arrows selects the first card of the first non-empty expanded column (queued).
+  for (const key of ["j", "k", "down", "up", "h", "l", "left", "right"]) {
+    const b = await board({ snapshot: emptyCols });
+    b.view.keys.focus();
+    assert.equal(b.view.cursorId, null);
+    b.keyDown("root", key);
+    assert.equal(b.view.cursorId, "orchard-map-labels", `${key} with no selection picks first card of first non-empty expanded column`);
+  }
+
+  // When queued is also collapsed, no-selection skips empty todo and collapsed queued and lands on held[0];
+  // and moving right from held skips empty working and lands in parked.
+  const b2 = await board({ snapshot: emptyCols });
+  b2.click("head-queued");
+  b2.view.keys.focus();
+  b2.keyDown("root", "h");
+  assert.equal(b2.view.cursorId, "maple-icon-set", "skips empty todo and collapsed queued");
+  b2.keyDown("root", "l");
+  assert.equal(b2.view.cursorId, "orchard-nav-style", "l skips empty working column");
+  b2.keyDown("root", "h");
+  assert.equal(b2.view.cursorId, "maple-icon-set", "h skips empty working column");
 });
 
 test("Chains Enter on an Independent drawer card opens chain-detail and Escape closes it before returning to terminal", async () => {

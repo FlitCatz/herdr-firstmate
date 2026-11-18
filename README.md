@@ -18,7 +18,8 @@ To add it using Herdr's sharing steps:
 
 `fm-board` sets `"focusable": true` in `mod.json` and accepts the `focus` command (`fm-board.focus`, or `pane.go` onto the visible Board panel) to move keyboard focus onto the Board:
 
-- `j` / `k` or `Down` / `Up`: move selection across the cards drawn on the Board, skipping collapsed columns and folded lanes
+- `j` / `k` or `Down` / `Up`: in Kanban, move selection up and down within the current column and stop at its ends (in Chains and Focus mode, move across drawn cards / decision cards)
+- `h` / `l` or `Left` / `Right`: in Kanban, move selection to the previous / next non-empty expanded column at the same row (or its last card when shorter), skipping collapsed and empty columns
 - `Enter`: open the selected card's detail (outside Focus mode, `Enter` never drafts an answer)
 - `o`: open the selected card's worker terminal
 - `f`: toggle Focus mode across decision cards in Kanban (inside Focus mode, `Enter` still drafts the recommended option)

@@ -2186,8 +2186,7 @@ export default class FmBoard extends View {
 
   // The captain's calls in the order Kanban draws them; Focus steps through these.
   captainCards() {
-    return this.shownColumns().flatMap((col) => this.sections(col.id)).flatMap((s) => this.entries(s.cards))
-      .flatMap((x) => (x.topic ? x.cards : [x.card])).filter(needsCaptain);
+    return this.shownColumns().flatMap((col) => this.columnCards(col.id)).filter(needsCaptain);
   }
 
   /** @param {import("gpui-kit").Context} cx */
@@ -2253,6 +2252,21 @@ export default class FmBoard extends View {
     if (c) this.showCursorCard(c);
   }
 
+  // Cards in one Kanban column in drawing order (section by section, topic groups inline).
+  /** @param {string} id */
+  columnCards(id) {
+    return this.sections(id).flatMap((s) => this.entries(s.cards))
+      .flatMap((x) => (x.topic ? x.cards : [x.card]));
+  }
+
+  // Expanded, non-empty Kanban columns in drawing order, each with its drawn cards.
+  kanbanColumns() {
+    return this.shownColumns()
+      .filter((col) => !this.collapsed.has(col.id) || Boolean(this.query) || this.revealed.has(col.id))
+      .map((col) => ({ col, cards: this.columnCards(col.id) }))
+      .filter((x) => x.cards.length > 0);
+  }
+
   // Cards in drawing order for keyboard navigation outside Focus mode.
   boardCards() {
     if (this.viewMode === "chains") {
@@ -2279,10 +2293,33 @@ export default class FmBoard extends View {
       }
       return out;
     }
-    return this.shownColumns()
-      .filter((col) => !this.collapsed.has(col.id) || Boolean(this.query) || this.revealed.has(col.id))
-      .flatMap((col) => this.sections(col.id)).flatMap((s) => this.entries(s.cards))
-      .flatMap((x) => (x.topic ? x.cards : [x.card]));
+    return this.kanbanColumns().flatMap((x) => x.cards);
+  }
+
+  /** @param {any} c @param {import("gpui-kit").Context} cx */
+  selectCursorCard(c, cx) {
+    this.cursorId = c.id;
+    if (this.detailCardId && this.detailCardId !== c.id) this.detailCardId = null;
+    this.showCursorCard(c);
+    cx.notify();
+  }
+
+  // Moves the Kanban cursor within a column (dy) or across expanded non-empty columns (dx).
+  /** @param {number} dx @param {number} dy @param {import("gpui-kit").Context} cx */
+  moveKanbanCursor(dx, dy, cx) {
+    const cols = this.kanbanColumns();
+    if (!cols.length) { this.cursorId = null; cx.notify(); return; }
+    const colIdx = cols.findIndex((x) => x.cards.some((c) => c.id === this.cursorId));
+    if (colIdx < 0) { this.selectCursorCard(cols[0].cards[0], cx); return; }
+    const rowIdx = cols[colIdx].cards.findIndex((c) => c.id === this.cursorId);
+    if (dx !== 0) {
+      const target = cols[colIdx + dx];
+      if (!target) return;
+      this.selectCursorCard(target.cards[Math.min(rowIdx, target.cards.length - 1)], cx);
+      return;
+    }
+    const curCards = cols[colIdx].cards;
+    this.selectCursorCard(curCards[Math.min(curCards.length - 1, Math.max(0, rowIdx + dy))], cx);
   }
 
   /** @param {number} delta @param {import("gpui-kit").Context} cx */
@@ -2293,11 +2330,7 @@ export default class FmBoard extends View {
     const next = at < 0
       ? (delta < 0 ? cards.length - 1 : 0)
       : Math.min(cards.length - 1, Math.max(0, at + delta));
-    const c = cards[next];
-    this.cursorId = c.id;
-    if (this.detailCardId && this.detailCardId !== c.id) this.detailCardId = null;
-    this.showCursorCard(c);
-    cx.notify();
+    this.selectCursorCard(cards[next], cx);
   }
 
   // Kanban opens the card's column and topic group and scrolls its column or list to the card;
@@ -2373,8 +2406,15 @@ export default class FmBoard extends View {
       if (e.key === "o" && c.terminal) { this.openWorker(c, cx); return true; }
       return false;
     }
-    if (e.key === "j" || e.key === "down") { this.moveCursor(1, cx); return true; }
-    if (e.key === "k" || e.key === "up") { this.moveCursor(-1, cx); return true; }
+    if (this.viewMode === "kanban") {
+      if (e.key === "j" || e.key === "down") { this.moveKanbanCursor(0, 1, cx); return true; }
+      if (e.key === "k" || e.key === "up") { this.moveKanbanCursor(0, -1, cx); return true; }
+      if (e.key === "h" || e.key === "left") { this.moveKanbanCursor(-1, 0, cx); return true; }
+      if (e.key === "l" || e.key === "right") { this.moveKanbanCursor(1, 0, cx); return true; }
+    } else {
+      if (e.key === "j" || e.key === "down") { this.moveCursor(1, cx); return true; }
+      if (e.key === "k" || e.key === "up") { this.moveCursor(-1, cx); return true; }
+    }
     const c = (this.cards ?? []).find((x) => x.id === this.cursorId);
     if (!c) return false;
     if (e.key === "enter") { this.openCardDetail(c, cx); return true; }
@@ -3376,8 +3416,7 @@ export default class FmBoard extends View {
       for (const c of this.independentCards()) ids.push(c.id);
       return ids;
     }
-    return this.shownColumns().flatMap((col) => this.sections(col.id)).flatMap((s) => this.entries(s.cards))
-      .flatMap((x) => (x.topic ? x.cards : [x.card])).map((c) => c.id);
+    return this.shownColumns().flatMap((col) => this.columnCards(col.id)).map((c) => c.id);
   }
 
   shownColumns() {

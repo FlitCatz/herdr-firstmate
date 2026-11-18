@@ -2332,7 +2332,6 @@ export default class FmBoard extends View {
   returnToTerminal() {
     const target = focused();
     if (target?.terminal) run("pane.focus", { terminal: target.terminal });
-    else if (target?.pane) run("pane.focus", { pane: target.pane });
   }
 
   // A TASK DETAIL header with a Close button above a card's detail, in Kanban and in a Chains lane.
@@ -3135,11 +3134,17 @@ export default class FmBoard extends View {
     if (!cards.length) {
       return drawer.child(div().px(4).text_size(this.fs(11)).text_color(t.muted).child("No independent tasks in the current view."));
     }
-    if (stacked) {
-      return drawer.child(v_flex().id("independent-list").gap(6).children(cards.map((c) => this.card(c, t, false))));
+    const list = stacked
+      ? v_flex().id("independent-list").gap(6).children(cards.map((c) => this.card(c, t, false)))
+      : h_flex().id("independent-list").flex_wrap().gap(6).items_start()
+          .children(cards.map((c) => div().w(260).min_w(220).child(this.card(c, t, false))));
+    drawer.child(list);
+    const selected = this.selectedCardId && cards.find((c) => c.id === this.selectedCardId);
+    if (selected) {
+      drawer.child(this.taskDetail("chain-detail", selected.id, this.card(selected, t, false), t, (cx) => this.clearChainSelection(cx))
+        .pt(10).border_t(1).border_color(t.border));
     }
-    return drawer.child(h_flex().id("independent-list").flex_wrap().gap(6).items_start()
-      .children(cards.map((c) => div().w(260).min_w(220).child(this.card(c, t, false)))));
+    return drawer;
   }
 
   /** @param {Record<string, `#${string}`>} t @param {boolean} stacked */

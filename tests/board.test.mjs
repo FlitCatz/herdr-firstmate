@@ -3391,3 +3391,24 @@ test("Board focus puts the cursor back in view when its card's topic group was f
   assert.equal(b.view.cursorId, "maple-tour-sketch");
   assert.ok(drawnCards(b).includes("maple-tour-sketch"), "the cursor never rests on a card that is not drawn");
 });
+
+test("Chains Enter on an Independent drawer card opens chain-detail and Escape closes it before returning to terminal", async () => {
+  const b = await board({
+    ui: { viewMode: "chains" },
+    focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t3" },
+  });
+  b.click("head-independent");
+  b.sendCommand("focus");
+  const indep = b.view.independentCards();
+  assert.ok(indep.length > 0);
+  while (b.view.cursorId !== indep[0].id) b.keyDown("root", "j");
+  b.keyDown("root", "enter");
+  assert.equal(b.view.selectedCardId, indep[0].id);
+  assert.ok(b.ids.includes("chain-detail"));
+  b.keyDown("root", "escape");
+  assert.equal(b.view.selectedCardId, null);
+  assert.ok(!b.ids.includes("chain-detail"));
+  assert.deepEqual(b.commands.filter((c) => c.name === "pane.focus"), []);
+  b.keyDown("root", "escape");
+  assert.deepEqual(JSON.parse(JSON.stringify(b.commands.filter((c) => c.name === "pane.focus"))), [{ name: "pane.focus", args: { terminal: "t3" } }]);
+});

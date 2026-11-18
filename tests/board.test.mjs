@@ -113,7 +113,16 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     timer: { every() { initEffects.push("timer"); }, after(ms, fn) { initEffects.push("timer"); timers.push({ ms, fn }); } },
     focus_handle() { const handle = { focus() { focused.push(handle); }, is_focused: () => focused.at(-1) === handle, release: () => true }; return handle; },
   };
-  const input = () => { let text = ""; return { on() {}, value: () => text, set_value(v) { text = v; } }; };
+  const input = () => {
+    let text = "";
+    const listeners = {};
+    return {
+      on(ev, fn) { (listeners[ev] ??= []).push(fn); },
+      emit(ev) { for (const fn of listeners[ev] ?? []) fn({}, cx); },
+      value: () => text,
+      set_value(v) { text = v; },
+    };
+  };
   const theme = customTheme
     ? new Proxy(customTheme, { get: (target, k) => (k in target ? target[k] : "#808080") })
     : new Proxy({}, { get: () => "#808080" });
@@ -3523,4 +3532,37 @@ test("Chains Enter on an Independent drawer card opens chain-detail and Escape c
   assert.deepEqual(b.commands.filter((c) => c.name === "pane.focus"), []);
   b.keyDown("root", "escape");
   assert.deepEqual(JSON.parse(JSON.stringify(b.commands.filter((c) => c.name === "pane.focus"))), [{ name: "pane.focus", args: { terminal: "t3" } }]);
+});
+
+test("Board panel-frame matches the terminal pane border and switches to accent without layout shift when focused", async () => {
+  const theme = { accent: "#1f62d0", border: "#dddddd", canvas: "#f7f7f7" };
+  const b = await board({ theme });
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+  const frameCalls = () => b.items.find((x) => x.id === "panel-frame").calls;
+  const borderState = () => ({
+    width: frameCalls().findLast((c) => c[0] === "border")?.[1],
+    radius: frameCalls().findLast((c) => c[0] === "rounded")?.[1],
+    color: frameCalls().findLast((c) => c[0] === "border_color")?.[1],
+  });
+
+  assert.deepEqual(borderState(), { width: 1, radius: 10, color: theme.border });
+  b.sendCommand("focus");
+  assert.deepEqual(borderState(), { width: 1, radius: 10, color: theme.accent });
+
+  // Focusing a Board input keeps the perimeter border lit after keys loses direct focus, until blur.
+  b.focused.push({});
+  b.view.search.emit("focus");
+  b.redraw();
+  assert.deepEqual(borderState(), { width: 1, radius: 10, color: theme.accent });
+  b.view.search.emit("blur");
+  b.redraw();
+  assert.deepEqual(borderState(), { width: 1, radius: 10, color: theme.border });
+
+  // Open split views keep the perimeter border on the whole panel rather than only the left pane.
+  b.click("dep-inspector-toggle");
+  b.sendCommand("focus");
+  const frame = b.items.find((x) => x.id === "panel-frame");
+  assert.ok(frame.childIds.includes("root") && frame.childIds.includes("inspector-wrap"));
+  assert.deepEqual(borderState(), { width: 1, radius: 10, color: theme.accent });
 });

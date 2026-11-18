@@ -9,7 +9,7 @@ A Herdr window with a task board, read-only Files and Changes viewer, and a tab 
 A 268px left sidebar contains the workspace brand, spaces, agents, and footer.
 
 The main area has a 42px tab bar, a flexible active-tab pane, a hidden right panel, and a 28px status bar.
-When the panel is shown it takes two thirds of the row and the active-tab pane one third, so both narrow and widen with the window.
+When the panel is shown it takes two thirds of the row and the active-tab pane one third, so both narrow and widen with the window. The terminal pane uses a 1px `border` outline (radius 10) that switches to `accent` when focused; `fm-board` wraps its entire panel (including any open split viewer or inspector) in the same 1px radius-10 perimeter border so it switches between `border` and `accent` without layout shift when the Board or any of its text inputs holds keyboard focus.
 
 The tab bar sits on the chrome background and shows tabs plus PR, Board, Files, and Changes panel buttons; the PR button appears only while the layout's panel stack holds a `pr` block.
 
@@ -142,7 +142,7 @@ The Checks tab's Registered checks section lists one row per `state/*.check.sh` 
 
 `layouts/firstmate.json` is a row with a 268px sidebar and a flexible work column. The work column contains the 42px `fm-tabs` block, a row with an active-tab block (weight 1, at least 480px) and a hidden panel stack (weight 2, at least 280px), and a 28px `workspace-status` block.
 
-The panel stack contains Herdr's shipped `files` and `changes` mods, the `fm-board` mod, and a `pr` block showing the separate `herdr-pr-viewer` mod. Its `home` prop is the path to the Firstmate home; set it before using the layout.
+The panel stack contains Herdr's shipped `files` and `changes` mods, the `fm-board` mod, and a `pr` block showing the separate `herdr-pr-viewer` mod. Its `home` prop is the path to the Firstmate home; set it before using the layout. Because Herdr 0.1.16's layout `focus` node property only reacts to focused terminal panes and not mod focus handles, `fm-board` draws its own 1px radius-10 perimeter focus border (`border` when unfocused, `accent` when `this.keys` or a Board `InputState` is focused); `files`, `changes`, and `herdr-pr-viewer` are outside this repository and do not receive a layout-level focus border.
 
 `fm-tabs` is based on Herdr 0.1.16's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, `settings`, and `checking`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` and `pr.svg` icons.
 

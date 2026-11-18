@@ -18,17 +18,17 @@ To add it using Herdr's sharing steps:
 
 `fm-board` sets `"focusable": true` in `mod.json` and accepts the `focus` command (`fm-board.focus`, or `pane.go` onto the visible Board panel) to move keyboard focus onto the Board:
 
-- `j` / `k` or `Down` / `Up`: move selection across all cards
+- `j` / `k` or `Down` / `Up`: move selection across the cards drawn on the Board, skipping collapsed columns and folded lanes
 - `Enter`: open the selected card's detail (outside Focus mode, `Enter` never drafts an answer)
 - `o`: open the selected card's worker terminal
-- `f`: toggle Focus mode across decision cards (inside Focus mode, `Enter` still drafts the recommended option)
+- `f`: toggle Focus mode across decision cards in Kanban (inside Focus mode, `Enter` still drafts the recommended option)
 - `Esc`: close what is open on the Board first (Files · Changes viewer, card detail, Focus mode, Dependency Inspector / Chains detail, or NEXT MOVE ring); press `Esc` again when nothing is open to return focus to the terminal (`pane.focus`)
 
 The Board is reached through the separate leader-key mod (herdr-leader-keys): `Ctrl+Space` then `b` runs `layout.select` to show the Board panel and then the Board's key command `fm-board.focus`. The leader keeps every terminal key, including `Ctrl+B`, free for the terminal.
 
 The board uses the Ledger look it shares with the separate PR viewer mod: hairline-ruled headings, columns split by hairlines, a status-colored bar on each card's left edge, and Geist Mono for counts and ids.
 A Today strip counts what was done today, what waits on you, what is working, what is ready to land (unmerged PRs and finished local-only branches waiting for landing approval), and what is blocked. Below it, a NEXT MOVE band shows the longest-waiting hold to answer now, with its options as answer drafts. Its first line names the card the hold belongs to, and clicking it brings that card into view on the board.
-`Focus` (or `F`) dims everything but your calls, `j`/`k` move between them while peeking at each worker's terminal beside the board, and `Enter` drafts the recommended answer.
+`Focus` (or `f`) dims everything but your calls, `j`/`k` move between them while peeking at each worker's terminal beside the board, and `Enter` drafts the recommended answer.
 PR links show the PR in the layout's PR panel (the separate herdr-pr-viewer mod, opened with the tab bar's PR button) when that mod is installed and the layout has that panel, and in the browser otherwise.
 Card headers fold and unfold; their Ask icons and held decisions' options prepare editable chat input as described in [RECIPE.md](RECIPE.md#how-it-behaves).
 The Held column groups its cards under the headings `Answer now`, `Deferred` (with a card's `until` date when it has one), and `Waiting on other work`.

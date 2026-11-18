@@ -1267,6 +1267,11 @@ export default class FmBoard extends View {
     this.ask = InputState.new({ placeholder: "What to investigate or do" }); this.askProject = null;
     // The Kanban search applies on Enter or the find icon, so the first press lands on match 1.
     this.search = InputState.new({ placeholder: "Search tasks", value: ui.search ?? "" });
+    this.focusedInputs = new Set();
+    for (const input of [this.source, this.name, this.ask, this.search]) {
+      input.on("focus", (_e, cx) => { this.focusedInputs.add(input); cx.notify(); });
+      input.on("blur", (_e, cx) => { this.focusedInputs.delete(input); cx.notify(); });
+    }
     /** @type {string} */
     this.query = (ui.search ?? "").trim(); this.matchAt = 0;
     this.search.on("submit", (_e, cx) => this.findNext(cx));
@@ -3657,16 +3662,27 @@ export default class FmBoard extends View {
     if (this.collapsed.has(BOTTOM)) this.toggle(BOTTOM, cx); else cx.notify();
   }
 
+  panelFocused() {
+    return this.keys.is_focused() || this.focusedInputs.size > 0;
+  }
+
+  // Matches the terminal pane's 1 px rounded perimeter frame so focus changes border color without layout shift.
+  panelFrame(el, t) {
+    return v_flex().id("panel-frame").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.canvas)
+      .border(1).border_color(this.panelFocused() ? t.accent : t.border)
+      .child(el);
+  }
+
   render(_cx) {
     this.readFontScale(this.size?.width);
     const names = this.projectNames();
     this.tags = abbreviations(["firstmate", ...names]);
     this.updateColors(names);
     const t = theme();
-    if (!home()) return v_flex().id("home-required").size_full().bg(t.canvas).p(16)
+    if (!home()) return this.panelFrame(v_flex().id("home-required").size_full().bg(t.canvas).p(16)
       .child(v_flex().gap(8).p(16).rounded(8).bg(t.surface).border(1).border_color(t.border)
         .child(div().text_size(16).font_semibold().text_color(t.foreground).child("Firstmate home required"))
-        .child(div().text_size(13).text_color(t.muted).child("Set the home prop on this mod in your layout to the path of your firstmate home.")));
+        .child(div().text_size(13).text_color(t.muted).child("Set the home prop on this mod in your layout to the path of your firstmate home."))), t);
     // terminals() is live data, so a worker starting or ending redraws the cards.
     this.liveWorkers = new Map(terminals().filter((x) => x.state === "live")
       .map((x) => [x.address, { task: x.labels?.["firstmate.task"], status: x.status, pid: x.pid }]));
@@ -3745,25 +3761,25 @@ export default class FmBoard extends View {
       // The viewer sits on the Board's right behind a draggable divider. Herdr keeps the
       // dragged width under the group id; the Board half keeps measuring its own width
       // so the columns still stack when that half gets narrow.
-      return h_resizable("board-viewer-split").size_full().bg(t.canvas)
+      return this.panelFrame(h_resizable("board-viewer-split").size_full().bg(t.canvas)
         .child(resizable_panel().size_range(280).child(root))
         .child(resizable_panel().size(this.viewerWidth()).size_range(260)
           .child(div().id("viewer-wrap").size_full().pl(4).pr(8).pt(2.5).pb(3)
             .on_size_change((size, cx) => { this.rightSplitWidth = size.width; cx.notify(); })
-            .child(this.viewer.render(t, (px) => this.fs(px), this.viewSources(this.viewProject)))));
+            .child(this.viewer.render(t, (px) => this.fs(px), this.viewSources(this.viewProject))))), t);
     }
     if (!narrowMod && inspectorShown) {
       this.splitWasOpen = true;
-      return h_resizable("board-viewer-split").size_full().bg(t.canvas)
+      return this.panelFrame(h_resizable("board-viewer-split").size_full().bg(t.canvas)
         .child(resizable_panel().size_range(280).child(root))
         .child(resizable_panel().size(this.inspectorWidth(modWidth)).size_range(260)
           .child(div().id("inspector-wrap").size_full().pl(4).pr(8).pt(2.5).pb(3)
             .on_size_change((size, cx) => { this.rightSplitWidth = size.width; cx.notify(); })
-            .child(this.renderInspector(activeComp, t))));
+            .child(this.renderInspector(activeComp, t)))), t);
     }
     this.splitWasOpen = false;
     this.rightSplitWidth = 0;
-    return root;
+    return this.panelFrame(root, t);
   }
 
   // The starting width only: after the first drag Herdr keeps the user's width under

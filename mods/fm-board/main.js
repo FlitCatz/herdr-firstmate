@@ -8,7 +8,7 @@
 // installation and operational home; the other props support preview fixtures.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel, ScrollHandle } from "gpui-base";
-import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals, checking, appHome, layout, setShared } from "herdr";
+import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals, checking, appHome, layout, setShared, nextCommand } from "herdr";
 import { FolderViewer } from "./viewer.js";
 
 // Board text follows the terminal font size and grows as the Board widens. The sizes below
@@ -1204,6 +1204,11 @@ export default class FmBoard extends View {
     /** @type {string | null} */
     this.selectedCardId = null;
     /** @type {string | null} */
+    this.cursorId = null;
+    /** @type {string | null} */
+    this.detailCardId = null;
+    this.pendingInitialCursor = false;
+    /** @type {string | null} */
     this.hoveredCardId = null;
     this.inspectorOpen = false;
     // Focus: everything but the captain's calls dimmed, j/k moving between them.
@@ -1269,7 +1274,9 @@ export default class FmBoard extends View {
     // props.ui.focus and props.ui.point (previews): Focus on that card, or that card pointed to.
     if (typeof ui.focus === "string") { this.focusMode = true; this.focusId = ui.focus; }
     if (typeof ui.point === "string") this.pointedId = ui.point;
+    if (typeof ui.detail === "string") this.detailCardId = ui.detail;
     if (ui.pick) this.usePath(ui.pick, cx);
+    this.listenCommands(cx);
     this.refresh(cx);
     if (props()?.snapshot_file) return;
     cx.timer.every(REFRESH_FALLBACK_MS, (cx) => this.refresh(cx));
@@ -1891,11 +1898,12 @@ export default class FmBoard extends View {
     // The captain's-call ring, in the held color of the NEXT MOVE band: the card its card line
     // pointed to (for a few seconds), and the card j/k reached in Focus. Accent stays for hover,
     // selection, and the search match. In Focus every card that is not the captain's call steps back.
+    const cursorRing = !this.focusMode && this.cursorId === c.id && this.keys.is_focused();
     const callRing = (this.focusMode && this.focusId === c.id) || this.pointedId === c.id;
     const focusDim = this.focusMode && !needsCaptain(c);
-    const borderWidth = current || pinnedBorder || callRing ? 2 : 1;
+    const borderWidth = current || pinnedBorder || callRing || cursorRing ? 2 : 1;
     // A failed card keeps its red border unless the card is the current search match or sits on a highlighted chain.
-    const borderColor = current ? t.accent : callRing ? t.blocked
+    const borderColor = current || cursorRing ? t.accent : callRing ? t.blocked
       : roleBorder ?? (role === "branch" ? t.muted : c.failed ? t.ansi1 : t.border);
     // A deferred hold shows its date when it has one; a hold to answer now shows how long it has waited.
     const until = c.column === "held" && c.holdGroup === "deferred" ? c.holdUntil : null;
@@ -2184,6 +2192,7 @@ export default class FmBoard extends View {
     this.focusMode = !this.focusMode;
     this.focusId = null;
     if (this.focusMode) {
+      this.detailCardId = null;
       this.keys.focus();
       this.moveFocus(0, cx);
     }
@@ -2209,23 +2218,230 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
-  // Focus keys reach the Board only while it holds the keyboard itself, never while a field does.
+  /** @param {import("gpui-kit").AsyncContext} cx */
+  listenCommands(cx) {
+    if (typeof nextCommand !== "function") return;
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const cmd = await nextCommand();
+        if (cmd === null || cmd === undefined) break;
+        this.handleCommand(cmd, cx);
+      }
+    });
+  }
+
+  /** @param {string} cmd @param {import("gpui-kit").Context | import("gpui-kit").AsyncContext} cx */
+  handleCommand(cmd, cx) {
+    if (cmd !== "focus") return;
+    this.keys.focus();
+    if (!this.focusMode) {
+      if (!this.cards) {
+        this.pendingInitialCursor = true;
+      } else {
+        const cards = this.boardCards();
+        if (cards.length && (!this.cursorId || !cards.some((c) => c.id === this.cursorId))) {
+          this.cursorId = cards[0].id;
+        }
+      }
+    }
+    cx.notify();
+  }
+
+  // Cards in drawing order for keyboard navigation outside Focus mode.
+  boardCards() {
+    if (this.viewMode === "chains") {
+      const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
+      const seen = new Set();
+      const out = [];
+      const cardById = new Map((this.cards ?? []).map((c) => [c.id, c]));
+      for (const comp of this.visibleChains()) {
+        const laneKey = `chain:${comp.id}`;
+        if (this.folded.has(laneKey) && !this.query && !this.revealed.has(laneKey)) continue;
+        const lane = placeChainLane(comp, this.graph?.nodes ?? new Map());
+        const ids = stacked
+          ? lane.steps.flatMap((step) => step.nodes.map((n) => n.id))
+          : lane.grid.flat().filter(Boolean);
+        for (const id of ids) {
+          if (seen.has(id)) continue;
+          const card = cardById.get(id);
+          if (card) { seen.add(id); out.push(card); }
+        }
+      }
+      if (this.independentOpen || this.query) {
+        for (const c of this.independentCards()) {
+          if (!seen.has(c.id)) { seen.add(c.id); out.push(c); }
+        }
+      }
+      return out;
+    }
+    const cols = this.shownColumns();
+    const visibleCols = cols.filter((col) => !this.collapsed.has(col.id) || Boolean(this.query) || this.revealed.has(col.id));
+    const useCols = visibleCols.length ? visibleCols : cols;
+    return useCols.flatMap((col) => this.sections(col.id)).flatMap((s) => this.entries(s.cards))
+      .flatMap((x) => (x.topic ? x.cards : [x.card]));
+  }
+
+  /** @param {number} delta @param {import("gpui-kit").Context} cx */
+  moveCursor(delta, cx) {
+    const cards = this.boardCards();
+    if (!cards.length) { this.cursorId = null; cx.notify(); return; }
+    const at = cards.findIndex((c) => c.id === this.cursorId);
+    const next = at < 0
+      ? (delta < 0 ? cards.length - 1 : 0)
+      : Math.min(cards.length - 1, Math.max(0, at + delta));
+    const c = cards[next];
+    this.cursorId = c.id;
+    if (this.viewMode === "kanban") {
+      this.revealed = new Set([c.column, ...(this.detailCardId ? [`card:${this.detailCardId}`] : [])]);
+      if (c.decision?.topic) this.revealed.add(`group:${c.decision.topic}`);
+      this.scrollToCard(c);
+    }
+    cx.notify();
+  }
+
+  /** @param {any} c @param {import("gpui-kit").Context} cx */
+  openCardDetail(c, cx) {
+    if (!c) return;
+    if (this.viewMode === "chains") {
+      if (this.selectedCardId !== c.id) this.selectChainNode(c.id, cx);
+      return;
+    }
+    this.detailCardId = c.id;
+    this.showCard(c, cx);
+    cx.notify();
+  }
+
+  returnToTerminal() {
+    const target = focused();
+    if (target?.terminal) run("pane.focus", { terminal: target.terminal });
+    else if (target?.pane) run("pane.focus", { pane: target.pane });
+  }
+
+  /** @param {any} c @param {Record<string, `#${string}`>} t */
+  renderCardDetail(c, t) {
+    const barColor = c.failed ? t.ansi1 : t[COLUMNS.find((k) => k.id === c.column)?.color ?? "unknown"];
+    const until = c.column === "held" && c.holdGroup === "deferred" ? c.holdUntil : null;
+    const age = c.column === "held" && c.holdGroup === "now" ? waitAge(c.heldSince, Date.now()) : "";
+    const detailText = c.waitingFor ? `Waiting for: ${c.waitingFor}` : c.detail;
+    const wrap = v_flex().id("card-detail").relative().flex_none().overflow_hidden().gap(6).p(10).pl(10 + CARD_BAR_PX)
+      .rounded(6).bg(t.surface).border(1).border_color(t.accent)
+      .child(div().id("card-detail-bar").absolute().left(0).top(0).bottom(0).w(CARD_BAR_PX).rounded_l(6).bg(barColor))
+      .child(h_flex().gap(8).items_center().justify_between().min_w(0)
+        .child(h_flex().flex_1().min_w(0).gap(6).items_center().flex_wrap()
+          .child(div().font_family(DATA_FONT).text_size(this.fs(10)).font_semibold().text_color(t.accent)
+            .child(`TASK DETAIL · ${c.id}`))
+          .child(this.projectBadge(c.project || "firstmate", t, "card-detail-tag"))
+          .when(c.priority !== null && c.column !== "done", (e) => e.child(div().flex_none().px(4).rounded(3).border(1)
+            .border_color(c.priority === 0 ? t.foreground : t.border).font_family(DATA_FONT).text_size(this.fs(10))
+            .text_color(c.priority === 0 ? t.foreground : t.muted).child(`P${c.priority}`)))
+          .child(div().flex_none().text_size(this.fs(11)).text_color(c.failed ? t.ansi1 : t.muted)
+            .child(c.failed ? "Failed" : c.state || c.column))
+          .when(Boolean(until), (e) => e.child(div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.muted)
+            .child(`until ${String(until).replace(/^\d{4}-/, "")}`)))
+          .when(Boolean(age), (e) => e.child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).font_semibold()
+            .text_color(t.blocked).child(age))))
+        .child(this.button("card-detail-close", "Close", t, (cx) => { this.detailCardId = null; cx.notify(); })
+          .tooltip("Close card detail (Esc)")))
+      .child(div().id("card-detail-title").text_size(this.fs(13)).font_semibold().text_color(t.foreground).child(c.title));
+
+    const body = v_flex().id("card-detail-scroll").gap(6).max_h(180).min_h(0).flex_shrink(1).overflow_y_scroll();
+    if (detailText) {
+      body.child(div().id("card-detail-body").text_size(this.fs(11.5)).text_color(t.foreground).child(detailText));
+    }
+    if (c.sourceDetail && c.sourceDetail !== c.detail) {
+      body.child(div().id("card-detail-source").font_family(DATA_FONT).text_size(this.fs(10.5)).text_color(t.dim).child(c.sourceDetail));
+    }
+    if (c.waitingOn?.length) {
+      body.child(div().id("card-detail-waits").text_size(this.fs(11)).text_color(t.muted)
+        .child(`Waits on: ${c.waitingOn.join(", ")}`));
+    }
+    if (c.blocksOn?.length) {
+      body.child(div().id("card-detail-blocks").text_size(this.fs(11)).text_color(t.muted)
+        .child(`Blocks: ${c.blocksOn.join(", ")}`));
+    }
+    const ownDecision = c.decision && !c.decision.topic ? c.decision : null;
+    if (ownDecision) {
+      this.decisionLines(body, ownDecision, t, `detail-${c.id}`, [c.id], c.column === "held");
+    }
+    c.openDecisions.forEach((d, i) => {
+      const rowId = `detail-open-${c.id}-${i}`;
+      body.child(v_flex().id(rowId).gap(2).px(6).py(4).rounded(4).bg(t.background).border(1).border_color(t.border)
+        .child(h_flex().gap(6).items_center().min_w(0)
+          .child(div().flex_none().text_size(this.fs(10)).font_semibold().text_color(t.blocked).child(d.verb))
+          .child(div().flex_1().min_w(0).truncate().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.dim).child(d.key)))
+        .child(div().text_size(this.fs(11)).text_color(t.foreground).child(d.decision?.question || d.summary)));
+      if (d.decision) this.decisionLines(body, d.decision, t, rowId, [c.id], true, d.key);
+    });
+    if (detailText || (c.sourceDetail && c.sourceDetail !== c.detail) || c.waitingOn?.length || c.blocksOn?.length || ownDecision || c.openDecisions.length) {
+      wrap.child(body);
+    }
+    const actions = h_flex().gap(6).items_center().flex_wrap();
+    let hasActions = false;
+    if (c.pr && /^https:\/\//.test(c.pr)) {
+      hasActions = true;
+      actions.child(div().id("card-detail-pr").text_size(this.fs(11)).text_color(t.accent).cursor_pointer()
+        .hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => this.openPr(c.pr, c, cx))
+        .child(c.pr.replace("https://github.com/", "")));
+    }
+    if (c.column !== "done" && c.terminal) {
+      hasActions = true;
+      actions.child(this.button("card-detail-open", "Open worker", t, (cx) => this.openWorker(c, cx)));
+      if (this.workerLive(c)) {
+        actions.child(this.button("card-detail-peek", "Peek", t, () => run("terminal.peek", { terminal: c.terminal })));
+      }
+    }
+    if (c.column !== "done" && c.worktree && c.project) {
+      hasActions = true;
+      actions.child(this.button("card-detail-files", "Files · Changes", t, (cx) =>
+        this.openView(c.project, { path: c.worktree, label: c.id, title: `${c.project} · ${c.id}` }, cx)));
+    }
+    const cleanTitle = c.title.replace(/`/g, "'");
+    hasActions = true;
+    actions.child(this.button("card-detail-ask", "Ask ?", t, (cx) =>
+      this.insertCardText(`\`[Board card] ${c.id}: ${cleanTitle}\``, cx)));
+    if (hasActions) wrap.child(actions);
+    return wrap;
+  }
+
+  // Board keys reach the Board only while it holds the keyboard itself, never while a field does.
   /** @param {import("gpui-kit").KeyEvent} e @param {import("gpui-kit").Context} cx */
   focusKey(e, cx) {
-    if (this.viewMode !== "kanban" || !this.keys.is_focused()) return false;
+    if (!this.keys.is_focused()) return false;
     if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return false;
-    if (e.key === "f") { this.toggleFocus(cx); return true; }
-    if (!this.focusMode) return false;
-    if (e.key === "escape") { this.toggleFocus(cx); return true; }
-    if (e.key === "j" || e.key === "down") { this.moveFocus(1, cx); return true; }
-    if (e.key === "k" || e.key === "up") { this.moveFocus(-1, cx); return true; }
-    const c = (this.cards ?? []).find((x) => x.id === this.focusId);
-    if (!c) return false;
-    if (e.key === "enter") {
-      const ids = this.answerIds(c), rec = this.recommendedOption(this.answerDecision(c));
-      if (rec) this.answerOption(ids, rec, "", cx); else this.insertCardText(answerHead(ids), cx);
+    if (e.key === "escape") {
+      if (this.viewer.root) { this.viewer.close(cx); return true; }
+      if (this.detailCardId) { this.detailCardId = null; cx.notify(); return true; }
+      if (this.focusMode) { this.toggleFocus(cx); return true; }
+      if (this.inspectorOpen || this.selectedCardId) { this.clearChainSelection(cx); return true; }
+      if (this.pointedId) { this.pointedId = null; cx.notify(); return true; }
+      this.returnToTerminal();
       return true;
     }
+    if (e.key === "f" && this.viewMode === "kanban") {
+      this.detailCardId = null;
+      this.toggleFocus(cx);
+      return true;
+    }
+    if (this.focusMode) {
+      if (this.viewMode !== "kanban") return false;
+      if (e.key === "j" || e.key === "down") { this.moveFocus(1, cx); return true; }
+      if (e.key === "k" || e.key === "up") { this.moveFocus(-1, cx); return true; }
+      const c = (this.cards ?? []).find((x) => x.id === this.focusId);
+      if (!c) return false;
+      if (e.key === "enter") {
+        const ids = this.answerIds(c), rec = this.recommendedOption(this.answerDecision(c));
+        if (rec) this.answerOption(ids, rec, "", cx); else this.insertCardText(answerHead(ids), cx);
+        return true;
+      }
+      if (e.key === "o" && c.terminal) { this.openWorker(c, cx); return true; }
+      return false;
+    }
+    if (e.key === "j" || e.key === "down") { this.moveCursor(1, cx); return true; }
+    if (e.key === "k" || e.key === "up") { this.moveCursor(-1, cx); return true; }
+    const c = (this.cards ?? []).find((x) => x.id === this.cursorId);
+    if (!c) return false;
+    if (e.key === "enter") { this.openCardDetail(c, cx); return true; }
     if (e.key === "o" && c.terminal) { this.openWorker(c, cx); return true; }
     return false;
   }
@@ -2299,6 +2515,7 @@ export default class FmBoard extends View {
     if (this.viewMode === mode) return;
     this.viewMode = mode;
     this.hoveredCardId = null;
+    this.detailCardId = null;
     if (mode === "kanban" && !this.inspectorOpen) this.selectedCardId = null;
     if (mode === "chains") { this.inspectorOpen = false; this.focusMode = false; this.focusId = null; }
     try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch {}
@@ -2689,11 +2906,12 @@ export default class FmBoard extends View {
     const id = node.id;
     const role = laneRoles.get(id) ?? null;
     const isSelected = this.selectedCardId === id;
+    const cursorSelected = !this.focusMode && this.cursorId === id && this.keys.is_focused();
     const isCurrent = Boolean(this.query) && this.currentMatch === id;
     const q = this.query.toLowerCase();
     const queryMatches = !q || (!node.missing && searchText(node).includes(q));
     const [statusLabel, statusColor] = this.nodeStatus(node, t, true);
-    const roleBorder = isCurrent || isSelected ? t.accent : (chainRoleColor(role, t) ?? t.border);
+    const roleBorder = isCurrent || isSelected || cursorSelected ? t.accent : (chainRoleColor(role, t) ?? t.border);
     const dimmed = dimLane || (Boolean(this.highlight?.dimmedIds?.has(id)) && !isCurrent) || (Boolean(q) && !queryMatches);
     const strip = (title) => (node.project && title.startsWith(`${node.project} `) ? title.slice(node.project.length + 1) : title);
 
@@ -3514,6 +3732,10 @@ export default class FmBoard extends View {
     }
     this.monoFont = String(settings()?.font_family ?? "JetBrains Mono");
     this.graph = dependencyGraph(this.cards ?? []);
+    if (this.pendingInitialCursor && this.cards) {
+      this.pendingInitialCursor = false;
+      if (!this.focusMode && !this.cursorId) this.cursorId = this.boardCards()[0]?.id ?? null;
+    }
     this.highlight = chainHighlight(this.graph, this.selectedCardId, this.hoveredCardId);
     // Hover may only change colors (`highlight`); anything that changes size or position (border
     // widths, role pills, the inspector's chain) follows the selection only (`pinned`). Otherwise a
@@ -3531,6 +3753,9 @@ export default class FmBoard extends View {
     const narrowMod = modWidth - this.inspectorWidth(modWidth) < STACK_BELOW_PX;
     const isChains = this.viewMode === "chains";
     const inspectorShown = !isChains && this.inspectorOpen;
+    const detailCard = !isChains && !this.focusMode && this.detailCardId
+      ? ((this.cards ?? []).find((c) => c.id === this.detailCardId) ?? null)
+      : null;
     const matches = this.query ? this.matchIds() : [];
     this.currentMatch = matches.length ? matches[this.matchAt % matches.length] : null;
     const board = isChains
@@ -3543,9 +3768,9 @@ export default class FmBoard extends View {
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
       .track_focus(this.keys)
       .on_key_down((e, cx) => {
-        if (e.key === "escape" && (this.inspectorOpen || this.selectedCardId)) { this.clearChainSelection(cx); cx.stop_propagation(); }
+        if (this.focusKey(e, cx)) cx.stop_propagation();
+        else if (e.key === "escape" && (this.inspectorOpen || this.selectedCardId)) { this.clearChainSelection(cx); cx.stop_propagation(); }
         else if (e.key === "escape" && this.pointedId) { this.pointedId = null; cx.notify(); cx.stop_propagation(); }
-        else if (this.focusKey(e, cx)) cx.stop_propagation();
       });
     // Focus keeps only the captain's calls at full strength; the rest of the Board steps back.
     const back = (el) => el.when(this.focusMode, (e) => e.opacity(FOCUS_DIM));
@@ -3564,6 +3789,7 @@ export default class FmBoard extends View {
       .child(this.searchRow(t, matches))
       .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))
+      .when(Boolean(detailCard), (e) => e.child(this.renderCardDetail(detailCard, t)))
       .child(board))
       .child(back(this.bottomGroup(t)));
     if (this.viewer.root) {

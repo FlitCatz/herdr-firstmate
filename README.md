@@ -7,12 +7,32 @@ It requires a Firstmate installation and home containing its `bin/`, `data/`, `s
 To add it using Herdr's sharing steps:
 
 1. Read [RECIPE.md](RECIPE.md) and the files first: the board runs programs, including Firstmate scripts and `hc`, and reads the Firstmate home and selected project folders outside the mod folder.
-2. Copy `layouts/firstmate.json` into your Herdr home's `layouts/` and the two `mods/` folders into its `mods/`, leaving the recipe, preview, and tests out.
+2. Copy `layouts/firstmate.json` into your Herdr home's `layouts/` and the two `mods/` folders (`fm-board`, `fm-tabs`) into its `mods/`, leaving the recipe, preview, and tests out.
    The layout's PR panel shows the separate [herdr-pr-viewer](https://github.com/FlitCatz/herdr-pr-viewer) mod: install it as its README says, or remove the `pr` block from the layout's panel stack if you do not want it (the tab bar's PR button only appears while that block exists).
    The default Herdr home is `~/.config/herdr-app`.
    Never overwrite a name: rename the incoming layout or mod and update its layout references and `mods/<name>/` asset paths if a name is taken.
 3. Set the `home` prop on the layout's `fm-board` block to the absolute path of your Firstmate installation and home.
    Run `herdr-app check` on each installed mod folder, then select the Firstmate layout in Herdr settings or run `herdr-app do layout.switch --name firstmate` with your chosen layout name.
+
+## Keyboard shortcuts
+
+`fm-board` sets `"focusable": true` in `mod.json` and accepts the `focus` command (`fm-board.focus`, or `pane.go` onto the visible Board panel) to move keyboard focus onto the Board:
+
+- `j` / `k` or `Down` / `Up`: move selection across all cards
+- `Enter`: open the selected card's detail (outside Focus mode, `Enter` never drafts an answer)
+- `o`: open the selected card's worker terminal
+- `f`: toggle Focus mode across decision cards (inside Focus mode, `Enter` still drafts the recommended option)
+- `Esc`: close what is open on the Board first (Files · Changes viewer, card detail, Focus mode, Dependency Inspector / Chains detail, or NEXT MOVE ring); press `Esc` again when nothing is open to return focus to the terminal (`pane.focus`)
+
+If you want to bind `fm-board.focus` directly in `keys.json` while the Board panel is visible (for example alongside a separate leader mod):
+
+```json
+{
+  "global": {
+    "alt-b": "fm-board.focus"
+  }
+}
+```
 
 The board uses the Ledger look it shares with the separate PR viewer mod: hairline-ruled headings, columns split by hairlines, a status-colored bar on each card's left edge, and Geist Mono for counts and ids.
 A Today strip counts what was done today, what waits on you, what is working, what is ready to land (unmerged PRs and finished local-only branches waiting for landing approval), and what is blocked. Below it, a NEXT MOVE band shows the longest-waiting hold to answer now, with its options as answer drafts. Its first line names the card the hold belongs to, and clicking it brings that card into view on the board.
@@ -36,5 +56,5 @@ Below the board, one tab strip holds `Commands`, `Projects` (with its count of u
 
 The preview is a headless render of an HTML replica of the board, using fictional projects and tasks.
 
-`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, registered checks, tab behavior, folder-watch cleanup, and check-mode side-effect guards; it needs only Node.js, not Herdr.
+`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, registered checks, tab behavior, folder-watch cleanup, check-mode side-effect guards, and Board keyboard navigation, card detail, and escape behavior; it needs only Node.js, not Herdr.
 This repository has no CI and declares that to no-mistakes in `.no-mistakes.yaml`.

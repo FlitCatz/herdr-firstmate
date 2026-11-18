@@ -92,7 +92,7 @@ function geometry(items) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null, prViewer = false, rootLayout = null, terminals = [] } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null, prViewer = false, rootLayout = null, terminals = [], focusedTarget = null } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
@@ -107,6 +107,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   const timers = [];
   const scrolled = [];
   const focused = [];
+  const commandQueue = [];
   const cx = {
     notify() {}, stop_propagation() {}, spawn(fn) { initEffects.push("spawn"); pending.push(fn(cx)); },
     timer: { every() { initEffects.push("timer"); }, after(ms, fn) { initEffects.push("timer"); timers.push({ ms, fn }); } },
@@ -123,7 +124,11 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
     props: () => ({ home: HOME, ...(preview ? { snapshot_file: snapshotFile } : {}), collapsed: [], ui }),
     checking: () => checkMode,
-    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => terminals, focused: () => null,
+    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => terminals, focused: () => focusedTarget,
+    nextCommand: () => {
+      if (commandQueue.length) return Promise.resolve(commandQueue.shift());
+      return Promise.resolve(null);
+    },
     run: (name, args) => { commands.push({ name, args }); },
     openOverlay: (spec) => { overlays.push(spec); return `overlay-${overlays.length}`; },
     layout: () => rootLayout, setShared: (key, value) => { sharedSet.push({ key, value }); },
@@ -176,10 +181,15 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     items = drawn(view.render(cx));
     return items;
   };
-  const keyDown = (id, key) => {
+  const keyDown = (id, key, modifiers = {}) => {
     const item = items.find((x) => x.id === id);
     assert.ok(item?.keyDown, `no keyDown at ${id}`);
-    item.keyDown({ key }, cx);
+    item.keyDown({ key, modifiers }, cx);
+    items = drawn(view.render(cx));
+    return items;
+  };
+  const sendCommand = (cmd) => {
+    view.handleCommand(cmd, cx);
     items = drawn(view.render(cx));
     return items;
   };
@@ -201,7 +211,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     waitingLabel, blocksLabel, initEffects,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
-    click, hover, keyDown, scrolled, focused, drafts, opened, redraw, overlays, commands, sharedSet, timers,
+    click, hover, keyDown, sendCommand, scrolled, focused, drafts, opened, redraw, overlays, commands, sharedSet, timers,
     // Waits for the tasks the Board started, such as a PR link's install check.
     settle: () => Promise.all(pending),
     text: (id) => items.find((x) => x.id === id)?.text,
@@ -3144,4 +3154,133 @@ test("local-only done tasks count as Ready to land until landed, while PR and sc
   assert.match(b.text("today-ready"), /^Ready to land 4\s*$/);
   assert.deepEqual([...b.view.nodeStatus(card("local-ready"), theme, true)], ["Ready branch", theme.done]);
   assert.deepEqual([...b.view.nodeStatus(card("pr-open"), theme, true)], ["PR waiting", theme.done]);
+});
+
+test("fm-board mod.json is focusable and nextCommand focus moves keyboard focus onto the Board", async () => {
+  const modJson = JSON.parse(await readFile(new URL("mods/fm-board/mod.json", root), "utf8"));
+  assert.equal(modJson.focusable, true);
+  const theme = { accent: "#1f62d0", border: "#dddddd", blocked: "#c93c2c" };
+  const b = await board({ theme });
+  assert.ok(!b.focusedOn("root"));
+  assert.equal(b.view.cursorId, null);
+  b.sendCommand("focus");
+  assert.ok(b.focusedOn("root"));
+  assert.equal(b.view.focusMode, false);
+  const firstCard = b.view.boardCards()[0];
+  assert.equal(b.view.cursorId, firstCard.id);
+  const ring = b.items.find((x) => x.id === `card-${firstCard.id}`).calls;
+  assert.equal(ring.findLast((c) => c[0] === "border_color")[1], theme.accent);
+  assert.equal(ring.findLast((c) => c[0] === "border")[1], 2);
+});
+
+test("Board keys j/k and down/up move across all cards, enter opens detail without answering, and escape closes detail then returns to terminal", async () => {
+  const exec = async (cmd, args) => {
+    if (cmd === "hc" && args[0] === "get" && args[1] === "t9w") {
+      return { code: 0, stdout: JSON.stringify({ labels: { "firstmate.task": "fm-maple-preview-screen" } }), stderr: "" };
+    }
+    return { code: 1, stdout: "", stderr: "" };
+  };
+  const changed = changedSnapshot((s) => {
+    const t = s.tasks.find((x) => x.id === "maple-preview-screen");
+    t.backend = "hc";
+    t.endpoint.target = "default:t9w";
+  });
+  const b = await board({
+    snapshot: changed,
+    exec,
+    focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t1" },
+  });
+  b.sendCommand("focus");
+  const all = b.view.boardCards().map((c) => c.id);
+  assert.ok(all.length >= 6);
+  assert.equal(b.view.cursorId, all[0]);
+
+  // j / down move forward; k / up move back across every card, including non-decision cards.
+  b.keyDown("root", "j");
+  assert.equal(b.view.cursorId, all[1]);
+  b.keyDown("root", "down");
+  assert.equal(b.view.cursorId, all[2]);
+  b.keyDown("root", "k");
+  assert.equal(b.view.cursorId, all[1]);
+  b.keyDown("root", "up");
+  assert.equal(b.view.cursorId, all[0]);
+  // Stops at the first card.
+  b.keyDown("root", "up");
+  assert.equal(b.view.cursorId, all[0]);
+
+  // Step to a Held decision card: outside Focus mode, Enter opens card detail and NEVER answers.
+  const heldIdx = all.indexOf("maple-icon-set");
+  assert.ok(heldIdx > 0);
+  for (let i = 0; i < heldIdx; i++) b.keyDown("root", "j");
+  assert.equal(b.view.cursorId, "maple-icon-set");
+  b.keyDown("root", "enter");
+  assert.equal(b.view.detailCardId, "maple-icon-set");
+  assert.ok(b.ids.includes("card-detail"));
+  assert.match(b.text("card-detail"), /TASK DETAIL · maple-icon-set/);
+  assert.deepEqual(b.drafts, [], "Enter outside Focus mode must never answer anything");
+
+  // First Escape closes card detail without returning to the terminal yet.
+  b.keyDown("root", "escape");
+  assert.equal(b.view.detailCardId, null);
+  assert.ok(!b.ids.includes("card-detail"));
+  assert.deepEqual(b.commands.filter((c) => c.name === "pane.focus"), []);
+
+  // Second Escape (nothing open on the Board) returns focus to the terminal.
+  b.keyDown("root", "escape");
+  assert.deepEqual(JSON.parse(JSON.stringify(b.commands.filter((c) => c.name === "pane.focus"))), [{ name: "pane.focus", args: { terminal: "t1" } }]);
+
+  // o opens the selected card's worker terminal outside Focus mode too.
+  const workerIdx = all.indexOf("maple-preview-screen");
+  b.view.cursorId = all[workerIdx];
+  b.keyDown("root", "o");
+  await b.settle();
+  assert.ok(b.commands.some((c) => c.name === "agent.focus" && c.args?.terminal === "t9w"));
+});
+
+test("Board f enters Focus mode where Enter answers, and Escape closes Focus before returning to terminal", async () => {
+  const b = await board({ focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t1" } });
+  b.sendCommand("focus");
+  // Open a card detail first, then toggle Focus with f (which closes detail and opens Focus).
+  b.keyDown("root", "enter");
+  assert.ok(b.ids.includes("card-detail"));
+  b.keyDown("root", "f");
+  assert.equal(b.view.focusMode, true);
+  assert.equal(b.view.detailCardId, null);
+  assert.ok(!b.ids.includes("card-detail"));
+
+  // Inside Focus mode, Enter keeps answering with the recommended option.
+  b.keyDown("root", "enter");
+  assert.deepEqual(b.drafts, ["[Board answer] maple-icon-set: A (Rounded)"]);
+
+  // First Escape leaves Focus mode; second Escape returns to the terminal.
+  b.keyDown("root", "escape");
+  assert.equal(b.view.focusMode, false);
+  assert.deepEqual(b.commands.filter((c) => c.name === "pane.focus"), []);
+  b.keyDown("root", "escape");
+  assert.deepEqual(JSON.parse(JSON.stringify(b.commands.filter((c) => c.name === "pane.focus"))), [{ name: "pane.focus", args: { terminal: "t1" } }]);
+});
+
+test("Chains view keyboard navigation moves across chain nodes, Enter opens detail, and Escape closes detail then returns to terminal", async () => {
+  const b = await board({
+    ui: { viewMode: "chains" },
+    focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t2" },
+  });
+  b.sendCommand("focus");
+  const chainCards = b.view.boardCards().map((c) => c.id);
+  assert.ok(chainCards.length >= 2);
+  assert.equal(b.view.cursorId, chainCards[0]);
+  b.keyDown("root", "j");
+  assert.equal(b.view.cursorId, chainCards[1]);
+  b.keyDown("root", "enter");
+  assert.equal(b.view.selectedCardId, chainCards[1]);
+  assert.ok(b.ids.includes("chain-detail"));
+  assert.deepEqual(b.drafts, []);
+
+  // First Escape closes chain-detail; second returns to terminal.
+  b.keyDown("root", "escape");
+  assert.equal(b.view.selectedCardId, null);
+  assert.ok(!b.ids.includes("chain-detail"));
+  assert.deepEqual(b.commands.filter((c) => c.name === "pane.focus"), []);
+  b.keyDown("root", "escape");
+  assert.deepEqual(JSON.parse(JSON.stringify(b.commands.filter((c) => c.name === "pane.focus"))), [{ name: "pane.focus", args: { terminal: "t2" } }]);
 });

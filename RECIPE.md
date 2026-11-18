@@ -82,10 +82,16 @@ Clicking an open decision's text puts `[Board answer] <id> [key=<key>]: ` there,
 All these drafts stay on one line with a trailing space, and the input receives focus so you can keep typing.
 Held cards without options use the chat input for free-text answers; a hold's options outside the Held column are shown as plain text.
 The NEXT MOVE band's options put the same drafts in the chat input as the Held card's options, covering every hold to answer now that shares its topic. Its options are the board's ordinary raised buttons, with the recommended one as the solid primary button, and `Write answer` starts a free-text draft.
-In Kanban, the toolbar's `Focus` button (or `F` while the Board itself has the keyboard) turns Focus on and off.
+In Kanban, the toolbar's `Focus` button (or `f` while the Board itself has the keyboard) turns Focus on and off.
 Focus dims everything except the captain's calls (holds to answer now and failed workers) and rings the selected call in the held (blocked) color, starting with the NEXT MOVE card. A key row under the search field lists its keys.
 `j`/`k` (or the arrow keys) move between the calls in drawing order, showing each card open and scrolling to it. When the call has a live worker terminal, Focus runs Herdr's peek of that terminal, which shows it over the tab beside the Board without taking the keyboard.
-`Enter` drafts the recommended answer (or starts a free-text draft), `o` opens the worker, and `Esc` or `F` leaves Focus; switching to Chains also leaves it.
+`Enter` drafts the recommended answer (or starts a free-text draft), `o` opens the worker, and `Esc` or `f` leaves Focus; switching to Chains also leaves it.
+
+Outside Focus mode, `fm-board` is focusable (`"focusable": true` in `mod.json`) and accepts `focus` via `nextCommand()` (from `fm-board.focus` or `pane.go`):
+- `j`/`k` or `Down`/`Up` move selection across all drawn cards (in Kanban or Chains), ringing the selected card in the accent color and scrolling to it.
+- `Enter` opens the selected card's detail (`TASK DETAIL` card detail box in Kanban, or `#chain-detail` in Chains), never answering any decision.
+- `o` opens the selected card's worker terminal.
+- `Esc` closes any open view first (Files · Changes viewer, card detail, Focus mode, Dependency Inspector / Chains detail, or NEXT MOVE ring), and when nothing is open returns keyboard focus to the terminal that last had it (`pane.focus`).
 Live cards can open their worker with a terminal icon, and the read-only Files and Changes viewer with a `Files · Changes` button when the snapshot reports the worker's copy of the project as present (`paths.worktree`); the viewer's source picker then offers that copy beside the project's local copy.
 When the card's worker terminal is live and still labeled with the card's task, the card ends in a Live strip set apart by a light tint of the theme's working color, so the card body above keeps the shape of cards in other columns.
 The strip's header holds a working-color dot, the worker terminal's own status as Herdr reports it (`Worker working`, `Worker blocked`, or `Worker idle`, which also covers a finished turn; `Live` when the terminal reports none), the Open worker icon, and a Peek icon that opens Herdr's peek of that terminal over the current tab without focusing, switching, or typing anything; both icons have tooltips and screen reader labels.
@@ -139,7 +145,7 @@ The panel stack contains Herdr's shipped `files` and `changes` mods, the `fm-boa
 
 `fm-tabs` is based on Herdr 0.1.16's shipped `tabs` mod. It uses `spaces`, `panes`, `layout`, `shared`, `theme`, `window`, `settings`, and `checking`, and runs `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.prev`, `tab.next`, `layout.select`, `layout.show`, and `layout.hide`. It opens Herdr's `menu` and `new-menu` overlays and uses its own `board.svg` and `pr.svg` icons.
 
-`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, `checking`, `appHome`, `layout`, and `setShared` from `herdr`.
+`fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, `checking`, `appHome`, `layout`, `setShared`, and `nextCommand` from `herdr`.
 It draws Herdr's shipped `files` folder icon and `workspace-chrome` search, terminal, and layers icons.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals and `hc read` to read live worker screens for the card lines.
 Its Peek icon and Focus mode run Herdr's `terminal.peek` command, and its PR links run `layout.select` and `layout.show` to show the PR panel.
@@ -180,9 +186,9 @@ The layout and mods expect Herdr's shipped `workspace-chrome`, `spaces`, `agents
 
 ## Done when
 
-Both mod folders pass `herdr-app check`.
+Both mod folders (`fm-board`, `fm-tabs`) pass `herdr-app check`.
 
-`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files · Changes` button, the Held groups, the open decisions with their answer drafts, the Today strip, NEXT MOVE, card bars, Focus keys, PR links with and without the PR viewer mod, the tab group below the board, and the Registered checks section.
+`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files · Changes` button, the Held groups, the open decisions with their answer drafts, the Today strip, NEXT MOVE, card bars, Focus keys, Board keyboard navigation/detail/escape, PR links with and without the PR viewer mod, the tab group below the board, and the Registered checks section.
 
 The layout opens with the configured Firstmate home, displays the board and panel controls, and switching spaces restores each space's selected panel.
 

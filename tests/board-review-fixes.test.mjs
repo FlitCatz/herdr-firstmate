@@ -522,6 +522,8 @@ test("Finding 3: pasteToFirstmate checks macOS pasteboard changeCount and skips 
   const tempFiles = new Map();
   let nextTmp = 0;
   let pasteboardReads = 0;
+  let failCountAfterCopy = false;
+  let countFails = false;
   let bRef;
 
   const exec = async (cmd, args = []) => {
@@ -529,6 +531,7 @@ test("Finding 3: pasteToFirstmate checks macOS pasteboard changeCount and skips 
       const expr = args.at(-1);
       if (expr.includes("changeCount")) {
         pasteboardReads++;
+        if (countFails) return { code: 1, stdout: "", stderr: "osascript failed" };
         return { code: 0, stdout: `${pb.count}\n`, stderr: "" };
       }
       if (expr.includes("clipboard info")) {
@@ -546,6 +549,7 @@ test("Finding 3: pasteToFirstmate checks macOS pasteboard changeCount and skips 
       if (script.includes("| pbcopy")) {
         pb.text = arg1;
         pb.count++;
+        countFails = failCountAfterCopy;
         return { code: 0, stdout: "", stderr: "" };
       }
       if (script.includes("pbcopy <")) {
@@ -602,6 +606,20 @@ test("Finding 3: pasteToFirstmate checks macOS pasteboard changeCount and skips 
   await assert.rejects(p2, /Clipboard changed/);
   assert.equal(pb.text, "copied during focus", "aborted paste must leave newer clipboard intact");
   assert.equal(tempFiles.size, 0, "aborted paste must clean up any temp files");
+
+  // Case 3: the changeCount read fails after the card text is copied, so nothing proves another
+  // app changed the clipboard; the user's saved text must come back.
+  pb.count = 200;
+  pb.text = "keep me";
+  failCountAfterCopy = true;
+  const p3 = bRef.view.pasteToFirstmate("w1:p1", "[Board card] id: title ", bRef.cx);
+  await new Promise((r) => setTimeout(r, 10));
+  nextTimer(100).fn();
+  await new Promise((r) => setTimeout(r, 10));
+  nextTimer(300).fn();
+  await p3;
+  assert.equal(pb.text, "keep me", "unreadable clipboard version must still restore the saved text");
+  assert.equal(tempFiles.size, 0, "restore consumes the temporary file");
 });
 
 test("Finding 5: send surfaces exec Promise rejections in notice and keeps Memo input intact", async () => {
@@ -633,6 +651,10 @@ test("Finding 7: invalid or non-HTTPS PR URLs are hidden on cards/nodes and reje
     { id: "bad-http-url", state: "in_flight", repo: "maple-workshop", title: "Bad http URL", structured: true, pr_url: "http://github.com/FlitCatz/maple-workshop/pull/9" },
     { id: "good-gitlab-url", state: "in_flight", repo: "maple-workshop", title: "Good GitLab PR", structured: true, pr_url: "https://gitlab.com/org/group/repo/-/merge_requests/99" },
     { id: "good-azdo-url", state: "in_flight", repo: "maple-workshop", title: "Good AzDO PR", structured: true, pr_url: "https://dev.azure.com/org/proj/_git/repo/pullrequest/7" },
+    { id: "good-ghe-url", state: "in_flight", repo: "maple-workshop", title: "Good Enterprise PR", structured: true, pr_url: "https://git.example.com:8443/org/repo/pull/12" },
+    { id: "bad-js-url", state: "in_flight", repo: "maple-workshop", title: "Bad js URL", structured: true, pr_url: "javascript:alert(1)" },
+    { id: "bad-userinfo-url", state: "in_flight", repo: "maple-workshop", title: "Bad userinfo URL", structured: true, pr_url: "https://user@github.com/o/r/pull/1" },
+    { id: "bad-dotdot-url", state: "in_flight", repo: "maple-workshop", title: "Bad dot-dot URL", structured: true, pr_url: "https://github.com/o/r/pull/../../x" },
   );
   snap.tasks.push({
     id: "bad-detail-pr", kind: "ship", project: `${HOME}/projects/maple-workshop`, branch: "fm/bad", harness: "codex", backend: "hc",
@@ -651,6 +673,10 @@ test("Finding 7: invalid or non-HTTPS PR URLs are hidden on cards/nodes and reje
   assert.equal(b.ids.includes("pr-bad-detail-pr"), false, "pr=file:// detail URL must be hidden");
   assert.equal(b.ids.includes("pr-good-gitlab-url"), true, "supported GitLab HTTPS MR URL is shown");
   assert.equal(b.ids.includes("pr-good-azdo-url"), true, "supported Azure DevOps HTTPS PR URL is shown");
+  assert.equal(b.ids.includes("pr-good-ghe-url"), true, "self-hosted HTTPS PR URL is shown");
+  assert.equal(b.ids.includes("pr-bad-js-url"), false, "javascript: PR URL must be hidden");
+  assert.equal(b.ids.includes("pr-bad-userinfo-url"), false, "PR URL with userinfo must be hidden");
+  assert.equal(b.ids.includes("pr-bad-dotdot-url"), false, "PR URL with dot segments must be hidden");
 
   b.view.openPr("file:///etc/passwd", { id: "bad-file-url", project: "maple-workshop" }, b.cx);
   await b.settle();

@@ -459,30 +459,21 @@ function prioritizeWaitingClause(text) {
   return `${text.slice(boundary.index + boundary[0].length)}; ${text.slice(0, boundary.index)}`;
 }
 
-// Supported forge HTTPS PR/MR URLs only; rejects file:, http:, userinfo, or arbitrary URLs.
+// HTTPS URLs on any host; rejects file:, http:, userinfo, control characters, and dot segments.
 function validPrUrl(raw) {
   if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  if (!trimmed || /[\s\u0000-\u001f\u007f?#]/.test(trimmed)) return null;
-  const m = /^https:\/\/([^/:@]+)(\/[^\s]*)$/.exec(trimmed);
-  if (!m) return null;
-  const host = m[1].toLowerCase(), path = m[2];
-  if (path.split("/").some((s) => s === "." || s === "..")) return null;
-  const seg = "[A-Za-z0-9._-]+";
-  const ok = (host === "github.com" && new RegExp(`^/${seg}/${seg}/pull/\\d+/?$`).test(path))
-    || (host === "gitlab.com" && new RegExp(`^/(?:${seg}/)+${seg}/-/merge_requests/\\d+/?$`).test(path))
-    || (host === "bitbucket.org" && new RegExp(`^/${seg}/${seg}/pull-requests/\\d+/?$`).test(path))
-    || (host === "codeberg.org" && new RegExp(`^/${seg}/${seg}/pulls/\\d+/?$`).test(path))
-    || (host === "dev.azure.com" && new RegExp(`^/${seg}/${seg}/_git/${seg}/pullrequest/\\d+/?$`).test(path))
-    || (/^[a-z0-9-]+\.visualstudio\.com$/.test(host) && new RegExp(`^/(?:${seg}/)?_git/${seg}/pullrequest/\\d+/?$`).test(path));
-  return ok ? trimmed : null;
+  const url = raw.trim();
+  if (/[\u0000-\u001f\u007f]/.test(url)) return null;
+  const m = /^https:\/\/[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d+)?(\/[^\s?#]*)(?:[?#]\S*)?$/i.exec(url);
+  if (!m || m[1].replace(/%2e/gi, ".").split("/").some((seg) => seg === "." || seg === "..")) return null;
+  return url;
 }
 
 // The PR URL in Firstmate's detail, which it adds when the worker never reported one.
 function detailPr(detail) {
   const text = detail ?? "";
   const tagged = text.split(" · ").map((p) => p.trim()).find((p) => p.startsWith("pr="))?.slice(3);
-  const urls = Array.from(text.matchAll(/https:\/\/\S+/g), (m) => m[0].replace(/[)\]}>.,;:!?'"]+$/, ""));
+  const urls = Array.from(text.matchAll(/https:\/\/\S+?\/(?:pull|pulls|pull-requests|merge_requests|pullrequest)\/\d+/g), (m) => m[0]);
   for (const raw of [tagged, ...urls]) {
     const url = validPrUrl(raw);
     if (url) return url;
@@ -1843,6 +1834,7 @@ export default class FmBoard extends View {
     if (this.pasting) throw new Error("A card is already being inserted; try again");
     this.pasting = true;
     let saved = null;
+    let written = false;
     let writtenCount = null;
     /** @param {string} script @param {string[]} args */
     const clip = (script, ...args) => exec("/usr/bin/env", ["LC_ALL=en_US.UTF-8", "sh", "-c", script, "board-clipboard", ...args]);
@@ -1876,6 +1868,7 @@ export default class FmBoard extends View {
       if ((await pasteboardCount()) !== count0) throw new Error("Clipboard changed while inserting; try again");
       const copied = await clip("printf '%s' \"$1\" | pbcopy", line);
       if (copied.code !== 0) throw new Error("Could not copy the card text");
+      written = true;
       writtenCount = await pasteboardCount().catch(() => null);
       // Focus may have changed while the clipboard command was running.
       if (focused()?.terminal !== terminal) throw new Error("Firstmate terminal focus changed; try again");
@@ -1884,8 +1877,9 @@ export default class FmBoard extends View {
     } finally {
       try {
         if (saved !== null) {
-          const currentCount = writtenCount !== null ? await pasteboardCount().catch(() => null) : null;
-          if (writtenCount !== null && currentCount === writtenCount) {
+          const currentCount = written ? await pasteboardCount().catch(() => null) : null;
+          const changedElsewhere = writtenCount !== null && currentCount !== null && currentCount !== writtenCount;
+          if (written && !changedElsewhere) {
             const restored = await clip("pbcopy < \"$1\"; s=$?; rm -f \"$1\"; exit $s", saved);
             if (restored.code !== 0) throw new Error("Could not restore clipboard text");
           } else {

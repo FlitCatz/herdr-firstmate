@@ -190,10 +190,10 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     items = drawn(view.render(cx));
     return items;
   };
-  const keyDown = (id, key, modifiers = {}) => {
+  const keyDown = (id, key, modifiers = {}, keyChar = undefined) => {
     const item = items.find((x) => x.id === id);
     assert.ok(item?.keyDown, `no keyDown at ${id}`);
-    item.keyDown({ key, modifiers }, cx);
+    item.keyDown({ key, modifiers, key_char: keyChar }, cx);
     items = drawn(view.render(cx));
     return items;
   };
@@ -3167,7 +3167,7 @@ test("local-only done tasks count as Ready to land until landed, while PR and sc
 
 // The cards the Board draws, in drawing order: Kanban cards, and the Chains view's nodes and
 // Independent cards. The keyboard cursor must walk exactly these, never a card that is not drawn.
-const drawnCards = (b) => b.ids.filter((id) => /^(card-|chain-node-)/.test(id) && !id.startsWith("card-detail"))
+const drawnCards = (b) => b.ids.filter((id) => /^(card-|chain-node-)/.test(id))
   .map((id) => id.replace(/^(card-|chain-node-)/, ""));
 // Presses j until the cursor stops moving, returning every card it rested on.
 const walkDown = (b) => {
@@ -3198,7 +3198,7 @@ test("fm-board mod.json is focusable and nextCommand focus moves keyboard focus 
   assert.equal(ring.findLast((c) => c[0] === "border")[1], 2);
 });
 
-test("Board keys j/k, h/l, and arrows move within/across columns, enter opens detail without answering, and escape closes detail then returns to terminal", async () => {
+test("Board keys j/k, h/l, and arrows move within/across columns, enter folds and unfolds without answering, and escape returns to terminal", async () => {
   const exec = async (cmd, args) => {
     if (cmd === "hc" && args[0] === "get" && args[1] === "t9w") {
       return { code: 0, stdout: JSON.stringify({ labels: { "firstmate.task": "fm-maple-preview-screen" } }), stderr: "" };
@@ -3235,7 +3235,7 @@ test("Board keys j/k, h/l, and arrows move within/across columns, enter opens de
   b.keyDown("root", "up");
   assert.equal(b.view.cursorId, "orchard-map-labels");
 
-  // Step to orchard-nav-style in parked with l: Enter opens its detail, NEVER answers, and keeps the outline on that exact card.
+  // Step to orchard-nav-style in parked with l: Enter folds and unfolds it like its fold row, NEVER answers, and keeps the outline on that exact card.
   const bTheme = await board({
     theme: { accent: "#1f62d0", border: "#dddddd", blocked: "#c93c2c", ansi1: "#cc0000" },
     focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t1" },
@@ -3243,11 +3243,11 @@ test("Board keys j/k, h/l, and arrows move within/across columns, enter opens de
   bTheme.sendCommand("focus");
   for (let i = 0; i < 4; i++) bTheme.keyDown("root", "l");
   assert.equal(bTheme.view.cursorId, "orchard-nav-style");
+  assert.ok(bTheme.ids.includes("state-orchard-nav-style"));
   bTheme.keyDown("root", "enter");
-  assert.equal(bTheme.view.detailCardId, "orchard-nav-style");
   assert.equal(bTheme.view.cursorId, "orchard-nav-style");
-  assert.ok(bTheme.ids.includes("card-detail"));
-  assert.match(bTheme.text("card-detail"), /TASK DETAIL · orchard-nav-style/);
+  assert.ok(!bTheme.ids.includes("state-orchard-nav-style"), "Enter folds the selected card");
+  assert.ok(bTheme.view.folded.has("card:orchard-nav-style"));
   assert.deepEqual(bTheme.drafts, [], "Enter outside Focus mode must never answer anything");
   const cardBorder = (inst, id) => {
     const calls = inst.items.find((x) => x.id === `card-${id}`).calls;
@@ -3256,24 +3256,21 @@ test("Board keys j/k, h/l, and arrows move within/across columns, enter opens de
   assert.deepEqual(cardBorder(bTheme, "orchard-nav-style"), { color: "#1f62d0", width: 2 });
   assert.equal(cardBorder(bTheme, all[0]).width, 1);
 
-  // Step to a Held decision card with l: outside Focus mode, Enter opens card detail and NEVER answers.
+  bTheme.keyDown("root", "enter");
+  assert.ok(bTheme.ids.includes("state-orchard-nav-style"), "Enter again unfolds it");
+  assert.ok(!bTheme.view.folded.has("card:orchard-nav-style"));
+
+  // Step to a Held decision card with l: outside Focus mode, Enter folds it and NEVER answers.
   b.keyDown("root", "l");
   assert.equal(b.view.cursorId, "maple-icon-set");
   b.keyDown("root", "enter");
-  assert.equal(b.view.detailCardId, "maple-icon-set");
-  assert.ok(b.ids.includes("card-detail"));
-  assert.match(b.text("card-detail"), /TASK DETAIL · maple-icon-set/);
-  assert.deepEqual(Array.from(b.items.find((x) => x.id === "card-detail-scroll").childIds), ["card-maple-icon-set"],
-    "the detail shows the card itself, as the Chains detail does");
+  assert.ok(!b.ids.includes("state-maple-icon-set"));
+  assert.ok(!b.ids.includes("card-detail"), "Kanban draws no detail box above the columns");
   assert.deepEqual(b.drafts, [], "Enter outside Focus mode must never answer anything");
+  b.keyDown("root", "enter");
+  assert.ok(b.ids.includes("state-maple-icon-set"));
 
-  // First Escape closes card detail without returning to the terminal yet.
-  b.keyDown("root", "escape");
-  assert.equal(b.view.detailCardId, null);
-  assert.ok(!b.ids.includes("card-detail"));
-  assert.deepEqual(b.commands.filter((c) => c.name === "pane.focus"), []);
-
-  // Second Escape (nothing open on the Board) returns focus to the terminal.
+  // Escape with nothing open on the Board returns focus to the terminal.
   b.keyDown("root", "escape");
   assert.deepEqual(JSON.parse(JSON.stringify(b.commands.filter((c) => c.name === "pane.focus"))), [{ name: "pane.focus", args: { terminal: "t1" } }]);
 
@@ -3289,13 +3286,8 @@ test("Board keys j/k, h/l, and arrows move within/across columns, enter opens de
 test("Board f enters Focus mode where Enter answers, and Escape closes Focus before returning to terminal", async () => {
   const b = await board({ focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t1" } });
   b.sendCommand("focus");
-  // Open a card detail first, then toggle Focus with f (which closes detail and opens Focus).
-  b.keyDown("root", "enter");
-  assert.ok(b.ids.includes("card-detail"));
   b.keyDown("root", "f");
   assert.equal(b.view.focusMode, true);
-  assert.equal(b.view.detailCardId, null);
-  assert.ok(!b.ids.includes("card-detail"));
 
   // Inside Focus mode, Enter keeps answering with the recommended option.
   b.keyDown("root", "enter");
@@ -3391,7 +3383,7 @@ test("Board skips folded Chains lanes and collapsed Kanban columns, and does not
   assert.equal(none.view.cursorId, null);
   assert.deepEqual(drawnCards(none), [], "navigation keys open no collapsed column");
   none.keyDown("root", "enter");
-  assert.ok(!none.ids.includes("card-detail"));
+  assert.deepEqual(drawnCards(none), [], "Enter with no selected card folds or opens nothing");
 });
 
 test("Board focus puts the cursor back in view when its card's topic group was folded", async () => {
@@ -3603,15 +3595,7 @@ test("Board panel-frame schedules a next-frame redraw on mouse_down_out while fo
   assert.equal(mouseDownOut(), undefined);
 });
 
-// Fires the one-shot timers a card click armed since `from`, as Herdr does once their delay passes.
-const fireTimersFrom = (b, from) => {
-  const due = b.timers.slice(from);
-  for (const t of due) t.fn({ notify() {}, timer: { after() {} } });
-  b.redraw();
-  return due.map((t) => t.ms);
-};
-
-test("clicking or double-clicking a Kanban card moves cursor, focuses Board, opens detail, and inner controls stop propagation", async () => {
+test("clicking or double-clicking a Kanban card only selects it and focuses the Board, and inner controls stop propagation", async () => {
   const theme = { accent: "#1f62d0", border: "#dddddd", canvas: "#f7f7f7" };
   const b = await board({
     theme,
@@ -3621,34 +3605,28 @@ test("clicking or double-clicking a Kanban card moves cursor, focuses Board, ope
   });
   b.view.size = { width: 1280, height: 800 };
   b.redraw();
+  const layout = () => b.ids.filter((id) => id !== "panel-frame");
 
   assert.ok(!b.focusedOn("root"));
-  const before = b.timers.length;
+  const before = layout();
+  const timersBefore = b.timers.length;
   b.click("card-maple-card-layout");
   assert.equal(b.view.cursorId, "maple-card-layout");
   assert.ok(b.focusedOn("root"));
-  // The detail box would push the columns down under the pointer, so it waits out a double-click.
-  assert.ok(!b.ids.includes("card-detail"));
+  // Nothing is inserted, removed, folded, or deferred, so a double-click's second press hits the same card.
+  assert.deepEqual(layout(), before);
+  assert.equal(b.timers.length, timersBefore);
 
-  // The second press of a double-click lands on the same unmoved card and arms no second open.
   b.click("card-maple-card-layout", { click_count: 2 });
-  assert.ok(!b.ids.includes("card-detail"));
-  assert.deepEqual(fireTimersFrom(b, before), [300]);
-  assert.equal(b.view.detailCardId, "maple-card-layout");
-  assert.ok(b.ids.includes("card-detail"));
-
-  // Clicking the open card again keeps its detail open instead of toggling it closed.
-  const reopen = b.timers.length;
-  b.click("card-maple-card-layout");
-  assert.equal(b.timers.length, reopen);
-  assert.equal(b.view.detailCardId, "maple-card-layout");
+  assert.equal(b.view.cursorId, "maple-card-layout");
+  assert.deepEqual(layout(), before);
+  assert.deepEqual(b.drafts, []);
 
   // j/k/h/l continue from the clicked card's cursor position.
   b.keyDown("root", "j");
   assert.equal(b.view.cursorId, "orchard-theme-sync");
-  assert.equal(b.view.detailCardId, null);
 
-  // Inner controls inside a card stop propagation so clicking them does not open detail as a card click.
+  // Inner controls inside a card stop propagation so clicking them does not also select the card.
   const probePropagation = (id) => {
     const item = b.items.find((x) => x.id === id);
     assert.ok(item?.click, `missing click handler for ${id}`);
@@ -3672,47 +3650,27 @@ test("clicking or double-clicking a Kanban card moves cursor, focuses Board, ope
   }
 });
 
-test("a pending card-click detail opens only the last clicked card, and j, Esc, or Enter cancel it", async () => {
+test("? puts the selected or focused card in the firstmate input like its Ask icon", async () => {
   const b = await board();
-
-  // Clicking card A and then card B before the delay opens only B.
-  let from = b.timers.length;
   b.click("card-maple-card-layout");
-  b.click("card-maple-preview-screen");
-  fireTimersFrom(b, from);
-  assert.equal(b.view.detailCardId, "maple-preview-screen");
-  b.keyDown("root", "escape");
-  assert.ok(!b.ids.includes("card-detail"));
+  b.keyDown("root", "/", { shift: true }, "?");
+  assert.deepEqual(b.drafts, ["`[Board card] maple-card-layout: Align card layout with tokens`"]);
+  b.click("ask-card-card:maple-card-layout");
+  assert.equal(b.drafts[1], b.drafts[0], "the key and the Ask icon draft the same text");
 
-  // A key move before the delay leaves the click's detail closed.
-  from = b.timers.length;
-  b.click("card-maple-card-layout");
-  b.keyDown("root", "j");
-  fireTimersFrom(b, from);
-  assert.equal(b.view.cursorId, "orchard-theme-sync");
-  assert.equal(b.view.detailCardId, null);
+  // A plain / is not the ask key.
+  b.keyDown("root", "/", {}, "/");
+  assert.equal(b.drafts.length, 2);
 
-  // Esc before the delay cancels the open and keeps the keyboard on the Board.
-  from = b.timers.length;
-  b.click("card-maple-card-layout");
-  b.keyDown("root", "escape");
-  fireTimersFrom(b, from);
-  assert.equal(b.view.detailCardId, null);
-  assert.ok(b.focusedOn("root"));
-  assert.ok(!b.commands.some((c) => c.name === "pane.focus"));
-
-  // Enter opens at once, and the click's delayed open does not reopen it after Esc.
-  from = b.timers.length;
-  b.click("card-maple-card-layout");
-  b.keyDown("root", "enter");
-  assert.equal(b.view.detailCardId, "maple-card-layout");
-  assert.ok(b.ids.includes("card-detail"));
-  b.keyDown("root", "escape");
-  fireTimersFrom(b, from);
-  assert.equal(b.view.detailCardId, null);
+  // In Focus, ? asks about the focused call.
+  b.click("focus-toggle");
+  assert.equal(b.view.focusId, "maple-icon-set");
+  assert.ok(b.text("focus-hint").includes("ask firstmate"));
+  b.keyDown("root", "/", { shift: true }, "?");
+  assert.equal(b.drafts.at(-1), "`[Board card] maple-icon-set: Choose the icon set`");
 });
 
-test("in Focus a click on a captain's call moves Focus to it like j/k, and opens no hidden detail", async () => {
+test("in Focus a click on a captain's call moves Focus to it like j/k", async () => {
   const b = await board();
   b.click("focus-toggle");
   assert.equal(b.view.focusId, "maple-icon-set");
@@ -3720,7 +3678,6 @@ test("in Focus a click on a captain's call moves Focus to it like j/k, and opens
 
   b.click("card-maple-tour-sketch");
   assert.equal(b.view.focusId, "maple-tour-sketch");
-  assert.equal(b.view.detailCardId, null);
   assert.equal(b.view.cursorId, cursorBefore);
   assert.ok(b.focusedOn("root"));
   // j continues from the clicked call, as it would after reaching it with j.
@@ -3730,19 +3687,10 @@ test("in Focus a click on a captain's call moves Focus to it like j/k, and opens
   // A card that is not a captain's call stays out of reach in Focus, as it is for j/k.
   b.click("card-maple-preview-screen");
   assert.equal(b.view.focusId, "maple-empty-state");
-  assert.equal(b.view.detailCardId, null);
 
-  // One Esc leaves Focus; no detail was hiding behind it.
+  // One Esc leaves Focus.
   b.keyDown("root", "escape");
   assert.equal(b.view.focusMode, false);
-  assert.ok(!b.ids.includes("card-detail"));
-
-  // Leaving Focus with f after a click does not pop up a detail either.
-  b.keyDown("root", "f");
-  b.click("card-maple-icon-set");
-  b.keyDown("root", "f");
-  assert.equal(b.view.focusMode, false);
-  assert.ok(!b.ids.includes("card-detail"));
 });
 
 test("chainNodeSelection keeps double-click open and Chains node click updates cursor", async () => {

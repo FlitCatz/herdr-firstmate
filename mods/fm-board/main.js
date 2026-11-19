@@ -51,9 +51,6 @@ const CARD_BAR_PX = 3;
 const FOCUS_DIM = 0.22;
 // How long the ring on a card the NEXT MOVE card line pointed to stays.
 const POINT_RING_MS = 4000;
-// A clicked Kanban card opens its detail only after this delay: the TASK DETAIL box pushes the
-// columns down, so opening at once would move a double-click's second press onto another element.
-const CARD_CLICK_DETAIL_DELAY_MS = 300;
 // The separate PR viewer mod a PR link opens when it is installed. Its panel contract: the layout's
 // `pr` block in the panel-body stack shows it, and the shared value below asks it for one PR.
 const PR_VIEWER_MOD = "herdr-pr-viewer";
@@ -1219,10 +1216,6 @@ export default class FmBoard extends View {
     this.selectedCardId = null;
     /** @type {string | null} */
     this.cursorId = null;
-    /** @type {string | null} */
-    this.detailCardId = null;
-    /** @type {{ id: string } | null} */
-    this.pendingDetail = null;
     this.pendingInitialCursor = false;
     /** @type {string | null} */
     this.hoveredCardId = null;
@@ -1817,16 +1810,21 @@ export default class FmBoard extends View {
 
   /** @param {string} key @param {string[]} ids @param {string} title @param {Record<string, `#${string}`>} t */
   askButton(key, ids, title, t) {
-    const cleanTitle = title.replace(/`/g, "'");
     return div().id(`ask-card-${key}`).flex_none().p(3).rounded(5).cursor_pointer()
       .hover((s) => s.bg(t.hover)).tooltip("Ask firstmate about this task")
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        this.insertCardText(`\`[Board card] ${ids.join(", ")}: ${cleanTitle}\``, cx);
+        this.askCard(ids, title, cx);
       })
       .child(div().w(this.fs(14)).h(this.fs(14)).rounded(this.fs(7)).border(1).border_color(t.muted)
         .flex().items_center().justify_center().text_size(this.fs(11)).text_color(t.muted).child("?"));
+  }
+
+  // Puts the task ids and title into the firstmate input, for the Ask icon and the `?` key.
+  /** @param {string[]} ids @param {string} title @param {import("gpui-kit").Context} cx */
+  askCard(ids, title, cx) {
+    this.insertCardText(`\`[Board card] ${ids.join(", ")}: ${title.replace(/`/g, "'")}\``, cx);
   }
 
   // A small icon-only card control in the Ask icon's style; the label is its tooltip and what a
@@ -2213,8 +2211,6 @@ export default class FmBoard extends View {
     this.focusMode = !this.focusMode;
     this.focusId = null;
     if (this.focusMode) {
-      this.detailCardId = null;
-      this.pendingDetail = null;
       this.keys.focus();
       this.moveFocus(0, cx);
     }
@@ -2267,9 +2263,8 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
-  // Keeps the cursor on the open detail's card, or on a drawn card, starting with the first.
+  // Keeps the cursor on a drawn card, starting with the first.
   placeCursor() {
-    if (this.detailCardId) { this.cursorId = this.detailCardId; return; }
     const cards = this.boardCards();
     const c = cards.find((x) => x.id === this.cursorId) ?? cards[0];
     this.cursorId = c?.id ?? null;
@@ -2323,8 +2318,6 @@ export default class FmBoard extends View {
   /** @param {any} c @param {import("gpui-kit").Context} cx */
   selectCursorCard(c, cx) {
     this.cursorId = c.id;
-    this.pendingDetail = null;
-    if (this.detailCardId && this.detailCardId !== c.id) this.detailCardId = null;
     this.showCursorCard(c);
     cx.notify();
   }
@@ -2364,7 +2357,7 @@ export default class FmBoard extends View {
   /** @param {any} c */
   showCursorCard(c) {
     if (this.viewMode === "kanban") {
-      this.revealed = new Set([c.column, ...(this.detailCardId ? [`card:${this.detailCardId}`] : [])]);
+      this.revealed = new Set([c.column]);
       if (c.decision?.topic) this.revealed.add(`group:${c.decision.topic}`);
       this.scrollToCard(c);
       return;
@@ -2375,19 +2368,8 @@ export default class FmBoard extends View {
     this.chainsScroll.scroll_to_item(lead + (laneIdx >= 0 ? laneIdx : chains.length));
   }
 
-  /** @param {any} c @param {import("gpui-kit").Context} cx */
-  openCardDetail(c, cx) {
-    this.pendingDetail = null;
-    if (!c) return;
-    if (this.viewMode === "chains") {
-      if (this.selectedCardId !== c.id) this.selectChainNode(c.id, cx);
-      return;
-    }
-    this.detailCardId = c.id;
-    this.showCard(c, cx);
-    cx.notify();
-  }
-
+  // Outside Focus a click only selects the card, so nothing moves under a double-click's second
+  // press; in Chains it also opens the card's detail below the lane or drawer, as Enter does.
   /** @param {any} c @param {import("gpui-kit").Context} cx */
   clickCard(c, cx) {
     if (!c) return;
@@ -2399,16 +2381,7 @@ export default class FmBoard extends View {
     }
     this.cursorId = c.id;
     this.keys.focus();
-    if (this.viewMode !== "kanban") { this.openCardDetail(c, cx); return; }
-    if (this.detailCardId === c.id) this.pendingDetail = null;
-    else if (this.pendingDetail?.id !== c.id) {
-      const pending = { id: c.id };
-      this.pendingDetail = pending;
-      cx.timer.after(CARD_CLICK_DETAIL_DELAY_MS, (later) => {
-        if (this.pendingDetail !== pending) return;
-        this.openCardDetail((this.cards ?? []).find((x) => x.id === pending.id), later);
-      });
-    }
+    if (this.viewMode === "chains" && this.selectedCardId !== c.id) this.selectChainNode(c.id, cx);
     cx.notify();
   }
 
@@ -2425,7 +2398,7 @@ export default class FmBoard extends View {
     if (target?.terminal) this.focusAway("pane.focus", { terminal: target.terminal }, cx);
   }
 
-  // A TASK DETAIL header with a Close button above a card's detail, in Kanban and in a Chains lane.
+  // A TASK DETAIL header with a Close button above a card's detail, in a Chains lane or the Independent drawer.
   /** @param {string} elId @param {string} id @param {any} body @param {Record<string, `#${string}`>} t @param {(cx: import("gpui-kit").Context) => void} close */
   taskDetail(elId, id, body, t, close) {
     return v_flex().id(elId).gap(6)
@@ -2442,7 +2415,6 @@ export default class FmBoard extends View {
     if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return false;
     if (e.key === "escape") {
       if (this.viewer.root) { this.viewer.close(cx); return true; }
-      if (this.detailCardId || this.pendingDetail) { this.detailCardId = null; this.pendingDetail = null; cx.notify(); return true; }
       if (this.focusMode) { this.toggleFocus(cx); return true; }
       if (this.inspectorOpen || this.selectedCardId) { this.clearChainSelection(cx); return true; }
       if (this.pointedId) { this.pointedId = null; cx.notify(); return true; }
@@ -2456,6 +2428,7 @@ export default class FmBoard extends View {
       if (e.key === "k" || e.key === "up") { this.moveFocus(-1, cx); return true; }
       const c = (this.cards ?? []).find((x) => x.id === this.focusId);
       if (!c) return false;
+      if (e.key_char === "?") { this.askCard([c.id], c.title, cx); return true; }
       if (e.key === "enter") {
         const ids = this.answerIds(c), rec = this.recommendedOption(this.answerDecision(c));
         if (rec) this.answerOption(ids, rec, "", cx); else this.insertCardText(answerHead(ids), cx);
@@ -2475,7 +2448,12 @@ export default class FmBoard extends View {
     }
     const c = (this.cards ?? []).find((x) => x.id === this.cursorId);
     if (!c) return false;
-    if (e.key === "enter") { this.openCardDetail(c, cx); return true; }
+    if (e.key_char === "?") { this.askCard([c.id], c.title, cx); return true; }
+    if (e.key === "enter") {
+      if (this.viewMode === "chains") { if (this.selectedCardId !== c.id) this.selectChainNode(c.id, cx); }
+      else this.toggleFold(`card:${c.id}`, cx);
+      return true;
+    }
     if (e.key === "o" && c.terminal) { this.openWorker(c, cx); return true; }
     return false;
   }
@@ -2549,8 +2527,6 @@ export default class FmBoard extends View {
     if (this.viewMode === mode) return;
     this.viewMode = mode;
     this.hoveredCardId = null;
-    this.detailCardId = null;
-    this.pendingDetail = null;
     if (mode === "kanban" && !this.inspectorOpen) this.selectedCardId = null;
     if (mode === "chains") { this.inspectorOpen = false; this.focusMode = false; this.focusId = null; }
     try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch {}
@@ -3570,6 +3546,7 @@ export default class FmBoard extends View {
       .child(hint(["j", "k"], "move between your calls"))
       .child(hint(["⏎"], "answer with the recommended option"))
       .child(hint(["o"], "open worker"))
+      .child(hint(["?"], "ask firstmate"))
       .child(hint(["Esc"], "leave Focus"));
   }
 
@@ -3820,9 +3797,6 @@ export default class FmBoard extends View {
     const narrowMod = modWidth - this.inspectorWidth(modWidth) < STACK_BELOW_PX;
     const isChains = this.viewMode === "chains";
     const inspectorShown = !isChains && this.inspectorOpen;
-    const detailCard = !isChains && !this.focusMode && this.detailCardId
-      ? ((this.cards ?? []).find((c) => c.id === this.detailCardId) ?? null)
-      : null;
     const matches = this.query ? this.matchIds() : [];
     this.currentMatch = matches.length ? matches[this.matchAt % matches.length] : null;
     const board = isChains
@@ -3856,10 +3830,6 @@ export default class FmBoard extends View {
       .child(this.searchRow(t, matches))
       .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))
-      .when(Boolean(detailCard), (e) => e.child(this.taskDetail("card-detail", detailCard.id,
-        div().id("card-detail-scroll").max_h(Math.max(72, Math.round((this.size?.height ?? 600) * 0.25))).overflow_y_scroll()
-          .child(this.card(detailCard, t, false)),
-        t, (cx) => { this.detailCardId = null; this.pendingDetail = null; cx.notify(); }).flex_none()))
       .child(board))
       .child(back(this.bottomGroup(t)));
     if (this.viewer.root) {

@@ -3603,6 +3603,14 @@ test("Board panel-frame schedules a next-frame redraw on mouse_down_out while fo
   assert.equal(mouseDownOut(), undefined);
 });
 
+// Fires the one-shot timers a card click armed since `from`, as Herdr does once their delay passes.
+const fireTimersFrom = (b, from) => {
+  const due = b.timers.slice(from);
+  for (const t of due) t.fn({ notify() {}, timer: { after() {} } });
+  b.redraw();
+  return due.map((t) => t.ms);
+};
+
 test("clicking or double-clicking a Kanban card moves cursor, focuses Board, opens detail, and inner controls stop propagation", async () => {
   const theme = { accent: "#1f62d0", border: "#dddddd", canvas: "#f7f7f7" };
   const b = await board({
@@ -3615,16 +3623,25 @@ test("clicking or double-clicking a Kanban card moves cursor, focuses Board, ope
   b.redraw();
 
   assert.ok(!b.focusedOn("root"));
+  const before = b.timers.length;
   b.click("card-maple-card-layout");
   assert.equal(b.view.cursorId, "maple-card-layout");
   assert.ok(b.focusedOn("root"));
+  // The detail box would push the columns down under the pointer, so it waits out a double-click.
+  assert.ok(!b.ids.includes("card-detail"));
+
+  // The second press of a double-click lands on the same unmoved card and arms no second open.
+  b.click("card-maple-card-layout", { click_count: 2 });
+  assert.ok(!b.ids.includes("card-detail"));
+  assert.deepEqual(fireTimersFrom(b, before), [300]);
   assert.equal(b.view.detailCardId, "maple-card-layout");
   assert.ok(b.ids.includes("card-detail"));
 
-  // Double-click keeps card detail open instead of toggling it closed.
-  b.click("card-maple-card-layout", { click_count: 2 });
+  // Clicking the open card again keeps its detail open instead of toggling it closed.
+  const reopen = b.timers.length;
+  b.click("card-maple-card-layout");
+  assert.equal(b.timers.length, reopen);
   assert.equal(b.view.detailCardId, "maple-card-layout");
-  assert.ok(b.ids.includes("card-detail"));
 
   // j/k/h/l continue from the clicked card's cursor position.
   b.keyDown("root", "j");
@@ -3653,6 +3670,46 @@ test("clicking or double-clicking a Kanban card moves cursor, focuses Board, ope
   ]) {
     probePropagation(id);
   }
+});
+
+test("a pending card-click detail opens only the last clicked card, and j, Esc, or Enter cancel it", async () => {
+  const b = await board();
+
+  // Clicking card A and then card B before the delay opens only B.
+  let from = b.timers.length;
+  b.click("card-maple-card-layout");
+  b.click("card-maple-preview-screen");
+  fireTimersFrom(b, from);
+  assert.equal(b.view.detailCardId, "maple-preview-screen");
+  b.keyDown("root", "escape");
+  assert.ok(!b.ids.includes("card-detail"));
+
+  // A key move before the delay leaves the click's detail closed.
+  from = b.timers.length;
+  b.click("card-maple-card-layout");
+  b.keyDown("root", "j");
+  fireTimersFrom(b, from);
+  assert.equal(b.view.cursorId, "orchard-theme-sync");
+  assert.equal(b.view.detailCardId, null);
+
+  // Esc before the delay cancels the open and keeps the keyboard on the Board.
+  from = b.timers.length;
+  b.click("card-maple-card-layout");
+  b.keyDown("root", "escape");
+  fireTimersFrom(b, from);
+  assert.equal(b.view.detailCardId, null);
+  assert.ok(b.focusedOn("root"));
+  assert.ok(!b.commands.some((c) => c.name === "pane.focus"));
+
+  // Enter opens at once, and the click's delayed open does not reopen it after Esc.
+  from = b.timers.length;
+  b.click("card-maple-card-layout");
+  b.keyDown("root", "enter");
+  assert.equal(b.view.detailCardId, "maple-card-layout");
+  assert.ok(b.ids.includes("card-detail"));
+  b.keyDown("root", "escape");
+  fireTimersFrom(b, from);
+  assert.equal(b.view.detailCardId, null);
 });
 
 test("in Focus a click on a captain's call moves Focus to it like j/k, and opens no hidden detail", async () => {

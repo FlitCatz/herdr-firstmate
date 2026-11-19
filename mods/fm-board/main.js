@@ -51,6 +51,9 @@ const CARD_BAR_PX = 3;
 const FOCUS_DIM = 0.22;
 // How long the ring on a card the NEXT MOVE card line pointed to stays.
 const POINT_RING_MS = 4000;
+// A clicked Kanban card opens its detail only after this delay: the TASK DETAIL box pushes the
+// columns down, so opening at once would move a double-click's second press onto another element.
+const CARD_CLICK_DETAIL_DELAY_MS = 300;
 // The separate PR viewer mod a PR link opens when it is installed. Its panel contract: the layout's
 // `pr` block in the panel-body stack shows it, and the shared value below asks it for one PR.
 const PR_VIEWER_MOD = "herdr-pr-viewer";
@@ -1218,6 +1221,8 @@ export default class FmBoard extends View {
     this.cursorId = null;
     /** @type {string | null} */
     this.detailCardId = null;
+    /** @type {{ id: string } | null} */
+    this.pendingDetail = null;
     this.pendingInitialCursor = false;
     /** @type {string | null} */
     this.hoveredCardId = null;
@@ -2209,6 +2214,7 @@ export default class FmBoard extends View {
     this.focusId = null;
     if (this.focusMode) {
       this.detailCardId = null;
+      this.pendingDetail = null;
       this.keys.focus();
       this.moveFocus(0, cx);
     }
@@ -2317,6 +2323,7 @@ export default class FmBoard extends View {
   /** @param {any} c @param {import("gpui-kit").Context} cx */
   selectCursorCard(c, cx) {
     this.cursorId = c.id;
+    this.pendingDetail = null;
     if (this.detailCardId && this.detailCardId !== c.id) this.detailCardId = null;
     this.showCursorCard(c);
     cx.notify();
@@ -2370,6 +2377,7 @@ export default class FmBoard extends View {
 
   /** @param {any} c @param {import("gpui-kit").Context} cx */
   openCardDetail(c, cx) {
+    this.pendingDetail = null;
     if (!c) return;
     if (this.viewMode === "chains") {
       if (this.selectedCardId !== c.id) this.selectChainNode(c.id, cx);
@@ -2391,11 +2399,17 @@ export default class FmBoard extends View {
     }
     this.cursorId = c.id;
     this.keys.focus();
-    if (this.viewMode === "kanban" && this.detailCardId === c.id) {
-      cx.notify();
-      return;
+    if (this.viewMode !== "kanban") { this.openCardDetail(c, cx); return; }
+    if (this.detailCardId === c.id) this.pendingDetail = null;
+    else if (this.pendingDetail?.id !== c.id) {
+      const pending = { id: c.id };
+      this.pendingDetail = pending;
+      cx.timer.after(CARD_CLICK_DETAIL_DELAY_MS, (later) => {
+        if (this.pendingDetail !== pending) return;
+        this.openCardDetail((this.cards ?? []).find((x) => x.id === pending.id), later);
+      });
     }
-    this.openCardDetail(c, cx);
+    cx.notify();
   }
 
   /** @param {string} name @param {Record<string, unknown>} args @param {import("gpui-kit").Context | import("gpui-kit").AsyncContext} cx */
@@ -2428,7 +2442,7 @@ export default class FmBoard extends View {
     if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return false;
     if (e.key === "escape") {
       if (this.viewer.root) { this.viewer.close(cx); return true; }
-      if (this.detailCardId) { this.detailCardId = null; cx.notify(); return true; }
+      if (this.detailCardId || this.pendingDetail) { this.detailCardId = null; this.pendingDetail = null; cx.notify(); return true; }
       if (this.focusMode) { this.toggleFocus(cx); return true; }
       if (this.inspectorOpen || this.selectedCardId) { this.clearChainSelection(cx); return true; }
       if (this.pointedId) { this.pointedId = null; cx.notify(); return true; }
@@ -2536,6 +2550,7 @@ export default class FmBoard extends View {
     this.viewMode = mode;
     this.hoveredCardId = null;
     this.detailCardId = null;
+    this.pendingDetail = null;
     if (mode === "kanban" && !this.inspectorOpen) this.selectedCardId = null;
     if (mode === "chains") { this.inspectorOpen = false; this.focusMode = false; this.focusId = null; }
     try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch {}
@@ -3844,7 +3859,7 @@ export default class FmBoard extends View {
       .when(Boolean(detailCard), (e) => e.child(this.taskDetail("card-detail", detailCard.id,
         div().id("card-detail-scroll").max_h(Math.max(72, Math.round((this.size?.height ?? 600) * 0.25))).overflow_y_scroll()
           .child(this.card(detailCard, t, false)),
-        t, (cx) => { this.detailCardId = null; cx.notify(); }).flex_none()))
+        t, (cx) => { this.detailCardId = null; this.pendingDetail = null; cx.notify(); }).flex_none()))
       .child(board))
       .child(back(this.bottomGroup(t)));
     if (this.viewer.root) {

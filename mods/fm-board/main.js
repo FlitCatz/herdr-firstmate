@@ -1172,6 +1172,14 @@ function cardsFrom(snapshot) {
   return cards;
 }
 
+/**
+ * Next selected chain node after a click: single-clicking the active node toggles it off; double-click keeps it open.
+ * @param {string | null} selectedId @param {string} targetId @param {number} [clickCount]
+ */
+function chainNodeSelection(selectedId, targetId, clickCount = 1) {
+  return selectedId === targetId && clickCount < 2 ? null : targetId;
+}
+
 export default class FmBoard extends View {
   /** @param {number} px */
   fs(px) { return Math.round(px * this.fontScale * 2) / 2; }
@@ -1208,8 +1216,6 @@ export default class FmBoard extends View {
     this.selectedCardId = null;
     /** @type {string | null} */
     this.cursorId = null;
-    /** @type {string | null} */
-    this.detailCardId = null;
     this.pendingInitialCursor = false;
     /** @type {string | null} */
     this.hoveredCardId = null;
@@ -1362,17 +1368,29 @@ export default class FmBoard extends View {
         .on_click((_e, cx) => this.pickColor(name, null, cx)));
   }
 
-  toggleFold(id, cx) {
+  // Folds what is drawn open and unfolds what is drawn folded. A caller that changes the reveals
+  // first (selecting a Chains card reveals it) passes `fold` from the state it drew.
+  /** @param {string} id @param {import("gpui-kit").Context} cx @param {boolean} [fold] */
+  toggleFold(id, cx, fold = !this.folded.has(id) || this.revealed.has(id)) {
     if (this.query) return;
-    if (this.revealed.delete(id) && this.folded.has(id)) { cx.notify(); return; }
-    if (!this.folded.delete(id)) this.folded.add(id);
+    this.revealed.delete(id);
+    if (fold) this.folded.add(id); else this.folded.delete(id);
     try { localStorage.setItem(FOLDED_KEY, JSON.stringify([...this.folded])); } catch {}
     cx.notify();
   }
 
-  foldRow(id, t, folded, label, trailing) {
+  // A card's title row also selects the card, and the second press of a double-click on it keeps
+  // the first toggle instead of folding back. Focus always shows its call open, so there the row
+  // only moves Focus.
+  foldRow(id, t, folded, label, trailing, card) {
     const row = h_flex().id(`fold-${id}`).gap(6).items_center().cursor_pointer()
-      .hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggleFold(id, cx))
+      .hover((s) => s.opacity(0.75)).on_click((e, cx) => {
+        cx.stop_propagation();
+        if (!card) { this.toggleFold(id, cx); return; }
+        const focusCall = this.focusMode && needsCaptain(card);
+        this.clickCard(card, cx);
+        if ((e?.click_count ?? 1) < 2 && !focusCall) this.toggleFold(id, cx, !folded);
+      })
       .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
       .child(div().flex_1().min_w(0).when(folded, (e) => e.truncate()).text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(label));
     return trailing ? row.child(trailing) : row;
@@ -1589,7 +1607,7 @@ export default class FmBoard extends View {
   button(id, label, t, onClick, strong) {
     return div().id(id).px(6).py(2).rounded(3).cursor_pointer().text_size(this.fs(11))
       .text_color(strong ? t.solid_foreground : t.muted).bg(strong ? t.solid : t.raised)
-      .hover((s) => s.opacity(0.8)).on_click((_e, cx) => onClick(cx)).child(label);
+      .hover((s) => s.opacity(0.8)).on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
   }
 
   field(state, t) {
@@ -1773,7 +1791,7 @@ export default class FmBoard extends View {
       if (types.some((x) => IMAGE_OR_FILE_CLIPBOARD_TYPE.test(x))) {
         throw new Error("Clipboard holds an image or file, so nothing was inserted. Paste it first, then click again.");
       }
-      run("agent.focus", { terminal });
+      this.focusAway("agent.focus", { terminal }, cx);
       await new Promise((resolve) => cx.timer.after(100, () => resolve(null)));
       if (focused()?.terminal !== terminal) throw new Error("Could not focus the firstmate terminal");
       const previous = await clip("f=$(mktemp -t fm-board-clipboard) || exit 1; pbpaste > \"$f\" || { rm -f \"$f\"; exit 1; }; "
@@ -1804,16 +1822,21 @@ export default class FmBoard extends View {
 
   /** @param {string} key @param {string[]} ids @param {string} title @param {Record<string, `#${string}`>} t */
   askButton(key, ids, title, t) {
-    const cleanTitle = title.replace(/`/g, "'");
     return div().id(`ask-card-${key}`).flex_none().p(3).rounded(5).cursor_pointer()
       .hover((s) => s.bg(t.hover)).tooltip("Ask firstmate about this task")
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        this.insertCardText(`\`[Board card] ${ids.join(", ")}: ${cleanTitle}\``, cx);
+        this.askCard(ids, title, cx);
       })
       .child(div().w(this.fs(14)).h(this.fs(14)).rounded(this.fs(7)).border(1).border_color(t.muted)
         .flex().items_center().justify_center().text_size(this.fs(11)).text_color(t.muted).child("?"));
+  }
+
+  // Puts the task ids and title into the firstmate input, for the Ask icon and the `?` key.
+  /** @param {string[]} ids @param {string} title @param {import("gpui-kit").Context} cx */
+  askCard(ids, title, cx) {
+    this.insertCardText(`\`[Board card] ${ids.join(", ")}: ${title.replace(/`/g, "'")}\``, cx);
   }
 
   // A small icon-only card control in the Ask icon's style; the label is its tooltip and what a
@@ -1822,7 +1845,7 @@ export default class FmBoard extends View {
   iconButton(id, icon, label, t, onClick) {
     return div().id(id).flex_none().p(3).rounded(5).cursor_pointer().role("button").accessibility_label(label)
       .hover((s) => s.bg(t.hover)).tooltip(label)
-      .on_click((_e, cx) => onClick(cx))
+      .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); })
       .child(svg(icon).size(this.fs(14)).text_color(t.muted));
   }
 
@@ -1925,12 +1948,13 @@ export default class FmBoard extends View {
     const barColor = c.failed ? t.ansi1 : t[COLUMNS.find((k) => k.id === c.column)?.color ?? "unknown"];
     const el = v_flex().id(`card-${c.id}`).relative().gap(4).p(8).pl(8 + CARD_BAR_PX + 2).rounded(4).bg(t.background)
       .border(borderWidth).border_color(borderColor)
+      .cursor_pointer().on_click((_e, cx) => this.clickCard(c, cx))
       .child(div().id(`bar-${c.id}`).absolute().left(0).top(0).bottom(0).w(CARD_BAR_PX).rounded_l(4).bg(barColor))
       .when(focusDim && !boxDimmed, (e) => e.opacity(FOCUS_DIM))
       .when(!focusDim && dimmed, (e) => e.opacity(0.35))
       .when(!focusDim && !dimmed && waiting && !current && !role, (e) => e.opacity(0.6))
       .when(hasDeps, (e) => e.on_hover((hovered, cx) => this.hoverChainCard(c.id, hovered, cx)))
-      .child(this.foldRow(foldId, t, folded, c.title, badge)
+      .child(this.foldRow(foldId, t, folded, c.title, badge, c)
         .child(this.askButton(foldId, [c.id], c.title, t)));
     if (folded) return el;
     // The project sits on the state row so the title keeps the full card width.
@@ -2002,7 +2026,7 @@ export default class FmBoard extends View {
     if (c.pr && /^https:\/\//.test(c.pr)) {
       el.child(div().id(`pr-${c.id}`).text_size(this.fs(11)).text_color(t.accent).truncate()
         .hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => this.openPr(c.pr, c, cx))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.openPr(c.pr, c, cx); })
         .child(c.pr.replace("https://github.com/", "")));
     }
     const live = c.column !== "done";
@@ -2199,7 +2223,6 @@ export default class FmBoard extends View {
     this.focusMode = !this.focusMode;
     this.focusId = null;
     if (this.focusMode) {
-      this.detailCardId = null;
       this.keys.focus();
       this.moveFocus(0, cx);
     }
@@ -2214,7 +2237,11 @@ export default class FmBoard extends View {
     const calls = this.captainCards();
     const at = calls.findIndex((c) => c.id === this.focusId);
     const start = Math.max(0, calls.findIndex((c) => c.id === this.waitingHolds()[0]?.id));
-    const c = calls[at < 0 ? start : Math.min(calls.length - 1, Math.max(0, at + delta))];
+    this.focusCard(calls[at < 0 ? start : Math.min(calls.length - 1, Math.max(0, at + delta))], cx);
+  }
+
+  /** @param {any} c @param {import("gpui-kit").Context} cx */
+  focusCard(c, cx) {
     this.focusId = c?.id ?? null;
     if (c) {
       this.revealed = new Set([`card:${c.id}`, c.column]);
@@ -2248,9 +2275,8 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
-  // Keeps the cursor on the open detail's card, or on a drawn card, starting with the first.
+  // Keeps the cursor on a drawn card, starting with the first.
   placeCursor() {
-    if (this.detailCardId) { this.cursorId = this.detailCardId; return; }
     const cards = this.boardCards();
     const c = cards.find((x) => x.id === this.cursorId) ?? cards[0];
     this.cursorId = c?.id ?? null;
@@ -2304,7 +2330,6 @@ export default class FmBoard extends View {
   /** @param {any} c @param {import("gpui-kit").Context} cx */
   selectCursorCard(c, cx) {
     this.cursorId = c.id;
-    if (this.detailCardId && this.detailCardId !== c.id) this.detailCardId = null;
     this.showCursorCard(c);
     cx.notify();
   }
@@ -2344,7 +2369,7 @@ export default class FmBoard extends View {
   /** @param {any} c */
   showCursorCard(c) {
     if (this.viewMode === "kanban") {
-      this.revealed = new Set([c.column, ...(this.detailCardId ? [`card:${this.detailCardId}`] : [])]);
+      this.revealed = new Set([c.column]);
       if (c.decision?.topic) this.revealed.add(`group:${c.decision.topic}`);
       this.scrollToCard(c);
       return;
@@ -2355,24 +2380,38 @@ export default class FmBoard extends View {
     this.chainsScroll.scroll_to_item(lead + (laneIdx >= 0 ? laneIdx : chains.length));
   }
 
+  // Outside Focus a click on the card body only selects the card, so nothing moves under a
+  // double-click's second press; in Chains it also opens the card's detail below the lane or
+  // drawer, as Enter does.
   /** @param {any} c @param {import("gpui-kit").Context} cx */
-  openCardDetail(c, cx) {
+  clickCard(c, cx) {
     if (!c) return;
-    if (this.viewMode === "chains") {
-      if (this.selectedCardId !== c.id) this.selectChainNode(c.id, cx);
+    if (this.focusMode) {
+      if (!needsCaptain(c)) return;
+      this.keys.focus();
+      this.focusCard(c, cx);
       return;
     }
-    this.detailCardId = c.id;
-    this.showCard(c, cx);
+    this.cursorId = c.id;
+    this.keys.focus();
+    if (this.viewMode === "chains" && this.selectedCardId !== c.id) this.selectChainNode(c.id, cx);
     cx.notify();
   }
 
-  returnToTerminal() {
-    const target = focused();
-    if (target?.terminal) run("pane.focus", { terminal: target.terminal });
+  /** @param {string} name @param {Record<string, unknown>} args @param {import("gpui-kit").Context | import("gpui-kit").AsyncContext} cx */
+  focusAway(name, args, cx) {
+    run(name, args);
+    cx?.notify?.();
+    cx?.timer?.after?.(0, (later) => later.notify());
   }
 
-  // A TASK DETAIL header with a Close button above a card's detail, in Kanban and in a Chains lane.
+  /** @param {import("gpui-kit").Context} cx */
+  returnToTerminal(cx) {
+    const target = focused();
+    if (target?.terminal) this.focusAway("pane.focus", { terminal: target.terminal }, cx);
+  }
+
+  // A TASK DETAIL header with a Close button above a card's detail, in a Chains lane or the Independent drawer.
   /** @param {string} elId @param {string} id @param {any} body @param {Record<string, `#${string}`>} t @param {(cx: import("gpui-kit").Context) => void} close */
   taskDetail(elId, id, body, t, close) {
     return v_flex().id(elId).gap(6)
@@ -2389,11 +2428,10 @@ export default class FmBoard extends View {
     if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return false;
     if (e.key === "escape") {
       if (this.viewer.root) { this.viewer.close(cx); return true; }
-      if (this.detailCardId) { this.detailCardId = null; cx.notify(); return true; }
       if (this.focusMode) { this.toggleFocus(cx); return true; }
       if (this.inspectorOpen || this.selectedCardId) { this.clearChainSelection(cx); return true; }
       if (this.pointedId) { this.pointedId = null; cx.notify(); return true; }
-      this.returnToTerminal();
+      this.returnToTerminal(cx);
       return true;
     }
     if (e.key === "f" && this.viewMode === "kanban") { this.toggleFocus(cx); return true; }
@@ -2403,6 +2441,7 @@ export default class FmBoard extends View {
       if (e.key === "k" || e.key === "up") { this.moveFocus(-1, cx); return true; }
       const c = (this.cards ?? []).find((x) => x.id === this.focusId);
       if (!c) return false;
+      if (e.key_char === "?") { this.askCard([c.id], c.title, cx); return true; }
       if (e.key === "enter") {
         const ids = this.answerIds(c), rec = this.recommendedOption(this.answerDecision(c));
         if (rec) this.answerOption(ids, rec, "", cx); else this.insertCardText(answerHead(ids), cx);
@@ -2422,7 +2461,12 @@ export default class FmBoard extends View {
     }
     const c = (this.cards ?? []).find((x) => x.id === this.cursorId);
     if (!c) return false;
-    if (e.key === "enter") { this.openCardDetail(c, cx); return true; }
+    if (e.key_char === "?") { this.askCard([c.id], c.title, cx); return true; }
+    if (e.key === "enter") {
+      if (this.viewMode === "chains") { if (this.selectedCardId !== c.id) this.selectChainNode(c.id, cx); }
+      else this.toggleFold(`card:${c.id}`, cx);
+      return true;
+    }
     if (e.key === "o" && c.terminal) { this.openWorker(c, cx); return true; }
     return false;
   }
@@ -2435,7 +2479,7 @@ export default class FmBoard extends View {
     for (const o of decision.options) {
       el.child(h_flex().id(`opt-${key}-${o.label}`).gap(6).px(4).py(2).rounded(5)
         .when(answerable, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Put this answer in the firstmate input")
-          .on_click((_e, cx) => this.answerOption(ids, o, decisionKey, cx)))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.answerOption(ids, o, decisionKey, cx); }))
         .child(div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.accent).child(o.label))
         .child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.foreground).child(o.text)));
     }
@@ -2450,7 +2494,7 @@ export default class FmBoard extends View {
     const id = `open-${c.id}-${i}`;
     el.child(v_flex().id(id).gap(1).px(4).py(2).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
       .tooltip("Start an answer to this decision in the firstmate input")
-      .on_click((_e, cx) => this.insertCardText(answerHead([c.id], d.key), cx))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.insertCardText(answerHead([c.id], d.key), cx); })
       .child(h_flex().gap(6).items_center().min_w(0)
         .child(div().flex_none().text_size(this.fs(10)).font_semibold().text_color(t.blocked).child(d.verb))
         .child(div().flex_1().min_w(0).truncate().text_size(this.fs(10)).text_color(t.dim).child(d.key)))
@@ -2496,7 +2540,6 @@ export default class FmBoard extends View {
     if (this.viewMode === mode) return;
     this.viewMode = mode;
     this.hoveredCardId = null;
-    this.detailCardId = null;
     if (mode === "kanban" && !this.inspectorOpen) this.selectedCardId = null;
     if (mode === "chains") { this.inspectorOpen = false; this.focusMode = false; this.focusId = null; }
     try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch {}
@@ -2512,14 +2555,16 @@ export default class FmBoard extends View {
   }
 
   /** @param {string} id @param {import("gpui-kit").Context} cx */
-  selectChainNode(id, cx) {
-    if (this.selectedCardId === id) {
+  selectChainNode(id, cx, clickCount = 1) {
+    this.cursorId = id;
+    const next = chainNodeSelection(this.selectedCardId, id, clickCount);
+    if (next === null) {
       this.selectedCardId = null;
       this.hoveredCardId = null;
       cx.notify();
       return;
     }
-    this.selectedCardId = id;
+    this.selectedCardId = next;
     this.revealed.add(`card:${id}`);
     this.keys.focus();
     cx.notify();
@@ -2910,7 +2955,7 @@ export default class FmBoard extends View {
       .cursor_pointer().hover((s) => s.bg(t.hover))
       .tooltip(`${id}: ${node.title ?? id} · Click to highlight chain & open card detail`)
       .on_hover((hovered, cx) => this.hoverChainCard(id, hovered, cx))
-      .on_click((_e, cx) => { cx.stop_propagation(); this.selectChainNode(id, cx); });
+      .on_click((e, cx) => { cx.stop_propagation(); this.selectChainNode(id, cx, e?.click_count ?? 1); });
 
     const topRow = h_flex().h(16).gap(6).items_center().min_w(0)
       .child(node.missing
@@ -3220,9 +3265,13 @@ export default class FmBoard extends View {
     cx.spawn(async (cx) => {
       const r = await exec("hc", ["get", c.terminal, "--json"]);
       const label = r.code === 0 ? JSON.parse(r.stdout).labels?.["firstmate.task"] : null;
-      if (label === `fm-${c.id}`) { run("agent.focus", { terminal: c.terminal }); this.notice = ""; }
-      else this.notice = "Worker terminal not found";
-      cx.notify();
+      if (label === `fm-${c.id}`) {
+        this.notice = "";
+        this.focusAway("agent.focus", { terminal: c.terminal }, cx);
+      } else {
+        this.notice = "Worker terminal not found";
+        cx.notify();
+      }
     });
   }
 
@@ -3510,6 +3559,7 @@ export default class FmBoard extends View {
       .child(hint(["j", "k"], "move between your calls"))
       .child(hint(["⏎"], "answer with the recommended option"))
       .child(hint(["o"], "open worker"))
+      .child(hint(["?"], "ask firstmate"))
       .child(hint(["Esc"], "leave Focus"));
   }
 
@@ -3707,8 +3757,15 @@ export default class FmBoard extends View {
 
   // Matches the terminal pane's 1 px rounded perimeter frame so focus changes border color without layout shift.
   panelFrame(el, t) {
+    const focused = this.panelFocused();
+    // gpui-kit offers no blur event on a FocusHandle; mouse_down_out and panel key_down can fire
+    // before focus finishes leaving, so defer one tick to redraw with the updated panelFocused().
+    const deferRedraw = (_e, cx) => { cx.timer.after(0, (later) => later.notify()); };
     return v_flex().id("panel-frame").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.canvas)
-      .border(1).border_color(this.panelFocused() ? t.accent : t.border)
+      .border(1).border_color(focused ? t.accent : t.border)
+      .when(focused, (frame) => frame
+        .on_mouse_down_out(deferRedraw)
+        .on_key_down(deferRedraw))
       .child(el);
   }
 
@@ -3753,9 +3810,6 @@ export default class FmBoard extends View {
     const narrowMod = modWidth - this.inspectorWidth(modWidth) < STACK_BELOW_PX;
     const isChains = this.viewMode === "chains";
     const inspectorShown = !isChains && this.inspectorOpen;
-    const detailCard = !isChains && !this.focusMode && this.detailCardId
-      ? ((this.cards ?? []).find((c) => c.id === this.detailCardId) ?? null)
-      : null;
     const matches = this.query ? this.matchIds() : [];
     this.currentMatch = matches.length ? matches[this.matchAt % matches.length] : null;
     const board = isChains
@@ -3789,10 +3843,6 @@ export default class FmBoard extends View {
       .child(this.searchRow(t, matches))
       .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))
-      .when(Boolean(detailCard), (e) => e.child(this.taskDetail("card-detail", detailCard.id,
-        div().id("card-detail-scroll").max_h(Math.max(72, Math.round((this.size?.height ?? 600) * 0.25))).overflow_y_scroll()
-          .child(this.card(detailCard, t, false)),
-        t, (cx) => { this.detailCardId = null; cx.notify(); }).flex_none()))
       .child(board))
       .child(back(this.bottomGroup(t)));
     if (this.viewer.root) {

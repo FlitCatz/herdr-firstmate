@@ -2220,7 +2220,11 @@ export default class FmBoard extends View {
     const calls = this.captainCards();
     const at = calls.findIndex((c) => c.id === this.focusId);
     const start = Math.max(0, calls.findIndex((c) => c.id === this.waitingHolds()[0]?.id));
-    const c = calls[at < 0 ? start : Math.min(calls.length - 1, Math.max(0, at + delta))];
+    this.focusCard(calls[at < 0 ? start : Math.min(calls.length - 1, Math.max(0, at + delta))], cx);
+  }
+
+  /** @param {any} c @param {import("gpui-kit").Context} cx */
+  focusCard(c, cx) {
     this.focusId = c?.id ?? null;
     if (c) {
       this.revealed = new Set([`card:${c.id}`, c.column]);
@@ -2376,6 +2380,12 @@ export default class FmBoard extends View {
   /** @param {any} c @param {import("gpui-kit").Context} cx */
   clickCard(c, cx) {
     if (!c) return;
+    if (this.focusMode) {
+      if (!needsCaptain(c)) return;
+      this.keys.focus();
+      this.focusCard(c, cx);
+      return;
+    }
     this.cursorId = c.id;
     this.keys.focus();
     if (this.viewMode === "kanban" && this.detailCardId === c.id) {

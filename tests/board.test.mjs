@@ -3655,6 +3655,39 @@ test("clicking or double-clicking a Kanban card moves cursor, focuses Board, ope
   }
 });
 
+test("in Focus a click on a captain's call moves Focus to it like j/k, and opens no hidden detail", async () => {
+  const b = await board();
+  b.click("focus-toggle");
+  assert.equal(b.view.focusId, "maple-icon-set");
+  const cursorBefore = b.view.cursorId;
+
+  b.click("card-maple-tour-sketch");
+  assert.equal(b.view.focusId, "maple-tour-sketch");
+  assert.equal(b.view.detailCardId, null);
+  assert.equal(b.view.cursorId, cursorBefore);
+  assert.ok(b.focusedOn("root"));
+  // j continues from the clicked call, as it would after reaching it with j.
+  b.keyDown("root", "j");
+  assert.equal(b.view.focusId, "maple-empty-state");
+
+  // A card that is not a captain's call stays out of reach in Focus, as it is for j/k.
+  b.click("card-maple-preview-screen");
+  assert.equal(b.view.focusId, "maple-empty-state");
+  assert.equal(b.view.detailCardId, null);
+
+  // One Esc leaves Focus; no detail was hiding behind it.
+  b.keyDown("root", "escape");
+  assert.equal(b.view.focusMode, false);
+  assert.ok(!b.ids.includes("card-detail"));
+
+  // Leaving Focus with f after a click does not pop up a detail either.
+  b.keyDown("root", "f");
+  b.click("card-maple-icon-set");
+  b.keyDown("root", "f");
+  assert.equal(b.view.focusMode, false);
+  assert.ok(!b.ids.includes("card-detail"));
+});
+
 test("chainNodeSelection keeps double-click open and Chains node click updates cursor", async () => {
   const b = await board({ ui: { viewMode: "chains" } });
   assert.equal(b.chainNodeSelection(null, "A", 1), "A");

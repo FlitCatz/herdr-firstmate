@@ -57,7 +57,7 @@ Esc, or Enter or the icon with an empty field, restores the full board and the r
 Cards show their project, priority when present, the task's state, and available detail.
 Firstmate's validation detail reads as short text such as `Validating: running`, `Waiting for a firstmate decision at review`, or `Checks passed · PR ready for review`, without run ids or the PR link, which the card shows separately, taking it from Firstmate's detail when the worker never reported one; other detail keeps Firstmate's own text without run ids, and shows the worker's last status text only when nothing else is left.
 The search still matches Firstmate's original detail text.
-Clicking a card header folds it; its question-mark icon puts the task id and full title into the Firstmate chat input without pressing Enter.
+Clicking a card header folds or unfolds it, selects the card, and moves keyboard focus onto the Board; the second press of a double-click there keeps the first toggle. Its question-mark icon puts the task id and full title into the Firstmate chat input without pressing Enter.
 Topic-group headers have the same icon for all their task ids and the group question.
 The board derives reverse dependencies (`blocks` and `blocksCount`), topological levels (with a cycle guard), cross-project joins, and connected chain components from `unresolved_blocker_ids` across all cards without changing the snapshot format.
 Cards in every column show `★ Blocks N →` when downstream tasks wait on them and `← Waits on …` when they wait on unfinished blockers; queued cards that still wait on other work are dimmed until highlighted.
@@ -90,7 +90,7 @@ Focus dims everything except the captain's calls (holds to answer now and failed
 Outside Focus mode, `fm-board` is focusable (`"focusable": true` in `mod.json`) and accepts `focus` via `nextCommand()` (from `fm-board.focus` or `pane.go`):
 - `j`/`k` or `Down`/`Up` move selection within the current column in Kanban (stopping at its first and last card) or across all drawn cards in Chains, ringing the selected card in the accent color and scrolling to it.
 - `h`/`l` or `Left`/`Right` in Kanban move selection to the previous/next non-empty expanded column at the same position (or its last card when the column is shorter), skipping collapsed and empty columns; when nothing is selected yet, any of `h`/`j`/`k`/`l` or arrow keys selects the first card of the first non-empty expanded column.
-- `Enter` folds or unfolds the selected card in Kanban, as clicking its header does, and opens `#chain-detail` in Chains; it never answers any decision. Clicking or double-clicking a Kanban card selects it and moves keyboard focus onto the Board without changing the layout, so a double-click's second press lands on the same card.
+- `Enter` folds or unfolds the selected card in Kanban, as clicking its header does, and opens `#chain-detail` in Chains; it never answers any decision. Clicking or double-clicking a Kanban card's body selects it and moves keyboard focus onto the Board without changing its fold or the layout, so a double-click's second press lands on the same card.
 - `?` puts the selected card's id and title into the Firstmate chat input, as its question-mark icon does.
 - `o` opens the selected card's worker terminal.
 - `Esc` closes any open view first (Files · Changes viewer, Focus mode, Dependency Inspector / Chains detail, or NEXT MOVE ring), and when nothing is open returns keyboard focus to the terminal that last had it (`pane.focus`).

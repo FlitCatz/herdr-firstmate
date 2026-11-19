@@ -3650,6 +3650,38 @@ test("clicking or double-clicking a Kanban card only selects it and focuses the 
   }
 });
 
+test("clicking a card's title folds or unfolds it once, selects it, and focuses the Board, even on a double-click", async () => {
+  const b = await board();
+  assert.ok(b.ids.includes("state-maple-card-layout"));
+  assert.ok(!b.focusedOn("root"));
+
+  b.click("fold-card:maple-card-layout");
+  assert.ok(!b.ids.includes("state-maple-card-layout"));
+  assert.equal(b.view.cursorId, "maple-card-layout");
+  assert.ok(b.focusedOn("root"));
+  b.click("fold-card:maple-card-layout", { click_count: 2 });
+  assert.ok(!b.ids.includes("state-maple-card-layout"), "the second press of a double-click keeps the fold");
+
+  // A folded card shows only its title row: clicking it unfolds it and moves the cursor there.
+  b.click("card-orchard-theme-sync");
+  assert.equal(b.view.cursorId, "orchard-theme-sync");
+  b.click("fold-card:maple-card-layout");
+  assert.ok(b.ids.includes("state-maple-card-layout"));
+  assert.equal(b.view.cursorId, "maple-card-layout");
+  b.click("fold-card:maple-card-layout", { click_count: 2 });
+  assert.ok(b.ids.includes("state-maple-card-layout"), "the second press of a double-click keeps it open");
+
+  // Enter then folds the card that was clicked, as its title does.
+  b.keyDown("root", "enter");
+  assert.ok(!b.ids.includes("state-maple-card-layout"));
+
+  // In Focus a call's title moves Focus to it like j/k and leaves the saved folds alone.
+  b.click("focus-toggle");
+  b.click("fold-card:maple-tour-sketch");
+  assert.equal(b.view.focusId, "maple-tour-sketch");
+  assert.ok(!b.view.folded.has("card:maple-tour-sketch"));
+});
+
 test("? puts the selected or focused card in the firstmate input like its Ask icon", async () => {
   const b = await board();
   b.click("card-maple-card-layout");

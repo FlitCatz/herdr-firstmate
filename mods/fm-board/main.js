@@ -1376,9 +1376,18 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
-  foldRow(id, t, folded, label, trailing) {
+  // A card's title row also selects the card, and the second press of a double-click on it keeps
+  // the first toggle instead of folding back. Focus always shows its call open, so there the row
+  // only moves Focus.
+  foldRow(id, t, folded, label, trailing, card) {
     const row = h_flex().id(`fold-${id}`).gap(6).items_center().cursor_pointer()
-      .hover((s) => s.opacity(0.75)).on_click((_e, cx) => { cx.stop_propagation(); this.toggleFold(id, cx); })
+      .hover((s) => s.opacity(0.75)).on_click((e, cx) => {
+        cx.stop_propagation();
+        if (!card) { this.toggleFold(id, cx); return; }
+        const focusCall = this.focusMode && needsCaptain(card);
+        if ((e?.click_count ?? 1) < 2 && !focusCall) this.toggleFold(id, cx);
+        this.clickCard(card, cx);
+      })
       .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
       .child(div().flex_1().min_w(0).when(folded, (e) => e.truncate()).text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(label));
     return trailing ? row.child(trailing) : row;
@@ -1942,7 +1951,7 @@ export default class FmBoard extends View {
       .when(!focusDim && dimmed, (e) => e.opacity(0.35))
       .when(!focusDim && !dimmed && waiting && !current && !role, (e) => e.opacity(0.6))
       .when(hasDeps, (e) => e.on_hover((hovered, cx) => this.hoverChainCard(c.id, hovered, cx)))
-      .child(this.foldRow(foldId, t, folded, c.title, badge)
+      .child(this.foldRow(foldId, t, folded, c.title, badge, c)
         .child(this.askButton(foldId, [c.id], c.title, t)));
     if (folded) return el;
     // The project sits on the state row so the title keeps the full card width.
@@ -2368,8 +2377,9 @@ export default class FmBoard extends View {
     this.chainsScroll.scroll_to_item(lead + (laneIdx >= 0 ? laneIdx : chains.length));
   }
 
-  // Outside Focus a click only selects the card, so nothing moves under a double-click's second
-  // press; in Chains it also opens the card's detail below the lane or drawer, as Enter does.
+  // Outside Focus a click on the card body only selects the card, so nothing moves under a
+  // double-click's second press; in Chains it also opens the card's detail below the lane or
+  // drawer, as Enter does.
   /** @param {any} c @param {import("gpui-kit").Context} cx */
   clickCard(c, cx) {
     if (!c) return;

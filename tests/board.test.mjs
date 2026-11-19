@@ -3566,3 +3566,39 @@ test("Board panel-frame matches the terminal pane border and switches to accent 
   assert.ok(frame.childIds.includes("root") && frame.childIds.includes("inspector-wrap"));
   assert.deepEqual(borderState(), { width: 1, radius: 10, color: theme.accent });
 });
+
+test("Board panel-frame schedules a next-frame redraw on mouse_down_out while focused so clicking away clears the accent border", async () => {
+  const theme = { accent: "#1f62d0", border: "#dddddd", canvas: "#f7f7f7" };
+  const b = await board({ theme });
+  const frameCalls = () => b.items.find((x) => x.id === "panel-frame").calls;
+  const frameColor = () => frameCalls().findLast((c) => c[0] === "border_color")?.[1];
+  const mouseDownOut = () => frameCalls().findLast((c) => c[0] === "on_mouse_down_out")?.[1];
+
+  assert.equal(frameColor(), theme.border);
+  assert.equal(mouseDownOut(), undefined);
+
+  b.sendCommand("focus");
+  assert.equal(frameColor(), theme.accent);
+  const handler = mouseDownOut();
+  assert.equal(typeof handler, "function");
+
+  let notified = 0;
+  const timersBefore = b.timers.length;
+  const afterCalls = [];
+  const pressCx = {
+    notify() { notified += 1; },
+    timer: { after(ms, fn) { afterCalls.push({ ms, fn }); b.timers.push({ ms, fn }); } },
+  };
+  handler({}, pressCx);
+  assert.equal(notified, 0);
+  assert.equal(b.timers.length, timersBefore + 1);
+  assert.equal(afterCalls[0].ms, 0);
+
+  // Focus moves to the clicked pane before the next-frame callback notifies and redraws.
+  b.focused.push({});
+  b.timers.at(-1).fn({ notify() { notified += 1; } });
+  assert.equal(notified, 1);
+  b.redraw();
+  assert.equal(frameColor(), theme.border);
+  assert.equal(mouseDownOut(), undefined);
+});

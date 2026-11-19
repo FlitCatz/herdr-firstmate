@@ -191,12 +191,27 @@ test("Finding 1: FolderViewer marks symlinks as non-clickable links, blocks dire
     assert.ok(changedPaths.includes("inside.js"), "selected subpath change is included");
     assert.ok(!changedPaths.some((p) => p.includes("sibling.js")), "parent/sibling repo changes must be excluded");
 
-    if (changedPaths.includes("link-file.txt")) {
-      v.view.pickChange("link-file.txt", v.cx);
-      await v.settle();
-      const diffText = v.view.rows.map((r) => r.text).join("\n");
-      assert.equal(diffText.includes("OUTSIDE_SECRET_CONTENT"), false, "untracked symlink diff must not leak outside file");
-    }
+    assert.ok(changedPaths.includes("link-file.txt"), "untracked symlink is listed in Changes");
+    v.view.pickChange("link-file.txt", v.cx);
+    await v.settle();
+    const diffText = v.view.rows.map((r) => r.text).join("\n");
+    assert.equal(diffText.includes("OUTSIDE_SECRET_CONTENT"), false, "untracked symlink diff must not leak outside file");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Finding 1: Files lists a folder whose last glob match is a ..-prefixed name", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fm-viewer-dotdot-"));
+  try {
+    await writeFile(join(dir, "a"), "a\n");
+    await writeFile(join(dir, "..env"), "SECRET=1\n");
+    const v = await createViewer();
+    v.view.target(dir, "dotdot", v.cx);
+    await v.settle();
+    const ids = v.render().map((x) => x.id);
+    assert.ok(ids.includes("vf-a"), "regular file is listed");
+    assert.ok(ids.includes("vf-..env"), "..-prefixed file is listed");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -476,13 +491,30 @@ test("Finding 2: dependency graph and chain layouts are reused across non-snapsh
   assert.equal(g.nodes.get("c0").blocksCount, 1499);
   assert.equal(g.nodes.get("c750").blocksCount, 749);
   assert.equal(g.nodes.get("c1499").blocksCount, 0);
-  // Upstream/downstream lists should not be eagerly materialized on non-selected nodes.
-  const desc = Object.getOwnPropertyDescriptor(g.nodes.get("c10"), "blocks");
-  assert.equal(typeof desc?.get, "function", "blocks should be lazy rather than eagerly built for all N nodes");
   const hl = b.chainHighlight(g, "c750", null);
   assert.equal(hl.roles.get("c749"), "upstream");
   assert.equal(hl.roles.get("c750"), "selected");
   assert.equal(hl.roles.get("c751"), "downstream");
+});
+
+test("Finding 2: blocksCount on a dependency cycle counts each other cycle member once", async () => {
+  const b = await createBoard();
+  const cycleCard = (id, waitsOn) => ({ id, title: id, project: "maple-workshop", column: "queued", waitingIds: [waitsOn] });
+  // A cycle of size k: every member transitively blocks the other k - 1 members, never itself.
+  const three = b.dependencyGraph([cycleCard("A", "B"), cycleCard("B", "C"), cycleCard("C", "A")]);
+  for (const id of ["A", "B", "C"]) assert.equal(three.nodes.get(id).blocksCount, 2, `${id} in a 3-cycle`);
+  const four = b.dependencyGraph([cycleCard("A", "B"), cycleCard("B", "C"), cycleCard("C", "D"), cycleCard("D", "A")]);
+  for (const id of ["A", "B", "C", "D"]) assert.equal(four.nodes.get(id).blocksCount, 3, `${id} in a 4-cycle`);
+  assert.equal(four.components[0].maxBlocks, 3);
+  // A tail hanging off the 3-cycle: T waits on A, so A..C each also block T; T blocks nothing.
+  const tail = b.dependencyGraph([cycleCard("A", "B"), cycleCard("B", "C"), cycleCard("C", "A"), cycleCard("T", "A")]);
+  for (const id of ["A", "B", "C"]) assert.equal(tail.nodes.get(id).blocksCount, 3, `${id} in a 3-cycle with a tail`);
+  assert.equal(tail.nodes.get("T").blocksCount, 0);
+  const hl = b.chainHighlight(four, "B", null);
+  assert.equal(hl.roles.get("B"), "selected");
+  assert.equal(hl.roles.get("A"), "upstream");
+  assert.equal(hl.roles.get("C"), "upstream");
+  assert.equal(hl.roles.get("D"), "upstream");
 });
 
 test("Finding 3: pasteToFirstmate checks macOS pasteboard changeCount and skips restore when clipboard changed", async () => {
@@ -624,4 +656,35 @@ test("Finding 7: invalid or non-HTTPS PR URLs are hidden on cards/nodes and reje
   await b.settle();
   assert.deepEqual(opened, [], "openPr must never call open on invalid/file URL");
   assert.match(b.view.notice, /Cannot open PR/);
+});
+
+test("Finding 7: a PR URL in task detail survives trailing punctuation and earlier non-PR URLs", async () => {
+  const opened = [];
+  const exec = async (cmd, args = []) => {
+    if (cmd === "open") opened.push(args[0]);
+    return { code: 1, stdout: "", stderr: "" };
+  };
+  const doneTask = (id, detail) => ({
+    id, kind: "ship", project: `${HOME}/projects/maple-workshop`, branch: `fm/${id}`, harness: "codex", backend: "hc",
+    mode: "no-mistakes", yolo: false, spawn_gen: "s1", remote: "origin", secondmate_projects: [],
+    paths: { home: HOME, meta: "", status_log: "", worktree: { path: "", present: false }, report: { path: "", present: false } },
+    current_state: { state: "done", source: "pane", detail, raw: "", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+    endpoint: { target: null, exists: false, agent_alive: "not_checked", status: "absent", observed_at: "2026-11-13T03:46:13Z", freshness: "fresh" },
+    pr: { url: null, source: "absent", head: null },
+    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: "" },
+    actions: { watch: "", steer: "", return_channel_note: null },
+  });
+  const snap = structuredClone(baseSnapshot);
+  snap.tasks.push(
+    doneTask("semicolon-pr", "checks green for https://github.com/o/r/pull/52; resume later"),
+    doneTask("paren-pr", "checks green (https://github.com/o/r/pull/5)"),
+    doneTask("ci-first-pr", "CI https://github.com/o/r/actions/runs/123 passed for https://github.com/o/r/pull/53"),
+  );
+  const b = await createBoard({ exec, snapshot: snap });
+  for (const id of ["semicolon-pr", "paren-pr", "ci-first-pr"]) assert.ok(b.ids.includes(`pr-${id}`), `${id} shows its PR link`);
+  b.click("pr-semicolon-pr");
+  b.click("pr-paren-pr");
+  b.click("pr-ci-first-pr");
+  await b.settle();
+  assert.deepEqual(opened, ["https://github.com/o/r/pull/52", "https://github.com/o/r/pull/5", "https://github.com/o/r/pull/53"]);
 });

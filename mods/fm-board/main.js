@@ -480,9 +480,14 @@ function validPrUrl(raw) {
 
 // The PR URL in Firstmate's detail, which it adds when the worker never reported one.
 function detailPr(detail) {
-  const parts = (detail ?? "").split(" · ").map((p) => p.trim());
-  const raw = parts.find((p) => p.startsWith("pr="))?.slice(3) || /https:\/\/\S+/.exec(detail ?? "")?.[0] || null;
-  return validPrUrl(raw);
+  const text = detail ?? "";
+  const tagged = text.split(" · ").map((p) => p.trim()).find((p) => p.startsWith("pr="))?.slice(3);
+  const urls = Array.from(text.matchAll(/https:\/\/\S+/g), (m) => m[0].replace(/[)\]}>.,;:!?'"]+$/, ""));
+  for (const raw of [tagged, ...urls]) {
+    const url = validPrUrl(raw);
+    if (url) return url;
+  }
+  return null;
 }
 
 function columnOf(record, task) {
@@ -497,7 +502,7 @@ function columnOf(record, task) {
   // Codex on hc never reports its own state; fall back to the worker's last status event.
   if (state === "unknown") {
     const last = /^([a-z-]+)/.exec(task?.hints?.last_event_text ?? "")?.[1];
-    if (last === "done") return validPrUrl(task?.pr?.url) || branchReady(record, task) ? "review" : "paused";
+    if (last === "done") return task?.pr?.url || branchReady(record, task) ? "review" : "paused";
     if (last === "needs-decision") return "parked";
     if (last === "blocked" || last === "paused" || last === "working") return last;
     if (last === "resolved") return "working";
@@ -538,7 +543,7 @@ function answerHead(ids, key = "") {
 // Done means the worker finished, not that its PR landed. Teardown moves landed
 // work to the backlog's Done section, so a live done task with an unmerged PR is waiting.
 function prWaiting(record, task) {
-  if (task?.current_state?.state !== "done" || !validPrUrl(task?.pr?.url)) return false;
+  if (task?.current_state?.state !== "done" || !task?.pr?.url) return false;
   if (record?.state === "done" || record?.merged) return false;
   return !/\b(merged|closed)\b/i.test(task.current_state.detail ?? "");
 }
@@ -549,7 +554,7 @@ function prWaiting(record, task) {
 function branchReady(record, task) {
   if (task?.mode !== "local-only" || (task?.kind && task.kind !== "ship")) return false;
   if (record?.state === "done" || record?.merged) return false;
-  if (validPrUrl(task?.pr?.url)) return false;
+  if (task?.pr?.url) return false;
   const state = task?.current_state?.state;
   if (state === "done") return true;
   if (state === "unknown") return /^([a-z-]+)/.exec(task?.hints?.last_event_text ?? "")?.[1] === "done";
@@ -586,7 +591,7 @@ function collectReach(nodesMap, startId, edgeField) {
 }
 
 // Derives reverse dependencies (blockingIds, transitive downstream counts, levels, and components).
-// Ancestor and descendant ID lists are computed lazily or on demand for the selected/hovered card.
+// Ancestor and descendant ID lists are computed on demand for the selected/hovered card.
 function dependencyGraph(cards) {
   /** @type {Map<string, any>} */
   const byId = new Map();
@@ -638,40 +643,10 @@ function dependencyGraph(cards) {
     return d;
   };
   for (const id of byId.keys()) computeLevel(id);
-  const blocksCounts = new Map();
-  const countBlocks = (id) => {
-    if (blocksCounts.has(id)) return blocksCounts.get(id);
-    if (cycleNodes.has(id)) {
-      const n = collectReach(byId, id, "blockingIds").length;
-      blocksCounts.set(id, n);
-      return n;
-    }
-    const succ = byId.get(id)?.blockingIds ?? [];
-    let n;
-    if (succ.length === 0) n = 0;
-    else if (succ.length === 1) n = 1 + countBlocks(succ[0]);
-    else n = collectReach(byId, id, "blockingIds").length;
-    blocksCounts.set(id, n);
-    return n;
-  };
-  for (const [id, c] of byId) {
-    c.blocksCount = countBlocks(id);
-    c.crossProjectBlockers = c.waitingIds.filter((u) => {
-      const upProj = byId.get(u)?.project;
-      return Boolean(c.project && upProj && c.project !== upProj);
-    });
-    let upCache = null, downCache = null, downTitlesCache = null;
-    Object.defineProperties(c, {
-      upstreamIds: { configurable: true, enumerable: true, get: () => (upCache ??= collectReach(byId, id, "waitingIds")) },
-      blocks: { configurable: true, enumerable: true, get: () => (downCache ??= collectReach(byId, id, "blockingIds")) },
-      blocksOn: { configurable: true, enumerable: true, get: () => (downTitlesCache ??= c.blocks.map((d) => byId.get(d)?.title ?? d)) },
-    });
-  }
   /** @type {Set<string>} */
   const visitedComp = new Set();
-  /** @type {any[]} */
-  const rawComponents = [];
-  const orderIndex = new Map([...byId.keys()].map((id, i) => [id, i]));
+  /** @type {string[][]} */
+  const memberLists = [];
   for (const [id, c] of byId) {
     if (visitedComp.has(id) || (!c.waitingIds.length && !c.blockingIds.length)) continue;
     /** @type {string[]} */
@@ -690,6 +665,36 @@ function dependencyGraph(cards) {
         }
       }
     }
+    memberLists.push(memberIds);
+  }
+  const cyclicIds = new Set(memberLists.filter((ids) => ids.some((m) => cycleNodes.has(m))).flat());
+  const blocksCounts = new Map();
+  const countBlocks = (id) => {
+    if (blocksCounts.has(id)) return blocksCounts.get(id);
+    if (cyclicIds.has(id)) {
+      const n = collectReach(byId, id, "blockingIds").length;
+      blocksCounts.set(id, n);
+      return n;
+    }
+    const succ = byId.get(id)?.blockingIds ?? [];
+    let n;
+    if (succ.length === 0) n = 0;
+    else if (succ.length === 1) n = 1 + countBlocks(succ[0]);
+    else n = collectReach(byId, id, "blockingIds").length;
+    blocksCounts.set(id, n);
+    return n;
+  };
+  for (const [id, c] of byId) {
+    c.blocksCount = countBlocks(id);
+    c.crossProjectBlockers = c.waitingIds.filter((u) => {
+      const upProj = byId.get(u)?.project;
+      return Boolean(c.project && upProj && c.project !== upProj);
+    });
+  }
+  /** @type {any[]} */
+  const rawComponents = [];
+  const orderIndex = new Map([...byId.keys()].map((id, i) => [id, i]));
+  for (const memberIds of memberLists) {
     memberIds.sort((a, b) => (orderIndex.get(a) ?? 0) - (orderIndex.get(b) ?? 0));
     const minLevel = Math.min(...memberIds.map((m) => levels.get(m) ?? 0));
     /** @type {Map<number, string[]>} */
@@ -730,7 +735,7 @@ function dependencyGraph(cards) {
     const roots = levelGroups[0]?.ids ?? [memberIds[0]];
     const crossProjectEdges = levelGroups.flatMap((g) => g.crossProjectEdges);
     const joins = levelGroups.flatMap((g) => g.joinNodes);
-    const hasCycle = memberIds.some((m) => cycleNodes.has(m));
+    const hasCycle = cyclicIds.has(memberIds[0]);
     const maxBlocks = Math.max(0, ...memberIds.map((m) => byId.get(m)?.blocksCount ?? 0));
     rawComponents.push({
       roots,

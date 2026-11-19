@@ -32,7 +32,7 @@ const DIRECTORY_SCRIPT = `${PATH_GUARD}; [ -d "$cur" ] || exit 2; `
   + 'n=0; for p in "$cur"/* "$cur"/.[!.]* "$cur"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; '
   + 'name=${p##*/}; [ "$name" = .git ] && continue; '
   + 'if [ -L "$p" ]; then kind=l; elif [ -d "$p" ]; then kind=d; else kind=f; fi; '
-  + 'printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done';
+  + 'printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; exit 0';
 
 const SAFE_FILE_SCRIPT = `${PATH_GUARD}; [ -n "$rel" ] || exit 3; [ -e "$cur" ] || exit 5; [ ! -d "$cur" ] || exit 6; `
   + 'parent=${cur%/*}; real_parent=$(cd -P -- "$parent" 2>/dev/null && pwd -P) || exit 2; '

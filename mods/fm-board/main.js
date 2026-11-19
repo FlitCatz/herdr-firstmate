@@ -1368,10 +1368,13 @@ export default class FmBoard extends View {
         .on_click((_e, cx) => this.pickColor(name, null, cx)));
   }
 
-  toggleFold(id, cx) {
+  // Folds what is drawn open and unfolds what is drawn folded. A caller that changes the reveals
+  // first (selecting a Chains card reveals it) passes `fold` from the state it drew.
+  /** @param {string} id @param {import("gpui-kit").Context} cx @param {boolean} [fold] */
+  toggleFold(id, cx, fold = !this.folded.has(id) || this.revealed.has(id)) {
     if (this.query) return;
-    if (this.revealed.delete(id) && this.folded.has(id)) { cx.notify(); return; }
-    if (!this.folded.delete(id)) this.folded.add(id);
+    this.revealed.delete(id);
+    if (fold) this.folded.add(id); else this.folded.delete(id);
     try { localStorage.setItem(FOLDED_KEY, JSON.stringify([...this.folded])); } catch {}
     cx.notify();
   }
@@ -1385,8 +1388,8 @@ export default class FmBoard extends View {
         cx.stop_propagation();
         if (!card) { this.toggleFold(id, cx); return; }
         const focusCall = this.focusMode && needsCaptain(card);
-        if ((e?.click_count ?? 1) < 2 && !focusCall) this.toggleFold(id, cx);
         this.clickCard(card, cx);
+        if ((e?.click_count ?? 1) < 2 && !focusCall) this.toggleFold(id, cx, !folded);
       })
       .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
       .child(div().flex_1().min_w(0).when(folded, (e) => e.truncate()).text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(label));

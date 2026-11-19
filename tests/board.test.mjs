@@ -3682,6 +3682,25 @@ test("clicking a card's title folds or unfolds it once, selects it, and focuses 
   assert.ok(!b.view.folded.has("card:maple-tour-sketch"));
 });
 
+test("clicking an Independent drawer card's title in Chains selects it and folds or unfolds it as drawn", async () => {
+  const b = await board({ ui: { viewMode: "chains" } });
+  b.click("head-independent");
+  const x = b.view.independentCards()[0].id;
+  assert.ok(b.ids.includes(`state-${x}`));
+  assert.notEqual(b.view.selectedCardId, x);
+
+  b.click(`fold-card:${x}`);
+  assert.equal(b.view.selectedCardId, x);
+  assert.equal(b.view.cursorId, x);
+  assert.ok(b.focusedOn("root"));
+  assert.ok(!b.ids.includes(`state-${x}`), "the click folds the card it selected, in the drawer and its detail");
+  assert.ok(b.view.folded.has(`card:${x}`));
+
+  b.click(`fold-card:${x}`);
+  assert.ok(b.ids.includes(`state-${x}`));
+  assert.ok(!b.view.folded.has(`card:${x}`));
+});
+
 test("? puts the selected or focused card in the firstmate input like its Ask icon", async () => {
   const b = await board();
   b.click("card-maple-card-layout");

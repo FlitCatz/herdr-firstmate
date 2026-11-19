@@ -3753,13 +3753,14 @@ export default class FmBoard extends View {
   // Matches the terminal pane's 1 px rounded perimeter frame so focus changes border color without layout shift.
   panelFrame(el, t) {
     const focused = this.panelFocused();
+    // gpui-kit offers no blur event on a FocusHandle; mouse_down_out and panel key_down can fire
+    // before focus finishes leaving, so defer one tick to redraw with the updated panelFocused().
+    const deferRedraw = (_e, cx) => { cx.timer.after(0, (later) => later.notify()); };
     return v_flex().id("panel-frame").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.canvas)
       .border(1).border_color(focused ? t.accent : t.border)
-      // gpui-kit offers no blur event on a FocusHandle; capture-phase mouse_down_out fires before
-      // the clicked pane moves focus, so defer one tick to redraw with the updated panelFocused().
-      .when(focused, (frame) => frame.on_mouse_down_out((_e, cx) => {
-        cx.timer.after(0, (later) => later.notify());
-      }))
+      .when(focused, (frame) => frame
+        .on_mouse_down_out(deferRedraw)
+        .on_key_down(deferRedraw))
       .child(el);
   }
 

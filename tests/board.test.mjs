@@ -3737,3 +3737,46 @@ test("Board Esc returnToTerminal and openWorker redraw immediately and on next t
   b.redraw();
   assert.equal(frameColor(), theme.border);
 });
+
+test("Board panel-frame schedules a next-frame redraw on key_down while focused without swallowing keys", async () => {
+  const theme = { accent: "#1f62d0", border: "#dddddd", canvas: "#f7f7f7" };
+  const b = await board({ theme });
+  const frameCalls = () => b.items.find((x) => x.id === "panel-frame").calls;
+  const frameColor = () => frameCalls().findLast((c) => c[0] === "border_color")?.[1];
+  const frameKeyDown = () => frameCalls().findLast((c) => c[0] === "on_key_down")?.[1];
+
+  assert.equal(frameColor(), theme.border);
+  assert.equal(frameKeyDown(), undefined);
+
+  b.sendCommand("focus");
+  assert.equal(frameColor(), theme.accent);
+  const handler = frameKeyDown();
+  assert.equal(typeof handler, "function");
+
+  let notified = 0;
+  let stopped = 0;
+  const timersBefore = b.timers.length;
+  const afterCalls = [];
+  const keyCx = {
+    notify() { notified += 1; },
+    stop_propagation() { stopped += 1; },
+    timer: { after(ms, fn) { afterCalls.push({ ms, fn }); b.timers.push({ ms, fn }); } },
+  };
+  handler({ key: "left", modifiers: { platform: true, alt: true } }, keyCx);
+  assert.equal(stopped, 0);
+  assert.equal(notified, 0);
+  assert.equal(b.timers.length, timersBefore + 1);
+  assert.equal(afterCalls[0].ms, 0);
+
+  // Root key handler also lets unhandled pane-navigation modifiers pass through to panel-frame.
+  b.items.find((x) => x.id === "root").keyDown({ key: "left", modifiers: { platform: true, alt: true } }, keyCx);
+  assert.equal(stopped, 0);
+
+  // Once focus moves out before the next tick, the deferred notify clears the accent border.
+  b.focused.push({});
+  b.timers.at(-1).fn({ notify() { notified += 1; } });
+  assert.equal(notified, 1);
+  b.redraw();
+  assert.equal(frameColor(), theme.border);
+  assert.equal(frameKeyDown(), undefined);
+});

@@ -163,9 +163,9 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout,
     chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor,
     CHAIN_CARD_W, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
-    waitingLabel, blocksLabel,
+    waitingLabel, blocksLabel, chainNodeSelection,
   } = vm.runInNewContext(
-    `${source}\n({ FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout, chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor, CHAIN_CARD_W, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H, waitingLabel, blocksLabel })`,
+    `${source}\n({ FmBoard, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout, chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor, CHAIN_CARD_W, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H, waitingLabel, blocksLabel, chainNodeSelection })`,
     scope,
   );
   const view = new FmBoard();
@@ -176,10 +176,10 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   view.insertCardText = (text) => drafts.push(text);
   view.openView = (project, source, cx) => { view.clearChainSelection(cx); opened.push({ project, ...source }); };
   let items = drawn(view.render(cx));
-  const click = (id) => {
+  const click = (id, event = {}) => {
     const item = items.find((x) => x.id === id);
     assert.ok(item?.click, `nothing to click at ${id}`);
-    item.click({}, cx);
+    item.click(event, cx);
     items = drawn(view.render(cx));
     return items;
   };
@@ -217,7 +217,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     view, registry, reload, cardsFrom, dependencyGraph, chainHighlight, chainSpineLayout,
     chainJoint, placeChainLane, chainGutterSpecs, chainCellSpecs, chainEdgeColor,
     CHAIN_CARD_W, CHAIN_PORT_TOP, CHAIN_PORT_STEP, CHAIN_R, CHAIN_HEAD_W, CHAIN_HEAD_H,
-    waitingLabel, blocksLabel, initEffects,
+    waitingLabel, blocksLabel, chainNodeSelection, initEffects,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
     click, hover, keyDown, sendCommand, scrolled, focused, drafts, opened, redraw, overlays, commands, sharedSet, timers,
@@ -3601,4 +3601,106 @@ test("Board panel-frame schedules a next-frame redraw on mouse_down_out while fo
   b.redraw();
   assert.equal(frameColor(), theme.border);
   assert.equal(mouseDownOut(), undefined);
+});
+
+test("clicking or double-clicking a Kanban card moves cursor, focuses Board, opens detail, and inner controls stop propagation", async () => {
+  const theme = { accent: "#1f62d0", border: "#dddddd", canvas: "#f7f7f7" };
+  const b = await board({
+    theme,
+    prViewer: true,
+    rootLayout: { id: "root", children: [{ id: "pr" }] },
+    terminals: [{ address: "t1", state: "live", labels: { "firstmate.task": "fm-maple-preview-screen" } }],
+  });
+  b.view.size = { width: 1280, height: 800 };
+  b.redraw();
+
+  assert.ok(!b.focusedOn("root"));
+  b.click("card-maple-card-layout");
+  assert.equal(b.view.cursorId, "maple-card-layout");
+  assert.ok(b.focusedOn("root"));
+  assert.equal(b.view.detailCardId, "maple-card-layout");
+  assert.ok(b.ids.includes("card-detail"));
+
+  // Double-click keeps card detail open instead of toggling it closed.
+  b.click("card-maple-card-layout", { click_count: 2 });
+  assert.equal(b.view.detailCardId, "maple-card-layout");
+  assert.ok(b.ids.includes("card-detail"));
+
+  // j/k/h/l continue from the clicked card's cursor position.
+  b.keyDown("root", "j");
+  assert.equal(b.view.cursorId, "orchard-theme-sync");
+  assert.equal(b.view.detailCardId, null);
+
+  // Inner controls inside a card stop propagation so clicking them does not open detail as a card click.
+  const probePropagation = (id) => {
+    const item = b.items.find((x) => x.id === id);
+    assert.ok(item?.click, `missing click handler for ${id}`);
+    let stopped = 0;
+    item.click({}, { notify() {}, stop_propagation() { stopped += 1; }, spawn() {}, timer: { after() {}, every() {} } });
+    assert.equal(stopped, 1, `${id} must call stop_propagation()`);
+  };
+  for (const id of [
+    "fold-card:maple-theme-tokens",
+    "ask-card-card:maple-theme-tokens",
+    "blocks-maple-theme-tokens",
+    "waits-maple-card-layout",
+    "pr-maple-theme-tokens",
+    "files-maple-preview-screen",
+    "peek-maple-preview-screen",
+    "open-maple-preview-screen",
+    "opt-card:orchard-license-renewal-B",
+    "open-orchard-nav-style-1",
+  ]) {
+    probePropagation(id);
+  }
+});
+
+test("chainNodeSelection keeps double-click open and Chains node click updates cursor", async () => {
+  const b = await board({ ui: { viewMode: "chains" } });
+  assert.equal(b.chainNodeSelection(null, "A", 1), "A");
+  assert.equal(b.chainNodeSelection("A", "B", 1), "B");
+  assert.equal(b.chainNodeSelection("A", "A", 1), null);
+  assert.equal(b.chainNodeSelection("A", "A", 2), "A");
+
+  b.click("chain-node-maple-card-layout");
+  assert.equal(b.view.cursorId, "maple-card-layout");
+  assert.equal(b.view.selectedCardId, "maple-card-layout");
+  assert.ok(b.ids.includes("chain-detail"));
+
+  // Double-click keeps chain-detail open rather than toggling it closed.
+  b.click("chain-node-maple-card-layout", { click_count: 2 });
+  assert.equal(b.view.selectedCardId, "maple-card-layout");
+  assert.ok(b.ids.includes("chain-detail"));
+});
+
+test("Board Esc returnToTerminal and openWorker redraw immediately and on next tick when moving focus away", async () => {
+  const theme = { accent: "#1f62d0", border: "#dddddd", canvas: "#f7f7f7" };
+  const b = await board({
+    theme,
+    focusedTarget: { space: "s1", tab: "tb1", pane: "p1", terminal: "t1" },
+  });
+  b.sendCommand("focus");
+  const frameColor = () => b.items.find((x) => x.id === "panel-frame").calls.findLast((c) => c[0] === "border_color")?.[1];
+  assert.equal(frameColor(), theme.accent);
+
+  let notified = 0;
+  const timersBefore = b.timers.length;
+  b.items.find((x) => x.id === "root").keyDown(
+    { key: "escape", modifiers: {} },
+    {
+      notify() { notified += 1; },
+      stop_propagation() {},
+      timer: { after(ms, fn) { b.timers.push({ ms, fn }); } },
+    },
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(b.commands.filter((c) => c.name === "pane.focus"))), [{ name: "pane.focus", args: { terminal: "t1" } }]);
+  assert.equal(notified, 1);
+  assert.equal(b.timers.length, timersBefore + 1);
+  assert.equal(b.timers.at(-1).ms, 0);
+
+  b.focused.push({});
+  b.timers.at(-1).fn({ notify() { notified += 1; } });
+  assert.equal(notified, 2);
+  b.redraw();
+  assert.equal(frameColor(), theme.border);
 });

@@ -1172,6 +1172,11 @@ function cardsFrom(snapshot) {
   return cards;
 }
 
+/** Next selected chain node after a click: single-clicking the active node toggles it off; double-click keeps it open. */
+function chainNodeSelection(selectedId, targetId, clickCount = 1) {
+  return selectedId === targetId && clickCount < 2 ? null : targetId;
+}
+
 export default class FmBoard extends View {
   /** @param {number} px */
   fs(px) { return Math.round(px * this.fontScale * 2) / 2; }
@@ -1372,7 +1377,7 @@ export default class FmBoard extends View {
 
   foldRow(id, t, folded, label, trailing) {
     const row = h_flex().id(`fold-${id}`).gap(6).items_center().cursor_pointer()
-      .hover((s) => s.opacity(0.75)).on_click((_e, cx) => this.toggleFold(id, cx))
+      .hover((s) => s.opacity(0.75)).on_click((_e, cx) => { cx.stop_propagation(); this.toggleFold(id, cx); })
       .child(div().flex_none().text_size(this.fs(10)).text_color(t.dim).child(folded ? "▸" : "▾"))
       .child(div().flex_1().min_w(0).when(folded, (e) => e.truncate()).text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(label));
     return trailing ? row.child(trailing) : row;
@@ -1589,7 +1594,7 @@ export default class FmBoard extends View {
   button(id, label, t, onClick, strong) {
     return div().id(id).px(6).py(2).rounded(3).cursor_pointer().text_size(this.fs(11))
       .text_color(strong ? t.solid_foreground : t.muted).bg(strong ? t.solid : t.raised)
-      .hover((s) => s.opacity(0.8)).on_click((_e, cx) => onClick(cx)).child(label);
+      .hover((s) => s.opacity(0.8)).on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }).child(label);
   }
 
   field(state, t) {
@@ -1773,7 +1778,7 @@ export default class FmBoard extends View {
       if (types.some((x) => IMAGE_OR_FILE_CLIPBOARD_TYPE.test(x))) {
         throw new Error("Clipboard holds an image or file, so nothing was inserted. Paste it first, then click again.");
       }
-      run("agent.focus", { terminal });
+      this.focusAway("agent.focus", { terminal }, cx);
       await new Promise((resolve) => cx.timer.after(100, () => resolve(null)));
       if (focused()?.terminal !== terminal) throw new Error("Could not focus the firstmate terminal");
       const previous = await clip("f=$(mktemp -t fm-board-clipboard) || exit 1; pbpaste > \"$f\" || { rm -f \"$f\"; exit 1; }; "
@@ -1822,7 +1827,7 @@ export default class FmBoard extends View {
   iconButton(id, icon, label, t, onClick) {
     return div().id(id).flex_none().p(3).rounded(5).cursor_pointer().role("button").accessibility_label(label)
       .hover((s) => s.bg(t.hover)).tooltip(label)
-      .on_click((_e, cx) => onClick(cx))
+      .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); })
       .child(svg(icon).size(this.fs(14)).text_color(t.muted));
   }
 
@@ -1925,6 +1930,7 @@ export default class FmBoard extends View {
     const barColor = c.failed ? t.ansi1 : t[COLUMNS.find((k) => k.id === c.column)?.color ?? "unknown"];
     const el = v_flex().id(`card-${c.id}`).relative().gap(4).p(8).pl(8 + CARD_BAR_PX + 2).rounded(4).bg(t.background)
       .border(borderWidth).border_color(borderColor)
+      .cursor_pointer().on_click((_e, cx) => this.clickCard(c, cx))
       .child(div().id(`bar-${c.id}`).absolute().left(0).top(0).bottom(0).w(CARD_BAR_PX).rounded_l(4).bg(barColor))
       .when(focusDim && !boxDimmed, (e) => e.opacity(FOCUS_DIM))
       .when(!focusDim && dimmed, (e) => e.opacity(0.35))
@@ -2002,7 +2008,7 @@ export default class FmBoard extends View {
     if (c.pr && /^https:\/\//.test(c.pr)) {
       el.child(div().id(`pr-${c.id}`).text_size(this.fs(11)).text_color(t.accent).truncate()
         .hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => this.openPr(c.pr, c, cx))
+        .on_click((_e, cx) => { cx.stop_propagation(); this.openPr(c.pr, c, cx); })
         .child(c.pr.replace("https://github.com/", "")));
     }
     const live = c.column !== "done";
@@ -2367,9 +2373,29 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
-  returnToTerminal() {
+  /** @param {any} c @param {import("gpui-kit").Context} cx */
+  clickCard(c, cx) {
+    if (!c) return;
+    this.cursorId = c.id;
+    this.keys.focus();
+    if (this.viewMode === "kanban" && this.detailCardId === c.id) {
+      cx.notify();
+      return;
+    }
+    this.openCardDetail(c, cx);
+  }
+
+  /** @param {string} name @param {Record<string, unknown>} args @param {import("gpui-kit").Context | import("gpui-kit").AsyncContext} cx */
+  focusAway(name, args, cx) {
+    run(name, args);
+    cx?.notify?.();
+    cx?.timer?.after?.(0, (later) => later.notify());
+  }
+
+  /** @param {import("gpui-kit").Context} cx */
+  returnToTerminal(cx) {
     const target = focused();
-    if (target?.terminal) run("pane.focus", { terminal: target.terminal });
+    if (target?.terminal) this.focusAway("pane.focus", { terminal: target.terminal }, cx);
   }
 
   // A TASK DETAIL header with a Close button above a card's detail, in Kanban and in a Chains lane.
@@ -2393,7 +2419,7 @@ export default class FmBoard extends View {
       if (this.focusMode) { this.toggleFocus(cx); return true; }
       if (this.inspectorOpen || this.selectedCardId) { this.clearChainSelection(cx); return true; }
       if (this.pointedId) { this.pointedId = null; cx.notify(); return true; }
-      this.returnToTerminal();
+      this.returnToTerminal(cx);
       return true;
     }
     if (e.key === "f" && this.viewMode === "kanban") { this.toggleFocus(cx); return true; }
@@ -2435,7 +2461,7 @@ export default class FmBoard extends View {
     for (const o of decision.options) {
       el.child(h_flex().id(`opt-${key}-${o.label}`).gap(6).px(4).py(2).rounded(5)
         .when(answerable, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Put this answer in the firstmate input")
-          .on_click((_e, cx) => this.answerOption(ids, o, decisionKey, cx)))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.answerOption(ids, o, decisionKey, cx); }))
         .child(div().flex_none().text_size(this.fs(11)).font_semibold().text_color(t.accent).child(o.label))
         .child(div().flex_1().min_w(0).text_size(this.fs(11)).text_color(t.foreground).child(o.text)));
     }
@@ -2450,7 +2476,7 @@ export default class FmBoard extends View {
     const id = `open-${c.id}-${i}`;
     el.child(v_flex().id(id).gap(1).px(4).py(2).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
       .tooltip("Start an answer to this decision in the firstmate input")
-      .on_click((_e, cx) => this.insertCardText(answerHead([c.id], d.key), cx))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.insertCardText(answerHead([c.id], d.key), cx); })
       .child(h_flex().gap(6).items_center().min_w(0)
         .child(div().flex_none().text_size(this.fs(10)).font_semibold().text_color(t.blocked).child(d.verb))
         .child(div().flex_1().min_w(0).truncate().text_size(this.fs(10)).text_color(t.dim).child(d.key)))
@@ -2512,14 +2538,16 @@ export default class FmBoard extends View {
   }
 
   /** @param {string} id @param {import("gpui-kit").Context} cx */
-  selectChainNode(id, cx) {
-    if (this.selectedCardId === id) {
+  selectChainNode(id, cx, clickCount = 1) {
+    this.cursorId = id;
+    const next = chainNodeSelection(this.selectedCardId, id, clickCount);
+    if (next === null) {
       this.selectedCardId = null;
       this.hoveredCardId = null;
       cx.notify();
       return;
     }
-    this.selectedCardId = id;
+    this.selectedCardId = next;
     this.revealed.add(`card:${id}`);
     this.keys.focus();
     cx.notify();
@@ -2910,7 +2938,7 @@ export default class FmBoard extends View {
       .cursor_pointer().hover((s) => s.bg(t.hover))
       .tooltip(`${id}: ${node.title ?? id} · Click to highlight chain & open card detail`)
       .on_hover((hovered, cx) => this.hoverChainCard(id, hovered, cx))
-      .on_click((_e, cx) => { cx.stop_propagation(); this.selectChainNode(id, cx); });
+      .on_click((e, cx) => { cx.stop_propagation(); this.selectChainNode(id, cx, e?.click_count ?? 1); });
 
     const topRow = h_flex().h(16).gap(6).items_center().min_w(0)
       .child(node.missing
@@ -3220,9 +3248,13 @@ export default class FmBoard extends View {
     cx.spawn(async (cx) => {
       const r = await exec("hc", ["get", c.terminal, "--json"]);
       const label = r.code === 0 ? JSON.parse(r.stdout).labels?.["firstmate.task"] : null;
-      if (label === `fm-${c.id}`) { run("agent.focus", { terminal: c.terminal }); this.notice = ""; }
-      else this.notice = "Worker terminal not found";
-      cx.notify();
+      if (label === `fm-${c.id}`) {
+        this.notice = "";
+        this.focusAway("agent.focus", { terminal: c.terminal }, cx);
+      } else {
+        this.notice = "Worker terminal not found";
+        cx.notify();
+      }
     });
   }
 

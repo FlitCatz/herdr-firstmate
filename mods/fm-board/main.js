@@ -1172,7 +1172,10 @@ function cardsFrom(snapshot) {
   return cards;
 }
 
-/** Next selected chain node after a click: single-clicking the active node toggles it off; double-click keeps it open. */
+/**
+ * Next selected chain node after a click: single-clicking the active node toggles it off; double-click keeps it open.
+ * @param {string | null} selectedId @param {string} targetId @param {number} [clickCount]
+ */
 function chainNodeSelection(selectedId, targetId, clickCount = 1) {
   return selectedId === targetId && clickCount < 2 ? null : targetId;
 }

@@ -803,7 +803,7 @@ test("paused cards show a cleaned Waiting for row for CI drive, awaiting-other-w
 });
 
 test("dependencyGraph derives reverse dependencies, transitive downstream counts, levels, and components", async () => {
-  const { cardsFrom, dependencyGraph, waitingLabel, blocksLabel } = await board();
+  const { cardsFrom, dependencyGraph, chainHighlight, waitingLabel, blocksLabel } = await board();
   const records = [
     { id: "K2", state: "in_flight", repo: "maple-workshop", title: "maple-workshop K2 Step 1 core", structured: true, unresolved_blocker_ids: [] },
     { id: "K3", state: "queued", hold_kind: "external", repo: "maple-workshop", title: "maple-workshop K3 Step 2 wire", structured: true, unresolved_blocker_ids: ["K2"] },
@@ -815,21 +815,22 @@ test("dependencyGraph derives reverse dependencies, transitive downstream counts
   const cards = cardsFrom({ backlog: { records } });
   const graph = dependencyGraph(cards);
   const byId = new Map(cards.map((c) => [c.id, c]));
+  const withRole = (id, role) => [...chainHighlight(graph, id).roles].filter(([, r]) => r === role).map(([m]) => m);
 
   assert.deepEqual(Array.from(byId.get("K2").blockingIds), ["K3"]);
-  assert.deepEqual(Array.from(byId.get("K2").blocks), ["K3", "K4", "K6", "K7"]);
+  assert.deepEqual(withRole("K2", "downstream"), ["K3", "K4", "K6", "K7"]);
   assert.equal(byId.get("K2").blocksCount, 4);
   assert.equal(blocksLabel(byId.get("K2")), "★ Blocks 4 →");
 
-  assert.deepEqual(Array.from(byId.get("K4").upstreamIds), ["K3", "K2"]);
-  assert.deepEqual(Array.from(byId.get("K4").blocks), ["K6", "K7"]);
+  assert.deepEqual(withRole("K4", "upstream"), ["K3", "K2"]);
+  assert.deepEqual(withRole("K4", "downstream"), ["K6", "K7"]);
   assert.equal(byId.get("K4").blocksCount, 2);
   assert.equal(waitingLabel(byId.get("K4")), "Waiting on K3 Step 2 wire");
   assert.equal(waitingLabel(byId.get("K4"), "← Waits on"), "← Waits on K3 Step 2 wire");
   assert.equal(blocksLabel(byId.get("K4")), "★ Blocks 2 →");
 
   assert.equal(byId.get("K7").blocksCount, 0);
-  assert.deepEqual(Array.from(byId.get("K7").upstreamIds), ["K6", "K4", "K3", "K2"]);
+  assert.deepEqual(withRole("K7", "upstream"), ["K6", "K4", "K3", "K2"]);
 
   // Topological levels L0..L4 for K2..K7, and 1 connected component (solo is not in any component).
   assert.equal(graph.components.length, 1);

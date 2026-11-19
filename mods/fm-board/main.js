@@ -459,10 +459,26 @@ function prioritizeWaitingClause(text) {
   return `${text.slice(boundary.index + boundary[0].length)}; ${text.slice(0, boundary.index)}`;
 }
 
+// HTTPS URLs on any host; rejects file:, http:, userinfo, control characters, and dot segments.
+function validPrUrl(raw) {
+  if (typeof raw !== "string") return null;
+  const url = raw.trim();
+  if (/[\u0000-\u001f\u007f]/.test(url)) return null;
+  const m = /^https:\/\/[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d+)?(\/[^\s?#]*)(?:[?#]\S*)?$/i.exec(url);
+  if (!m || m[1].replace(/%2e/gi, ".").split("/").some((seg) => seg === "." || seg === "..")) return null;
+  return url;
+}
+
 // The PR URL in Firstmate's detail, which it adds when the worker never reported one.
 function detailPr(detail) {
-  const parts = (detail ?? "").split(" · ").map((p) => p.trim());
-  return parts.find((p) => p.startsWith("pr="))?.slice(3) || /https:\/\/\S+?\/pull\/\d+/.exec(detail ?? "")?.[0] || null;
+  const text = detail ?? "";
+  const tagged = text.split(" · ").map((p) => p.trim()).find((p) => p.startsWith("pr="))?.slice(3);
+  const urls = Array.from(text.matchAll(/https:\/\/\S+?\/(?:pull|pulls|pull-requests|merge_requests|pullrequest)\/\d+/g), (m) => m[0]);
+  for (const raw of [tagged, ...urls]) {
+    const url = validPrUrl(raw);
+    if (url) return url;
+  }
+  return null;
 }
 
 function columnOf(record, task) {
@@ -550,8 +566,23 @@ function blocksLabel(c) {
   return `★ Blocks ${c.blocksCount} →`;
 }
 
-// Derives reverse dependencies (blockingIds, transitive downstream blocks, and count),
-// topological levels with a cycle guard, and connected chain components across all cards.
+function collectReach(nodesMap, startId, edgeField) {
+  const out = [];
+  const seen = new Set([startId]);
+  const queue = [...(nodesMap.get(startId)?.[edgeField] ?? [])];
+  for (let head = 0; head < queue.length; head++) {
+    const cur = queue[head];
+    if (!cur || seen.has(cur)) continue;
+    seen.add(cur);
+    out.push(cur);
+    const next = nodesMap.get(cur)?.[edgeField];
+    if (next?.length) queue.push(...next);
+  }
+  return out;
+}
+
+// Derives reverse dependencies (blockingIds, transitive downstream counts, levels, and components).
+// Ancestor and descendant ID lists are computed on demand for the selected/hovered card.
 function dependencyGraph(cards) {
   /** @type {Map<string, any>} */
   const byId = new Map();
@@ -579,38 +610,6 @@ function dependencyGraph(cards) {
     c.waitingOn = (c.waitingIds ?? []).map((u) => byId.get(u)?.title ?? u);
     c.blockingIds = blockingMap.get(id) ?? [];
   }
-  for (const [id, c] of byId) {
-    /** @type {string[]} */
-    const up = [];
-    const seenUp = new Set([id]);
-    const queueUp = [...c.waitingIds];
-    while (queueUp.length) {
-      const cur = queueUp.shift();
-      if (!cur || seenUp.has(cur)) continue;
-      seenUp.add(cur);
-      up.push(cur);
-      queueUp.push(...(byId.get(cur)?.waitingIds ?? []));
-    }
-    /** @type {string[]} */
-    const down = [];
-    const seenDown = new Set([id]);
-    const queueDown = [...c.blockingIds];
-    while (queueDown.length) {
-      const cur = queueDown.shift();
-      if (!cur || seenDown.has(cur)) continue;
-      seenDown.add(cur);
-      down.push(cur);
-      queueDown.push(...(byId.get(cur)?.blockingIds ?? []));
-    }
-    c.upstreamIds = up;
-    c.blocks = down;
-    c.blocksOn = down.map((d) => byId.get(d)?.title ?? d);
-    c.blocksCount = down.length;
-    c.crossProjectBlockers = c.waitingIds.filter((u) => {
-      const upProj = byId.get(u)?.project;
-      return Boolean(c.project && upProj && c.project !== upProj);
-    });
-  }
   /** @type {Map<string, number>} */
   const levels = new Map();
   /** @type {Set<string>} */
@@ -637,17 +636,16 @@ function dependencyGraph(cards) {
   for (const id of byId.keys()) computeLevel(id);
   /** @type {Set<string>} */
   const visitedComp = new Set();
-  /** @type {any[]} */
-  const rawComponents = [];
-  const orderIndex = new Map([...byId.keys()].map((id, i) => [id, i]));
+  /** @type {string[][]} */
+  const memberLists = [];
   for (const [id, c] of byId) {
     if (visitedComp.has(id) || (!c.waitingIds.length && !c.blockingIds.length)) continue;
     /** @type {string[]} */
     const memberIds = [];
     const queue = [id];
     visitedComp.add(id);
-    while (queue.length) {
-      const cur = queue.shift();
+    for (let head = 0; head < queue.length; head++) {
+      const cur = queue[head];
       if (!cur) continue;
       memberIds.push(cur);
       const node = byId.get(cur);
@@ -658,6 +656,36 @@ function dependencyGraph(cards) {
         }
       }
     }
+    memberLists.push(memberIds);
+  }
+  const cyclicIds = new Set(memberLists.filter((ids) => ids.some((m) => cycleNodes.has(m))).flat());
+  const blocksCounts = new Map();
+  const countBlocks = (id) => {
+    if (blocksCounts.has(id)) return blocksCounts.get(id);
+    if (cyclicIds.has(id)) {
+      const n = collectReach(byId, id, "blockingIds").length;
+      blocksCounts.set(id, n);
+      return n;
+    }
+    const succ = byId.get(id)?.blockingIds ?? [];
+    let n;
+    if (succ.length === 0) n = 0;
+    else if (succ.length === 1) n = 1 + countBlocks(succ[0]);
+    else n = collectReach(byId, id, "blockingIds").length;
+    blocksCounts.set(id, n);
+    return n;
+  };
+  for (const [id, c] of byId) {
+    c.blocksCount = countBlocks(id);
+    c.crossProjectBlockers = c.waitingIds.filter((u) => {
+      const upProj = byId.get(u)?.project;
+      return Boolean(c.project && upProj && c.project !== upProj);
+    });
+  }
+  /** @type {any[]} */
+  const rawComponents = [];
+  const orderIndex = new Map([...byId.keys()].map((id, i) => [id, i]));
+  for (const memberIds of memberLists) {
     memberIds.sort((a, b) => (orderIndex.get(a) ?? 0) - (orderIndex.get(b) ?? 0));
     const minLevel = Math.min(...memberIds.map((m) => levels.get(m) ?? 0));
     /** @type {Map<number, string[]>} */
@@ -698,7 +726,7 @@ function dependencyGraph(cards) {
     const roots = levelGroups[0]?.ids ?? [memberIds[0]];
     const crossProjectEdges = levelGroups.flatMap((g) => g.crossProjectEdges);
     const joins = levelGroups.flatMap((g) => g.joinNodes);
-    const hasCycle = memberIds.some((m) => cycleNodes.has(m));
+    const hasCycle = cyclicIds.has(memberIds[0]);
     const maxBlocks = Math.max(0, ...memberIds.map((m) => byId.get(m)?.blocksCount ?? 0));
     rawComponents.push({
       roots,
@@ -735,10 +763,10 @@ function chainHighlight(graph, selectedCardId = null, hoveredCardId = null) {
   const focusComp = focusId ? graph?.componentById?.get(focusId) ?? null : null;
   /** @type {Map<string, "upstream" | "selected" | "downstream" | "branch">} */
   const roles = new Map();
-  if (focusNode && focusComp) {
+  if (focusNode && focusComp && graph?.nodes) {
     roles.set(focusId, "selected");
-    for (const u of focusNode.upstreamIds ?? []) if (!roles.has(u)) roles.set(u, "upstream");
-    for (const d of focusNode.blocks ?? []) if (!roles.has(d)) roles.set(d, "downstream");
+    for (const u of collectReach(graph.nodes, focusId, "waitingIds")) if (!roles.has(u)) roles.set(u, "upstream");
+    for (const d of collectReach(graph.nodes, focusId, "blockingIds")) if (!roles.has(d)) roles.set(d, "downstream");
     for (const m of focusComp.nodeIds ?? []) if (!roles.has(m)) roles.set(m, "branch");
   }
   /** @type {Set<string>} */
@@ -1160,7 +1188,7 @@ function cardsFrom(snapshot) {
     waitingFor: listed ? "" : waitingFor,
     // Firstmate's own wording, kept so the search still finds it.
     sourceDetail: task?.current_state?.detail ?? "",
-    pr: task?.pr?.url ?? record?.pr_url ?? detailPr(task?.current_state?.detail),
+    pr: validPrUrl(task?.pr?.url) ?? validPrUrl(record?.pr_url) ?? detailPr(task?.current_state?.detail),
     prWaiting: prWaiting(record, task),
     branchReady: branchReady(record, task),
     // Only hc runs workers in Herdr terminals, so only those can be opened from here.
@@ -1198,7 +1226,8 @@ export default class FmBoard extends View {
     // The Board's own place on the keyboard's path, so Escape reaches it after a chain is picked.
     this.keys = cx.focus_handle();
     const ui = props()?.ui ?? {};
-    this.cards = null; this.projects = []; this.requests = []; this.ready = null;
+    this.cards = null; this.graph = null; this.graphCards = undefined; this.chainLayouts = new Map();
+    this.projects = []; this.requests = []; this.ready = null;
     this.checks = null; this.lastCheckSweep = null; this.checksFailed = false;
     this.error = null; this.notice = ""; this.generated = ""; this.loading = false; this.last = 0;
     /** @type {{ timer: import("gpui-kit").Task | null } | null} */
@@ -1552,12 +1581,35 @@ export default class FmBoard extends View {
     return roles.map((x) => ({ ...x, up: alive.get(x.pid) ?? null }));
   }
 
+  ensureGraph() {
+    if (this.graphCards !== this.cards || !this.graph) {
+      this.graphCards = this.cards;
+      this.graph = dependencyGraph(this.cards ?? []);
+      this.chainLayouts = new Map();
+    }
+    return this.graph;
+  }
+
+  chainLaneLayout(comp) {
+    this.ensureGraph();
+    let hit = this.chainLayouts.get(comp.id);
+    if (!hit) {
+      hit = placeChainLane(comp, this.graph.nodes);
+      this.chainLayouts.set(comp.id, hit);
+    }
+    return hit;
+  }
+
   send(text, cx, after, sent = "Request sent") {
     cx.spawn(async (cx) => {
-      const r = await this.fm("fm-inbox.sh", ["note", "--json", "--request-id", `board-${Date.now()}`, "--", text]);
-      // 3 means saved but not announced: the request exists and firstmate sees it at its next drain.
-      if (r.code === 0 || r.code === 3) { this.notice = sent; after?.(); }
-      else this.notice = `Request failed: ${r.stderr.trim() || r.code}`;
+      try {
+        const r = await this.fm("fm-inbox.sh", ["note", "--json", "--request-id", `board-${Date.now()}`, "--", text]);
+        // 3 means saved but not announced: the request exists and firstmate sees it at its next drain.
+        if (r.code === 0 || r.code === 3) { this.notice = sent; after?.(); }
+        else this.notice = `Request failed: ${(r.stderr ?? "").trim() || r.code}`;
+      } catch (e) {
+        this.notice = `Request failed: ${String(e?.message ?? e)}`;
+      }
       this.last = 0; this.refresh(cx);
       cx.notify();
     });
@@ -1782,11 +1834,24 @@ export default class FmBoard extends View {
     if (this.pasting) throw new Error("A card is already being inserted; try again");
     this.pasting = true;
     let saved = null;
+    let written = false;
+    let writtenCount = null;
     /** @param {string} script @param {string[]} args */
     const clip = (script, ...args) => exec("/usr/bin/env", ["LC_ALL=en_US.UTF-8", "sh", "-c", script, "board-clipboard", ...args]);
+    const pasteboardCount = async () => {
+      const r = await exec("/usr/bin/env", [
+        "LC_ALL=en_US.UTF-8", "osascript", "-l", "JavaScript", "-e",
+        'ObjC.import("AppKit"); $.NSPasteboard.generalPasteboard.changeCount',
+      ]);
+      const n = r.code === 0 ? Number(r.stdout.trim()) : NaN;
+      if (!Number.isInteger(n)) throw new Error("Could not read the clipboard version");
+      return n;
+    };
     try {
+      const count0 = await pasteboardCount();
       const info = await exec("/usr/bin/env", ["LC_ALL=en_US.UTF-8", "osascript", "-e", "clipboard info"]);
       if (info.code !== 0) throw new Error("Could not read the clipboard types");
+      if ((await pasteboardCount()) !== count0) throw new Error("Clipboard changed while inserting; try again");
       const types = info.stdout.trim().split(", ").filter((x, i) => x && i % 2 === 0);
       if (types.some((x) => IMAGE_OR_FILE_CLIPBOARD_TYPE.test(x))) {
         throw new Error("Clipboard holds an image or file, so nothing was inserted. Paste it first, then click again.");
@@ -1794,13 +1859,17 @@ export default class FmBoard extends View {
       this.focusAway("agent.focus", { terminal }, cx);
       await new Promise((resolve) => cx.timer.after(100, () => resolve(null)));
       if (focused()?.terminal !== terminal) throw new Error("Could not focus the firstmate terminal");
+      if ((await pasteboardCount()) !== count0) throw new Error("Clipboard changed while inserting; try again");
       const previous = await clip("f=$(mktemp -t fm-board-clipboard) || exit 1; pbpaste > \"$f\" || { rm -f \"$f\"; exit 1; }; "
         + "if [ \"$1\" = filled ] && [ ! -s \"$f\" ]; then rm -f \"$f\"; exit 3; fi; printf '%s' \"$f\"", types.length ? "filled" : "empty");
       if (previous.code === 3) throw new Error("Clipboard holds no plain text, so nothing was inserted. Paste it first, then click again.");
       if (previous.code !== 0 || !previous.stdout) throw new Error("Could not save clipboard text");
       saved = previous.stdout;
+      if ((await pasteboardCount()) !== count0) throw new Error("Clipboard changed while inserting; try again");
       const copied = await clip("printf '%s' \"$1\" | pbcopy", line);
       if (copied.code !== 0) throw new Error("Could not copy the card text");
+      written = true;
+      writtenCount = await pasteboardCount().catch(() => null);
       // Focus may have changed while the clipboard command was running.
       if (focused()?.terminal !== terminal) throw new Error("Firstmate terminal focus changed; try again");
       run("terminal.paste");
@@ -1808,8 +1877,14 @@ export default class FmBoard extends View {
     } finally {
       try {
         if (saved !== null) {
-          const restored = await clip("pbcopy < \"$1\"; s=$?; rm -f \"$1\"; exit $s", saved);
-          if (restored.code !== 0) throw new Error("Could not restore clipboard text");
+          const currentCount = written ? await pasteboardCount().catch(() => null) : null;
+          const changedElsewhere = writtenCount !== null && currentCount !== null && currentCount !== writtenCount;
+          if (written && !changedElsewhere) {
+            const restored = await clip("pbcopy < \"$1\"; s=$?; rm -f \"$1\"; exit $s", saved);
+            if (restored.code !== 0) throw new Error("Could not restore clipboard text");
+          } else {
+            await clip("rm -f \"$1\"", saved);
+          }
         }
       } finally { this.pasting = false; }
     }
@@ -1990,11 +2065,14 @@ export default class FmBoard extends View {
       }
       if ((c.blocksCount ?? 0) > 0) {
         const selected = this.selectedCardId === c.id;
+        const directBlocks = (c.blockingIds ?? []).map((id) => this.graph?.nodes?.get(id)?.title ?? id);
+        const extraBlocks = Math.max(0, (c.blocksCount ?? 0) - directBlocks.length);
+        const blocksTip = extraBlocks ? `${directBlocks.join(", ")} (+${extraBlocks} downstream)` : directBlocks.join(", ");
         depRow.child(div().id(`blocks-${c.id}`).flex_none().px(5).py(1).rounded(4).border(1)
           .border_color(selected ? t.accent : t.ansi6).bg(t.ansi6 + "18")
           .text_size(this.fs(10.5)).font_semibold().text_color(t.ansi6)
           .cursor_pointer().hover((st) => st.opacity(0.8))
-          .tooltip(`Inspect dependency chain · Blocks: ${(c.blocksOn ?? []).join(", ")}`)
+          .tooltip(`Inspect dependency chain · Blocks: ${blocksTip}`)
           .on_click((_e, cx) => { cx.stop_propagation(); this.selectChainCard(c.id, cx); })
           .child(blocksLabel(c)));
       }
@@ -2023,11 +2101,12 @@ export default class FmBoard extends View {
     const ownDecision = c.decision && !c.decision.topic;
     if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id], c.column === "held");
     c.openDecisions.forEach((d, i) => this.openDecision(el, c, d, i, t));
-    if (c.pr && /^https:\/\//.test(c.pr)) {
+    const cardPr = validPrUrl(c.pr);
+    if (cardPr) {
       el.child(div().id(`pr-${c.id}`).text_size(this.fs(11)).text_color(t.accent).truncate()
         .hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.openPr(c.pr, c, cx); })
-        .child(c.pr.replace("https://github.com/", "")));
+        .on_click((_e, cx) => { cx.stop_propagation(); this.openPr(cardPr, c, cx); })
+        .child(cardPr.replace("https://github.com/", "")));
     }
     const live = c.column !== "done";
     const workerLive = this.workerLive(c);
@@ -2307,7 +2386,7 @@ export default class FmBoard extends View {
       const cardById = new Map((this.cards ?? []).map((c) => [c.id, c]));
       for (const comp of this.visibleChains()) {
         if (this.chainLaneFolded(comp)) continue;
-        const lane = placeChainLane(comp, this.graph?.nodes ?? new Map());
+        const lane = this.chainLaneLayout(comp);
         const ids = stacked
           ? lane.steps.flatMap((step) => step.nodes.map((n) => n.id))
           : lane.grid.flat().filter(Boolean);
@@ -2985,12 +3064,13 @@ export default class FmBoard extends View {
       .child(div().min_w(0).text_size(this.fs(12)).font_semibold().text_color(t.foreground).child(strip(node.title ?? id)))
       .child(metaRow);
 
-    if (node.pr && /^https:\/\//.test(node.pr)) {
-      const prLabel = node.pr.replace(/^https:\/\/github\.com\/[^/]+\/([^/]+)\/pull\/(\d+).*$/, "$1#$2")
+    const nodePr = validPrUrl(node.pr);
+    if (nodePr) {
+      const prLabel = nodePr.replace(/^https:\/\/github\.com\/[^/]+\/([^/]+)\/pull\/(\d+).*$/, "$1#$2")
         .replace("https://github.com/", "");
       card.child(div().id(`cnode-pr-${id}`).font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.accent).truncate()
         .cursor_pointer().hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.openPr(node.pr, node, cx); })
+        .on_click((_e, cx) => { cx.stop_propagation(); this.openPr(nodePr, node, cx); })
         .child(prLabel));
     }
 
@@ -3174,7 +3254,7 @@ export default class FmBoard extends View {
       .border(1).border_color(t.border).child(header);
     if (folded) return lane;
 
-    const layout = placeChainLane(comp, this.graph.nodes);
+    const layout = this.chainLaneLayout(comp);
     const laneRoles = this.highlight?.focusComponent?.id === comp.id ? this.highlight.roles : new Map();
     const dimLane = Boolean(this.highlight?.selectedComponent) && this.highlight.selectedComponent.id !== comp.id;
 
@@ -3282,14 +3362,20 @@ export default class FmBoard extends View {
   // The viewer shows the card's task and its project tag in the tag's own color.
   /** @param {string} url @param {{ id: string, project?: string }} c @param {import("gpui-kit").Context} cx */
   openPr(url, c, cx) {
+    const safeUrl = validPrUrl(url);
+    if (!safeUrl) {
+      this.notice = "Cannot open PR: invalid PR URL";
+      cx?.notify?.();
+      return;
+    }
     const project = c.project || "firstmate";
     const badge = { text: this.tags?.get(project) ?? project.slice(0, 3).toUpperCase(), color: this.colorOf(project, theme()) };
     const task = c.project ? `${c.id} · ${c.project}` : c.id;
     cx.spawn(async () => {
       let installed = false;
       try { installed = (await readTextFile(`${appHome()}/mods/${PR_VIEWER_MOD}/mod.json`)) != null; } catch {}
-      if (!installed || !findNode(layout(), PR_PANEL)) { await exec("open", [url]); return; }
-      setShared(PR_SHOW_KEY, { url, task, badge, at: Date.now() });
+      if (!installed || !findNode(layout(), PR_PANEL)) { await exec("open", [safeUrl]); return; }
+      setShared(PR_SHOW_KEY, { url: safeUrl, task, badge, at: Date.now() });
       run("layout.select", { stack: "panel-body", child: PR_PANEL });
       run("layout.show", { id: "panel" });
     });
@@ -3459,7 +3545,7 @@ export default class FmBoard extends View {
       const stacked = (this.size?.width ?? Infinity) < STACK_BELOW_PX;
       const ids = [];
       for (const comp of this.visibleChains()) {
-        const layout = placeChainLane(comp, this.graph.nodes);
+        const layout = this.chainLaneLayout(comp);
         const drawn = stacked
           ? layout.steps.flatMap((step) => step.nodes)
           : layout.grid.flat().map((id) => (id ? this.graph.nodes.get(id) : null)).filter(Boolean);
@@ -3788,7 +3874,7 @@ export default class FmBoard extends View {
       c.column = c.background && c.ownColumn === "paused" ? "working" : c.ownColumn;
     }
     this.monoFont = String(settings()?.font_family ?? "JetBrains Mono");
-    this.graph = dependencyGraph(this.cards ?? []);
+    this.ensureGraph();
     if (this.pendingInitialCursor && this.cards) {
       this.pendingInitialCursor = false;
       if (!this.focusMode) this.placeCursor();

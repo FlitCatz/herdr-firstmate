@@ -50,18 +50,23 @@ export default class Tabs extends View {
       if (e.delta_lines.y) run(e.delta_lines.y > 0 ? "tab.prev" : "tab.next");
       return;
     }
-    const s = this.swipe, now = Date.now();
+    const s = this.swipe;
+    if (e.touch_phase === "started") Object.assign(s, { acc: 0, steps: 0 });
+    const dy = e.delta?.y ?? 0;
+    if (!dy) return;
+    const now = Date.now();
     // Phases often arrive only as moves (a macOS touchpad included): a pause
     // or a turn starts a new gesture.
-    if (e.touch_phase === "started" || now - s.at > 250 || e.delta.y * s.acc < 0) Object.assign(s, { acc: 0, steps: 0 });
+    if (now - s.at > 250 || dy * s.acc < 0) Object.assign(s, { acc: 0, steps: 0 });
     s.at = now;
-    s.acc += e.delta.y;
+    s.acc += dy;
     const need = s.steps ? 60 : 20;
     if (Math.abs(s.acc) < need || now - s.last < 100) return;
-    s.acc -= Math.sign(s.acc) * need;
+    const dir = Math.sign(s.acc);
+    s.acc -= dir * need;
     s.steps++;
     s.last = now;
-    run(e.delta.y > 0 ? "tab.prev" : "tab.next");
+    run(dir > 0 ? "tab.prev" : "tab.next");
   }
 
   // The side panel is remembered per space: switching shows that space's choice

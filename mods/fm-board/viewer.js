@@ -9,7 +9,7 @@ import { exec, readTextFile, watchFolder, settings } from "herdr";
 import { HIGHLIGHT_SYNC_MAX, HIGHLIGHT_CHUNK, capLineSpans, detectLanguage, DiffHighlighter, editorSyntax, syntaxColor, tint } from "./highlight.js";
 
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
-const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", cs: "csharp", kt: "kotlin" };
+const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const PER_FOLDER = 500, TOTAL = 5000, CHANGED_LIMIT = 1000, DIFF_LINES = 1500;
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import vm from "node:vm";
+import * as highlight from "../mods/fm-board/highlight.js";
 
 const runFile = promisify(execFile);
 
@@ -2159,6 +2160,7 @@ async function folderViewer() {
   const watches = [], commands = [], pending = [];
   const cx = { notify() {}, spawn(fn) { const task = fn(cx); pending.push(task); return task; } };
   const scope = {
+    ...highlight,
     watchFolder(root) {
       let resolve;
       const promise = new Promise((r) => { resolve = r; });

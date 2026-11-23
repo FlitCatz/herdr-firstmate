@@ -37,7 +37,7 @@ Card headers fold and unfold and select the card (a double-click toggles once); 
 The Held column groups its cards under the headings `Answer now`, `Deferred` (with a card's `until` date when it has one), and `Waiting on other work`.
 There is no Failed column: a task whose worker reported `failed:` is drawn in the Blocked column with a red `Failed` label and a red border.
 A card lists every decision its worker still has open, and answering one from the card names its key in the draft so Firstmate can close exactly that decision.
-Cards whose worker has its own copy of the project open it in the Files and Changes viewer with a `Files · Changes` button.
+Cards whose worker has its own copy of the project open it in the Files and Changes viewer with a `Files · Changes` button. File contents open in Herdr's read-only code editor, with selection and copy, and syntax colors taken from Herdr `theme()` when the file opens, so a light or dark theme switch applies to the next file opened. Diffs use the same `theme()` token colors as `herdr-pr-viewer` (for C#, TypeScript/JavaScript, Dart, Rust, JSON, YAML, Markdown, and shell, with plain fallback for other files, over its added/removed line colors) and defer highlighting beyond the first 160 rows into 80-row chunks so large diffs do not stall the host.
 Cards with a live worker terminal end in a separate Live strip with Open worker and Peek icons, where Peek opens that terminal over the current tab, and the last lines of the worker's screen, refreshed every few seconds.
 A card whose worker terminal still runs a job after its agent's turn ended, such as a build, a test run, or a CI wait, says so with `백그라운드 실행 중: <job>`, and a Paused card is drawn in Working while that job runs.
 A Paused card shows `Waiting for: <reason>` from its worker's latest `paused` status line (with machine noise stripped and `until` times shown in local time; the row puts any waiting, `until`, or resume clause first, while the tooltip keeps the full cleaned text in its original order), alongside any background-job row when both apply.
@@ -51,5 +51,5 @@ Below the board, one tab strip holds `Commands`, `Projects` (with its count of u
 
 The preview is a headless render of an HTML replica of the board, using fictional projects and tasks.
 
-`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, registered checks, tab behavior, folder-watch cleanup, check-mode side-effect guards, and Board keyboard navigation, card folding, and escape behavior; it needs only Node.js, not Herdr.
+`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, registered checks, tab behavior, folder-watch cleanup, viewer syntax colors and large-diff deferral, check-mode side-effect guards, and Board keyboard navigation, card folding, and escape behavior; it needs only Node.js, not Herdr.
 This repository has no CI and declares that to no-mistakes in `.no-mistakes.yaml`.

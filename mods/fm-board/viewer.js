@@ -4,13 +4,28 @@
 // isolated copy). It never writes: no commit, and every git read leaves .git untouched,
 // because firstmate does not change project copies.
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, Scrollbar, v_virtual_list } from "gpui-base";
+import { v_flex, h_flex, Scrollbar, v_virtual_list } from "gpui-base";
 import { exec, readTextFile, watchFolder, settings } from "herdr";
+import { HIGHLIGHT_SYNC_MAX, HIGHLIGHT_CHUNK, capLineSpans, detectLanguage, DiffHighlighter, FileHighlighter, syntaxColor, tint } from "./highlight.js";
+
+const HL = {
+  syncMax: typeof HIGHLIGHT_SYNC_MAX === "number" ? HIGHLIGHT_SYNC_MAX : 160,
+  chunk: typeof HIGHLIGHT_CHUNK === "number" ? HIGHLIGHT_CHUNK : 80,
+  capLineSpans: typeof capLineSpans === "function" ? capLineSpans : () => null,
+  detectLanguage: typeof detectLanguage === "function" ? detectLanguage : () => "plain",
+  DiffHighlighter: typeof DiffHighlighter === "function" ? DiffHighlighter : null,
+  FileHighlighter: typeof FileHighlighter === "function" ? FileHighlighter : null,
+  syntaxColor: typeof syntaxColor === "function" ? syntaxColor : (t) => t.foreground,
+  tint: typeof tint === "function" ? tint : (color, alpha) => `${color}${alpha}`,
+};
 
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
-const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", cs: "csharp", kt: "kotlin" };
 const PER_FOLDER = 500, TOTAL = 5000, CHANGED_LIMIT = 1000, DIFF_LINES = 1500;
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
+const expandLine = (text) => {
+  const clean = text.endsWith("\r") ? text.slice(0, -1) : text;
+  return clean.indexOf("\t") !== -1 ? clean.replace(/\t/g, "    ") : clean;
+};
 
 function isValidRelPath(rel, { allowEmpty = false } = {}) {
   if (typeof rel !== "string") return false;
@@ -66,9 +81,9 @@ function diffRows(lines) {
     const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
     if (match) { old = +match[1]; next = +match[2]; return { kind: "@", text: line }; }
     const kind = line[0];
-    if (kind === "-") return { kind, number: old++, text: line.slice(1) || " " };
-    if (kind === "+") return { kind, number: next++, text: line.slice(1) || " " };
-    if (kind === " ") { old++; return { kind, number: next++, text: line.slice(1) || " " }; }
+    if (kind === "-") return { kind, number: old++, text: expandLine(line.slice(1)) || " " };
+    if (kind === "+") return { kind, number: next++, text: expandLine(line.slice(1)) || " " };
+    if (kind === " ") { old++; return { kind, number: next++, text: expandLine(line.slice(1)) || " " }; }
     return { kind: "", text: line };
   });
 }
@@ -76,14 +91,38 @@ function diffRows(lines) {
 export class FolderViewer {
   constructor() { this.root = null; this.label = ""; this.tab = "files"; this.gen = 0; this.fileSeq = 0; this.diffSeq = 0; this.reset(); }
 
+  cancelFileHighlight() { this.fileHighlightTimer?.cancel?.(); this.fileHighlightTimer = null; }
+
+  cancelDiffHighlight() { this.diffHighlightTimer?.cancel?.(); this.diffHighlightTimer = null; }
+
   reset() {
     this.folderWatch?.cancel(); this.folderWatch = null;
+    this.cancelFileHighlight(); this.cancelDiffHighlight();
     this.fileSeq++; this.diffSeq++;
     this.code?.release?.();
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
     this.file = null; this.code = null; this.fileError = null; this.error = null; this.loading = false; this.limited = false;
-    this.changed = []; this.rows = []; this.diffWidth = 300; this.open = null; this.closed = false;
+    this.changed = []; this.rows = []; this.diffSpans = []; this.diffKey = ""; this.diffWidth = 300; this.open = null; this.closed = false;
     this.changesError = null; this.changesLoading = false; this.changesLimited = false; this.gitRoot = null; this.hasHead = false;
+  }
+
+  startChunkedHighlight({ total, highlighter, path, key, items, targetSpans, cx, setTimer, isCurrent }) {
+    const initial = highlighter.highlight(path, key, items, HL.syncMax);
+    for (let i = 0; i < initial.length; i++) targetSpans[i] = HL.capLineSpans(initial[i]);
+    if (total <= HL.syncMax || !cx?.timer?.after) return;
+    const step = (timerCx) => {
+      if (!isCurrent()) return;
+      setTimer(null);
+      const prevLen = targetSpans.length;
+      const nextLimit = Math.min(total, prevLen + HL.chunk);
+      const res = highlighter.highlight(path, key, items, nextLimit);
+      for (let i = prevLen; i < res.length; i++) targetSpans[i] = HL.capLineSpans(res[i]);
+      if (nextLimit < total && timerCx?.timer?.after) {
+        setTimer(timerCx.timer.after(0, step));
+      }
+      timerCx.notify();
+    };
+    setTimer(cx.timer.after(0, step));
   }
 
   // Same folder again keeps the open folders and file; a new one starts over.
@@ -196,8 +235,9 @@ export class FolderViewer {
     cx.notify();
   }
 
-  showFile(path, cx, t) {
+  showFile(path, cx, _t) {
     const seq = ++this.fileSeq;
+    this.cancelFileHighlight();
     this.code?.release?.(); this.code = null; this.file = path; this.fileError = null;
     if (!path) { cx.notify(); return; }
     const gen = this.gen, root = this.root;
@@ -210,11 +250,29 @@ export class FolderViewer {
         if (seq !== this.fileSeq || gen !== this.gen) return;
         if (text === null) { this.fileError = "This file is no longer available"; return; }
         if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
-        const ext = path.includes(".") ? path.split(".").pop() : "txt";
-        this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
-          value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
-          font_family: settings().font_family, font_size: 12,
-          syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
+        const value = text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text;
+        const trimmed = value.endsWith("\n") ? value.slice(0, -1) : value;
+        const lines = (trimmed ? trimmed.split("\n") : [""])
+          .map((l) => {
+            const expanded = expandLine(l);
+            return expanded.length > 4000 ? expanded.slice(0, 4000) + "… (line truncated)" : expanded;
+          });
+        const width = Math.max(300, ...lines.map((l) => l.length * 7 + 60));
+        const spans = [];
+        this.code = { path, value, lines, width, spans };
+        if (HL.FileHighlighter && HL.detectLanguage(path) !== "plain") {
+          this.startChunkedHighlight({
+            total: lines.length,
+            highlighter: new HL.FileHighlighter(),
+            path,
+            key: value,
+            items: lines,
+            targetSpans: spans,
+            cx,
+            setTimer: (timer) => { this.fileHighlightTimer = timer; },
+            isCurrent: () => seq === this.fileSeq && gen === this.gen && this.code?.path === path,
+          });
+        }
       } catch { if (seq === this.fileSeq && gen === this.gen) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
       finally { if (seq === this.fileSeq && gen === this.gen) cx.notify(); }
     });
@@ -231,7 +289,7 @@ export class FolderViewer {
         const gitStatus = await readGit();
         if (gen !== this.gen) return;
         if (!gitStatus.ok && gitStatus.notGit) {
-          this.gitRoot = null; this.changed = []; this.diffSeq++; this.setLines([]); this.open = null; this.changesError = "Not a git repository";
+          this.gitRoot = null; this.changed = []; this.diffSeq++; this.setLines([], null, cx); this.open = null; this.changesError = "Not a git repository";
           return;
         }
         if (!gitStatus.ok) throw new Error(gitStatus.error);
@@ -262,19 +320,19 @@ export class FolderViewer {
         }
         if (gen !== this.gen) return;
         this.gitRoot = gitRoot; this.hasHead = head.code === 0; this.changed = changed; this.changesLimited = entries.length > CHANGED_LIMIT; this.changesError = null;
-        if (this.open && !changed.some((f) => f.path === this.open)) { this.open = null; this.diffSeq++; this.setLines([]); }
+        if (this.open && !changed.some((f) => f.path === this.open)) { this.open = null; this.diffSeq++; this.setLines([], null, cx); }
         if (!this.open && !this.closed && changed.length) this.open = changed[0].path;
         if (this.open) {
           const seq = ++this.diffSeq;
-          try { await this.loadDiff(this.open, gen, seq); }
-          catch { if (gen === this.gen && seq === this.diffSeq) this.setLines(["Cannot preview this diff (too large or unreadable)"]); }
+          try { await this.loadDiff(this.open, gen, seq, cx); }
+          catch { if (gen === this.gen && seq === this.diffSeq) this.setLines(["Cannot preview this diff (too large or unreadable)"], null, cx); }
         }
       } catch (e) { if (gen === this.gen) this.changesError = String(e?.message ?? e); }
       finally { if (gen === this.gen) this.changesLoading = false; cx.notify(); }
     });
   }
 
-  async loadDiff(path, gen, seq = this.diffSeq) {
+  async loadDiff(path, gen, seq = this.diffSeq, cx = null) {
     if (gen !== this.gen || seq !== this.diffSeq || this.open !== path) return;
     const file = this.changed.find((f) => f.path === path), root = this.root;
     if (!file || !root || !isValidRelPath(path)) return;
@@ -298,22 +356,41 @@ export class FolderViewer {
       lines = first < 0 ? [file.binary ? "Binary file changed" : "No text diff available"] : all.slice(first);
     }
     if (gen === this.gen && seq === this.diffSeq && this.open === path) {
-      this.setLines(lines.slice(0, DIFF_LINES).map((l) => l.length > 4000 ? l.slice(0, 4000) + "… (line truncated)" : l));
+      this.setLines(lines.slice(0, DIFF_LINES).map((l) => l.length > 4000 ? l.slice(0, 4000) + "… (line truncated)" : l), path, cx);
     }
   }
 
-  setLines(lines) {
+  setLines(lines, path = this.open, cx = null) {
+    const diffKey = lines.length ? `${path ?? ""}\0${lines.join("\n")}` : "";
+    if (diffKey && this.diffKey === diffKey && this.rows.length) return;
+    this.cancelDiffHighlight();
+    this.diffKey = diffKey;
     this.rows = diffRows(lines);
-    this.diffWidth = Math.max(300, ...lines.map((l) => l.length * 7 + 50));
+    this.diffWidth = Math.max(300, ...this.rows.map((r) => r.text.length * 7 + 50));
+    this.diffSpans = [];
+    if (path && this.rows.length && HL.DiffHighlighter && HL.detectLanguage(path) !== "plain") {
+      const gen = this.gen, seq = this.diffSeq;
+      this.startChunkedHighlight({
+        total: this.rows.length,
+        highlighter: new HL.DiffHighlighter(),
+        path,
+        key: diffKey,
+        items: this.rows,
+        targetSpans: this.diffSpans,
+        cx,
+        setTimer: (timer) => { this.diffHighlightTimer = timer; },
+        isCurrent: () => this.gen === gen && this.diffSeq === seq && this.open === path,
+      });
+    }
   }
 
   pickChange(path, cx) {
     const seq = ++this.diffSeq;
-    this.open = this.open === path ? null : path; this.setLines([]); this.closed = !this.open;
+    this.open = this.open === path ? null : path; this.setLines([], null, cx); this.closed = !this.open;
     const gen = this.gen;
     if (this.open) cx.spawn(async (cx) => {
-      try { await this.loadDiff(path, gen, seq); }
-      catch { if (gen === this.gen && seq === this.diffSeq && this.open === path) this.setLines(["Cannot preview this diff (too large or unreadable)"]); }
+      try { await this.loadDiff(path, gen, seq, cx); }
+      catch { if (gen === this.gen && seq === this.diffSeq && this.open === path) this.setLines(["Cannot preview this diff (too large or unreadable)"], null, cx); }
       if (gen === this.gen && seq === this.diffSeq) cx.notify();
     });
     cx.notify();
@@ -348,13 +425,39 @@ export class FolderViewer {
       .when(Boolean(mark), (el) => el.child(div().text_size(fs(11)).text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked).child(mark)));
   }
 
+  renderHighlightedLine(text, spans, t) {
+    if (!spans || !spans.length) {
+      return div().flex_1().min_w(0).truncate().child(text || " ");
+    }
+    return h_flex().flex_1().min_w(0).overflow_hidden().children(
+      spans.map((sp) => div().flex_none().whitespace_nowrap()
+        .when(sp.kind !== "plain", (e) => e.text_color(HL.syntaxColor(t, sp.kind)))
+        .child(sp.text))
+    );
+  }
+
+  codeRow(index, text, gutter, t) {
+    return h_flex().w_full().h(20).flex_none().gap(8).px(6)
+      .child(div().w(gutter).flex_none().text_right().text_color(t.dim).child(String(index + 1)))
+      .child(this.renderHighlightedLine(text, this.code?.spans?.[index], t));
+  }
+
   filesBody(t, fs) {
     if (this.file) {
+      const code = this.code;
+      const lines = code?.lines ?? [];
+      const gutter = Math.max(30, String(lines.length).length * 8 + 8);
       return v_flex().flex_1().min_h(0)
         .child(h_flex().flex_none().gap(6).px(6).py(4).items_center().border_b(1).border_color(t.border)
           .child(div().id("vf-back").cursor_pointer().text_color(t.muted).on_click((_e, cx) => this.showFile(null, cx, t)).child("←"))
           .child(div().flex_1().min_w(0).truncate().text_size(fs(11)).text_color(t.dim).child(this.file)))
-        .child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(10).text_size(fs(12)).text_color(t.dim).child(this.fileError || "Loading file…"));
+        .child(code
+          ? div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
+              .child(div().id("vf-code-x").size_full().overflow_x_scrollbar()
+                .child(div().w_full().min_w(code.width).h_full().child(v_virtual_list("vf-code", lines.length, 20, (i) => String(i),
+                  (range) => lines.slice(range.start, range.end).map((line, off) => this.codeRow(range.start + off, line, gutter, t))).size_full())))
+              .child(Scrollbar.vertical("vf-code").viewport_from_layout().absolute().inset_0())
+          : div().p(10).text_size(fs(12)).text_color(t.dim).child(this.fileError || "Loading file…"));
     }
     const rows = this.collectFileRows("", 0, []);
     const rowByPath = new Map(rows.map((r) => [r.path, r]));
@@ -379,11 +482,13 @@ export class FolderViewer {
     return tree;
   }
 
-  diffRow({ kind, number, text }, t) {
+  diffRow({ kind, number, text }, index, gutter, t) {
     if (kind === "@") return div().w_full().px(10).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
-    return h_flex().w_full().h(20).flex_none().gap(8).when(kind === "+", (e) => e.bg(t.ansi2 + "18")).when(kind === "-", (e) => e.bg(t.ansi1 + "18"))
-      .child(div().w(30).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
-      .child(div().flex_1().min_w(0).truncate().child(text));
+    return h_flex().w_full().h(20).flex_none().gap(8)
+      .when(kind === "+", (e) => e.bg(HL.tint(t.ansi2, "1c")))
+      .when(kind === "-", (e) => e.bg(HL.tint(t.blocked, "1a")))
+      .child(div().w(gutter).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
+      .child(this.renderHighlightedLine(text, this.diffSpans[index], t));
   }
 
   renderChangeRow(f, t, fs) {
@@ -411,10 +516,12 @@ export class FolderViewer {
     const body = v_flex().flex_1().min_h(0).child(list);
     if (this.changesError && this.changed.length) body.child(div().id("vc-error").flex_none().px(10).py(3).text_size(fs(11)).text_color(t.ansi1).child(this.changesError));
     if (this.changesLimited) body.child(div().px(10).py(3).text_size(fs(11)).text_color(t.dim).child("Showing the first 1,000 changed files"));
+    const maxNum = this.rows.reduce((m, r) => (r.number !== undefined && r.number > m ? r.number : m), 0);
+    const diffGutter = Math.max(30, String(maxNum).length * 7 + 8);
     return body.child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)
       .child(div().id("vc-diff-x").size_full().overflow_x_scrollbar()
         .child(div().w_full().min_w(this.diffWidth).h_full().child(v_virtual_list("vc-diff", this.rows.length, 20, (i) => String(i),
-          (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full())))
+          (range) => this.rows.slice(range.start, range.end).map((row, off) => this.diffRow(row, range.start + off, diffGutter, t))).size_full())))
       .child(Scrollbar.vertical("vc-diff").viewport_from_layout().absolute().inset_0())
       .when(!this.open && this.changed.length > 0, (e) => e.child(div().absolute().top(6).px(10).text_color(t.dim).child("Select a file to view its changes"))));
   }

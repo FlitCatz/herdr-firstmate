@@ -3650,12 +3650,12 @@ export default class FmBoard extends View {
   }
 
   cardsIn(id) {
-    const all = (this.cards ?? []).filter((c) => c.column === id && (!this.filter || c.project === this.filter));
+    const q = this.query.toLowerCase();
+    const all = (this.cards ?? []).filter((c) => c.column === id && (!this.filter || c.project === this.filter)
+      && (!q || searchText(c).includes(q)));
     // Highest priority first; equal or unset priorities keep backlog order (sort is stable).
     const rank = (c) => c.priority ?? Infinity;
-    const shown = id === "done" ? all.slice(-DONE_LIMIT).reverse() : all.sort((a, b) => rank(a) - rank(b));
-    const q = this.query.toLowerCase();
-    return q ? shown.filter((c) => searchText(c).includes(q)) : shown;
+    return id === "done" ? all.slice(-DONE_LIMIT).reverse() : all.sort((a, b) => rank(a) - rank(b));
   }
 
   // A Held group's heading: ruled like the column header, so the groups stand apart from the cards

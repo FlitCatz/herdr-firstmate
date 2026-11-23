@@ -4,7 +4,7 @@
 // test holds it to that shape: a fixture field the real snapshot does not have once hid a bug.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -92,7 +92,7 @@ function geometry(items) {
 }
 
 // The Board with the fixture loaded, as Herdr would run it with the preview props.
-async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null, prViewer = false, rootLayout = null, terminals = [], focusedTarget = null } = {}) {
+async function board({ projects, store = { getItem: () => null, setItem() {} }, registryFails = false, exec = async () => ({ code: 1, stdout: "", stderr: "" }), snapshot: customSnapshot = null, ui = {}, checkMode = false, preview = true, theme: customTheme = null, prViewer = false, rootLayout = null, terminals = [], focusedTarget = null, stubInsert = true } = {}) {
   // The registry the Board reads; tests change it, then reload.
   const registry = { projects: projects ?? ["maple-workshop", "orchard-atlas"], fails: registryFails };
   const source = (await readFile(new URL("mods/fm-board/main.js", root), "utf8"))
@@ -133,7 +133,8 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
     props: () => ({ home: HOME, ...(preview ? { snapshot_file: snapshotFile } : {}), collapsed: [], ui }),
     checking: () => checkMode,
-    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => terminals, focused: () => focusedTarget,
+    theme: () => theme, settings: () => ({ font_size: 14 }), terminals: () => terminals,
+    focused: () => (typeof focusedTarget === "function" ? focusedTarget() : focusedTarget),
     nextCommand: () => {
       if (commandQueue.length) return Promise.resolve(commandQueue.shift());
       return Promise.resolve(null);
@@ -173,7 +174,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
   await Promise.all(preview ? pending : pending.slice(0, 1));
   if (!registryFails) assert.equal(view.error, null);
   const drafts = [], opened = [];
-  view.insertCardText = (text) => drafts.push(text);
+  if (stubInsert) view.insertCardText = (text) => drafts.push(text);
   view.openView = (project, source, cx) => { view.clearChainSelection(cx); opened.push({ project, ...source }); };
   let items = drawn(view.render(cx));
   const click = (id, event = {}) => {
@@ -1938,6 +1939,34 @@ test("tabs switch once per wheel notch and ignore horizontal-only line scrolling
   t.wheel(0, 1001, { delta_lines: { x: 0, y: -1 } });
   t.wheel(60, 1002, { delta_lines: { x: 1, y: 0 } });
   assert.deepEqual(t.actions.map((x) => x.action), ["tab.prev", "tab.next"]);
+});
+
+test("tabs ignore horizontal-only pixel wheel events even with residual vertical accumulation", async () => {
+  const t = await tabs();
+  // Positive vertical swipe leaves 80px residual; horizontal-only move 120ms later must neither
+  // trigger a tab switch nor refresh the vertical gesture timestamp.
+  t.wheel(100, 1000);
+  assert.deepEqual(t.actions.map((x) => x.action), ["tab.prev"]);
+  t.wheel(0, 1120, { delta: { x: 40, y: 0 } });
+  assert.deepEqual(t.actions.map((x) => x.action), ["tab.prev"]);
+  // Past 250ms from the last vertical event, the stale residual must have expired even though a
+  // horizontal event arrived at 1120ms.
+  t.wheel(1, 1300);
+  assert.deepEqual(t.actions.map((x) => x.action), ["tab.prev"]);
+
+  // Negative vertical residual followed by a horizontal-only move must not trigger either.
+  const tNeg = await tabs();
+  tNeg.wheel(-100, 1000);
+  assert.deepEqual(tNeg.actions.map((x) => x.action), ["tab.next"]);
+  tNeg.wheel(0, 1120, { delta: { x: -40, y: 0 } });
+  assert.deepEqual(tNeg.actions.map((x) => x.action), ["tab.next"]);
+
+  // A new horizontal touch_phase "started" resets the old vertical gesture without switching tabs.
+  const tStart = await tabs();
+  tStart.wheel(100, 1000);
+  tStart.wheel(0, 1120, { delta: { x: 30, y: 0 }, touch_phase: "started" });
+  tStart.wheel(1, 1150);
+  assert.deepEqual(tStart.actions.map((x) => x.action), ["tab.prev"]);
 });
 
 test("tabs follow useful live agent titles, preserving explicit names and filtering terminal noise", async () => {
@@ -3836,4 +3865,260 @@ test("Board panel-frame schedules a next-frame redraw on key_down while focused 
   b.redraw();
   assert.equal(frameColor(), theme.border);
   assert.equal(frameKeyDown(), undefined);
+});
+
+test("Done search matches older Done records beyond the 20 most recent and caps results to the newest 20", async () => {
+  const pad = (n) => String(n).padStart(2, "0");
+  // 25 Done records in backlog order (done-01 oldest .. done-25 newest).
+  // done-01..done-22 carry "early-batch"; only done-01 carries "needle"; all carry "finished".
+  const records = Array.from({ length: 25 }, (_, i) => {
+    const n = i + 1;
+    const id = `done-${pad(n)}`;
+    const tags = ["finished", ...(n <= 22 ? ["early-batch"] : []), ...(n === 1 ? ["needle"] : [])];
+    return {
+      id,
+      state: "done",
+      done: true,
+      repo: n === 1 ? "orchard-atlas" : "maple-workshop",
+      title: `Completed item ${pad(n)} ${tags.join(" ")}`,
+      structured: true,
+    };
+  });
+  const b = await board({
+    snapshot: { schema: "fm-fleet-snapshot.v1", fm_home: HOME, tasks: [], backlog: { records } },
+  });
+
+  // Without search, Done shows the 20 most recent cards, newest first.
+  const unfiltered = Array.from(b.view.cardsIn("done"), (c) => c.id);
+  assert.equal(unfiltered.length, 20);
+  assert.equal(unfiltered[0], "done-25");
+  assert.equal(unfiltered.at(-1), "done-06");
+  assert.ok(!unfiltered.includes("done-01"));
+
+  // Searching finds the oldest Done record that was outside the unfiltered top-20 window.
+  b.view.search.set_value("needle");
+  b.click("search-find");
+  assert.deepEqual(matches(b.view), ["done-01"]);
+  assert.ok(b.ids.includes("card-done-01"), "matched older Done card is drawn");
+
+  // Respects the active project filter alongside Done search.
+  b.view.filter = "maple-workshop";
+  b.redraw();
+  assert.deepEqual(matches(b.view), []);
+  b.view.filter = "orchard-atlas";
+  b.redraw();
+  assert.deepEqual(matches(b.view), ["done-01"]);
+  b.view.filter = null;
+
+  // When more than 20 Done records match, search returns the 20 most recent matches in newest-first order.
+  b.view.search.set_value("early-batch");
+  b.click("search-find");
+  const earlyMatches = matches(b.view);
+  assert.equal(earlyMatches.length, 20);
+  assert.equal(earlyMatches[0], "done-22");
+  assert.equal(earlyMatches.at(-1), "done-03");
+});
+
+test("card draft clicks exercise real insertCardText and pasteToFirstmate through focus loss, restore failure, and cleanup", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "fm-board-paste-"));
+  const binDir = join(tempDir, "bin");
+  const clipFile = join(tempDir, "clip.txt");
+  const countFile = join(tempDir, "count.txt");
+  const failCopyFile = join(tempDir, "fail-pbcopy");
+  const savedPaths = [];
+  await mkdir(binDir, { recursive: true });
+  await writeFile(clipFile, "original clipboard");
+  await writeFile(countFile, "10\n");
+  await writeFile(join(binDir, "pbpaste"), "#!/bin/sh\ncat \"$CLIP_FILE\"\n");
+  await writeFile(
+    join(binDir, "pbcopy"),
+    "#!/bin/sh\nif [ -f \"$FAIL_PBCOPY\" ]; then\n  echo \"pbcopy restore error\" >&2\n  exit 1\nfi\ncat > \"$CLIP_FILE\"\nn=$(cat \"$COUNT_FILE\")\nprintf '%s\\n' \"$((n + 1))\" > \"$COUNT_FILE\"\n",
+  );
+  await chmod(join(binDir, "pbpaste"), 0o755);
+  await chmod(join(binDir, "pbcopy"), 0o755);
+  t.after(async () => {
+    for (const p of savedPaths) await rm(p, { force: true });
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const readClip = () => readFile(clipFile, "utf8");
+  const fileExists = async (p) => { try { await access(p); return true; } catch { return false; } };
+
+  let pbTypes = "«class utf8», 18";
+  let currentFocus = { terminal: "w1:other" };
+  let terminalLive = true;
+  let loseFocusOnCopy = false;
+  const inboxCalls = [];
+
+  const ok = (value) => ({ code: 0, stdout: JSON.stringify(value), stderr: "" });
+  const exec = async (cmd, args = []) => {
+    if (cmd === "hc") {
+      if (!terminalLive) return { code: 1, stdout: "", stderr: "" };
+      if (args[0] === "ls") return ok({ terminals: [{ address: FIRSTMATE_TERMINAL, state: "live" }] });
+      if (args[0] === "get" && args[1] === FIRSTMATE_TERMINAL) {
+        return ok({ state: "live", pid: 100, foreground: { pid: FIRSTMATE_PID } });
+      }
+      return { code: 1, stdout: "", stderr: "" };
+    }
+    const scriptArg = args.find((a) => String(a).includes("/bin/fm-inbox.sh"));
+    if (scriptArg) {
+      const sub = args[args.indexOf(scriptArg) + 1];
+      if (sub === "ready") {
+        return terminalLive
+          ? ok({ lock: { state: "held", live_harness: true, pid: FIRSTMATE_PID } })
+          : { code: 1, stdout: "", stderr: "" };
+      }
+      if (sub === "note") {
+        inboxCalls.push([sub, ...args]);
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "" };
+    }
+    if (cmd === "/usr/bin/env" && args.includes("osascript")) {
+      const expr = args.at(-1);
+      if (expr.includes("changeCount")) return { code: 0, stdout: await readFile(countFile, "utf8"), stderr: "" };
+      if (expr.includes("clipboard info")) return { code: 0, stdout: `${pbTypes}\n`, stderr: "" };
+    }
+    if (cmd === "/usr/bin/env" && args[1] === "sh") {
+      const script = args[args.indexOf("-c") + 1];
+      let res;
+      try {
+        const out = await runFile("sh", args.slice(2), {
+          env: {
+            PATH: `${binDir}:/usr/bin:/bin`,
+            TMPDIR: tempDir,
+            LC_ALL: "en_US.UTF-8",
+            CLIP_FILE: clipFile,
+            COUNT_FILE: countFile,
+            FAIL_PBCOPY: failCopyFile,
+          },
+          encoding: "utf8",
+        });
+        res = { code: 0, stdout: out.stdout, stderr: out.stderr };
+      } catch (e) {
+        res = { code: typeof e.code === "number" ? e.code : 1, stdout: e.stdout ?? "", stderr: e.stderr ?? String(e.message ?? e) };
+      }
+      if (res.code === 0 && script.includes("pbpaste >") && res.stdout) savedPaths.push(res.stdout);
+      if (res.code === 0 && loseFocusOnCopy && script.includes("| pbcopy")) {
+        currentFocus = { terminal: "w1:stolen" };
+      }
+      return res;
+    }
+    return { code: 1, stdout: "", stderr: "" };
+  };
+
+  const b = await board({ exec, focusedTarget: () => currentFocus, stubInsert: false });
+  const waitTimer = async (ms) => {
+    for (let i = 0; i < 400; i++) {
+      const idx = b.timers.findIndex((x) => x.ms === ms);
+      if (idx >= 0) return b.timers.splice(idx, 1)[0];
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.fail(`expected ${ms}ms timer`);
+  };
+  const pasteCommands = () => b.commands.filter((c) => c.name === "terminal.paste");
+
+  // 1. Happy path from a real card option click: focuses firstmate, pastes draft with trailing space,
+  // restores the original clipboard after 300ms, deletes temp file, and releases the pasting lock.
+  b.click("opt-card:maple-icon-set-A");
+  const focusTimer1 = await waitTimer(100);
+  assert.equal(b.commands.at(-1)?.name, "agent.focus");
+  assert.equal(b.commands.at(-1)?.args?.terminal, FIRSTMATE_TERMINAL);
+  currentFocus = { terminal: FIRSTMATE_TERMINAL };
+  focusTimer1.fn();
+  const restoreTimer1 = await waitTimer(300);
+  assert.equal(pasteCommands().length, 1);
+  assert.equal(await readClip(), "[Board answer] maple-icon-set: A (Rounded) ");
+  const saved1 = savedPaths.at(-1);
+  assert.equal(await fileExists(saved1), true, "temp file exists on disk while waiting to restore");
+  assert.equal(b.view.pasting, true);
+  restoreTimer1.fn();
+  await b.settle();
+  assert.equal(await readClip(), "original clipboard");
+  assert.equal(await fileExists(saved1), false);
+  assert.equal(b.view.pasting, false);
+  assert.equal(b.view.notice, "Text is in the firstmate input, waiting for Enter");
+
+  // 2. Initial focus failure after 100ms: aborts before touching clipboard or pasting, releases lock.
+  b.commands.length = 0;
+  const savedCountBefore2 = savedPaths.length;
+  currentFocus = { terminal: "w1:other" };
+  b.click("opt-card:maple-icon-set-A");
+  const focusTimer2 = await waitTimer(100);
+  // Focus stays on another terminal.
+  focusTimer2.fn();
+  await b.settle();
+  assert.equal(pasteCommands().length, 0);
+  assert.equal(await readClip(), "original clipboard");
+  assert.equal(savedPaths.length, savedCountBefore2, "no temp file created when initial focus fails");
+  assert.equal(b.view.pasting, false);
+  assert.equal(b.view.notice, "Could not focus the firstmate terminal");
+
+  // 3. Focus changes mid-flight after pbcopy and before terminal.paste:
+  // skips terminal.paste, still restores original clipboard and cleans temp file, and releases lock.
+  b.commands.length = 0;
+  currentFocus = { terminal: FIRSTMATE_TERMINAL };
+  loseFocusOnCopy = true;
+  b.click("opt-card:maple-icon-set-A");
+  (await waitTimer(100)).fn();
+  await b.settle();
+  loseFocusOnCopy = false;
+  assert.equal(pasteCommands().length, 0, "must not paste after focus changed");
+  assert.equal(await readClip(), "original clipboard", "must restore original clipboard after mid-flight focus loss");
+  assert.equal(await fileExists(savedPaths.at(-1)), false, "must remove temp file on disk after mid-flight focus loss");
+  assert.equal(b.view.pasting, false);
+  assert.equal(b.view.notice, "Firstmate terminal focus changed; try again");
+
+  // 4. Clipboard restore failure in finally: real sh restore script runs rm -f even when pbcopy exits 1,
+  // surfaces the error notice, and releases the pasting lock so subsequent inserts still work.
+  b.commands.length = 0;
+  currentFocus = { terminal: FIRSTMATE_TERMINAL };
+  b.click("opt-card:maple-icon-set-A");
+  (await waitTimer(100)).fn();
+  const restoreTimer4 = await waitTimer(300);
+  const saved4 = savedPaths.at(-1);
+  assert.equal(await fileExists(saved4), true, "temp file exists on disk before failed restore");
+  await writeFile(failCopyFile, "1");
+  restoreTimer4.fn();
+  await b.settle();
+  await rm(failCopyFile, { force: true });
+  assert.equal(pasteCommands().length, 1);
+  assert.equal(await fileExists(saved4), false, "real restore command removes temp file on disk even when pbcopy fails");
+  assert.equal(b.view.pasting, false, "pasting lock must clear after restore failure");
+  assert.equal(b.view.notice, "Could not restore clipboard text");
+
+  // 5. Concurrent paste guard while a draft is in flight, followed by clean completion.
+  b.commands.length = 0;
+  await writeFile(clipFile, "after failure");
+  b.click("opt-card:maple-icon-set-A");
+  const inFlightTimer = await waitTimer(100);
+  b.click("ask-card-card:maple-icon-set");
+  for (let i = 0; i < 40 && b.view.notice !== "A card is already being inserted; try again"; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  assert.equal(b.view.notice, "A card is already being inserted; try again");
+  inFlightTimer.fn();
+  (await waitTimer(300)).fn();
+  await b.settle();
+  assert.equal(await readClip(), "after failure");
+  assert.equal(await fileExists(savedPaths.at(-1)), false);
+  assert.equal(b.view.pasting, false);
+  assert.equal(b.view.notice, "Text is in the firstmate input, waiting for Enter");
+
+  // 6. Image clipboard aborts without focusing or pasting; missing terminal reports notice without filing an inbox note.
+  b.commands.length = 0;
+  pbTypes = "«class PNGf», 1024";
+  b.click("opt-card:maple-icon-set-A");
+  await b.settle();
+  assert.equal(pasteCommands().length, 0);
+  assert.equal(b.commands.filter((c) => c.name === "agent.focus").length, 0);
+  assert.equal(b.view.pasting, false);
+  assert.match(b.view.notice, /Clipboard holds an image or file/);
+
+  pbTypes = "«class utf8», 13";
+  terminalLive = false;
+  b.click("opt-card:maple-icon-set-A");
+  await b.settle();
+  assert.equal(b.view.notice, "Could not find the firstmate terminal");
+  assert.deepEqual(inboxCalls, [], "insertOnly card drafts never fall back to inbox notes");
 });

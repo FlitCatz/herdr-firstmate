@@ -4,7 +4,7 @@
 // test holds it to that shape: a fixture field the real snapshot does not have once hid a bug.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -3919,14 +3919,35 @@ test("Done search matches older Done records beyond the 20 most recent and caps 
   assert.equal(earlyMatches.at(-1), "done-03");
 });
 
-test("card draft clicks exercise real insertCardText and pasteToFirstmate through focus loss, restore failure, and cleanup", async () => {
-  const pb = { count: 10, text: "original clipboard", types: "«class utf8», 18" };
-  const tempFiles = new Map();
-  let nextTmp = 0;
+test("card draft clicks exercise real insertCardText and pasteToFirstmate through focus loss, restore failure, and cleanup", async (t) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "fm-board-paste-"));
+  const binDir = join(tempDir, "bin");
+  const clipFile = join(tempDir, "clip.txt");
+  const countFile = join(tempDir, "count.txt");
+  const failCopyFile = join(tempDir, "fail-pbcopy");
+  const savedPaths = [];
+  await mkdir(binDir, { recursive: true });
+  await writeFile(clipFile, "original clipboard");
+  await writeFile(countFile, "10\n");
+  await writeFile(join(binDir, "pbpaste"), "#!/bin/sh\ncat \"$CLIP_FILE\"\n");
+  await writeFile(
+    join(binDir, "pbcopy"),
+    "#!/bin/sh\nif [ -f \"$FAIL_PBCOPY\" ]; then\n  echo \"pbcopy restore error\" >&2\n  exit 1\nfi\ncat > \"$CLIP_FILE\"\nn=$(cat \"$COUNT_FILE\")\nprintf '%s\\n' \"$((n + 1))\" > \"$COUNT_FILE\"\n",
+  );
+  await chmod(join(binDir, "pbpaste"), 0o755);
+  await chmod(join(binDir, "pbcopy"), 0o755);
+  t.after(async () => {
+    for (const p of savedPaths) await rm(p, { force: true });
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const readClip = () => readFile(clipFile, "utf8");
+  const fileExists = async (p) => { try { await access(p); return true; } catch { return false; } };
+
+  let pbTypes = "«class utf8», 18";
   let currentFocus = { terminal: "w1:other" };
   let terminalLive = true;
   let loseFocusOnCopy = false;
-  let failRestore = false;
   const inboxCalls = [];
 
   const ok = (value) => ({ code: 0, stdout: JSON.stringify(value), stderr: "" });
@@ -3955,47 +3976,43 @@ test("card draft clicks exercise real insertCardText and pasteToFirstmate throug
     }
     if (cmd === "/usr/bin/env" && args.includes("osascript")) {
       const expr = args.at(-1);
-      if (expr.includes("changeCount")) return { code: 0, stdout: `${pb.count}\n`, stderr: "" };
-      if (expr.includes("clipboard info")) return { code: 0, stdout: `${pb.types}\n`, stderr: "" };
+      if (expr.includes("changeCount")) return { code: 0, stdout: await readFile(countFile, "utf8"), stderr: "" };
+      if (expr.includes("clipboard info")) return { code: 0, stdout: `${pbTypes}\n`, stderr: "" };
     }
-    if (cmd === "/usr/bin/env" && args.includes("sh")) {
+    if (cmd === "/usr/bin/env" && args[1] === "sh") {
       const script = args[args.indexOf("-c") + 1];
-      const arg1 = args.at(-1);
-      if (script.includes("pbpaste >")) {
-        const path = `/tmp/fm-draft-clip-${++nextTmp}`;
-        tempFiles.set(path, pb.text);
-        return { code: 0, stdout: path, stderr: "" };
+      let res;
+      try {
+        const out = await runFile("sh", args.slice(2), {
+          env: {
+            PATH: `${binDir}:/usr/bin:/bin`,
+            TMPDIR: tempDir,
+            LC_ALL: "en_US.UTF-8",
+            CLIP_FILE: clipFile,
+            COUNT_FILE: countFile,
+            FAIL_PBCOPY: failCopyFile,
+          },
+          encoding: "utf8",
+        });
+        res = { code: 0, stdout: out.stdout, stderr: out.stderr };
+      } catch (e) {
+        res = { code: typeof e.code === "number" ? e.code : 1, stdout: e.stdout ?? "", stderr: e.stderr ?? String(e.message ?? e) };
       }
-      if (script.includes("| pbcopy")) {
-        pb.text = arg1;
-        pb.count++;
-        if (loseFocusOnCopy) currentFocus = { terminal: "w1:stolen" };
-        return { code: 0, stdout: "", stderr: "" };
+      if (res.code === 0 && script.includes("pbpaste >") && res.stdout) savedPaths.push(res.stdout);
+      if (res.code === 0 && loseFocusOnCopy && script.includes("| pbcopy")) {
+        currentFocus = { terminal: "w1:stolen" };
       }
-      if (script.includes("pbcopy <")) {
-        if (failRestore) {
-          tempFiles.delete(arg1);
-          return { code: 1, stdout: "", stderr: "pbcopy restore error" };
-        }
-        pb.text = tempFiles.get(arg1) ?? "";
-        pb.count++;
-        tempFiles.delete(arg1);
-        return { code: 0, stdout: "", stderr: "" };
-      }
-      if (script.includes("rm -f")) {
-        tempFiles.delete(arg1);
-        return { code: 0, stdout: "", stderr: "" };
-      }
+      return res;
     }
     return { code: 1, stdout: "", stderr: "" };
   };
 
   const b = await board({ exec, focusedTarget: () => currentFocus, stubInsert: false });
   const waitTimer = async (ms) => {
-    for (let i = 0; i < 40; i++) {
-      const idx = b.timers.findIndex((t) => t.ms === ms);
+    for (let i = 0; i < 400; i++) {
+      const idx = b.timers.findIndex((x) => x.ms === ms);
       if (idx >= 0) return b.timers.splice(idx, 1)[0];
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 2));
     }
     assert.fail(`expected ${ms}ms timer`);
   };
@@ -4011,17 +4028,20 @@ test("card draft clicks exercise real insertCardText and pasteToFirstmate throug
   focusTimer1.fn();
   const restoreTimer1 = await waitTimer(300);
   assert.equal(pasteCommands().length, 1);
-  assert.equal(pb.text, "[Board answer] maple-icon-set: A (Rounded) ");
+  assert.equal(await readClip(), "[Board answer] maple-icon-set: A (Rounded) ");
+  const saved1 = savedPaths.at(-1);
+  assert.equal(await fileExists(saved1), true, "temp file exists on disk while waiting to restore");
   assert.equal(b.view.pasting, true);
   restoreTimer1.fn();
   await b.settle();
-  assert.equal(pb.text, "original clipboard");
-  assert.equal(tempFiles.size, 0);
+  assert.equal(await readClip(), "original clipboard");
+  assert.equal(await fileExists(saved1), false);
   assert.equal(b.view.pasting, false);
   assert.equal(b.view.notice, "Text is in the firstmate input, waiting for Enter");
 
   // 2. Initial focus failure after 100ms: aborts before touching clipboard or pasting, releases lock.
   b.commands.length = 0;
+  const savedCountBefore2 = savedPaths.length;
   currentFocus = { terminal: "w1:other" };
   b.click("opt-card:maple-icon-set-A");
   const focusTimer2 = await waitTimer(100);
@@ -4029,8 +4049,8 @@ test("card draft clicks exercise real insertCardText and pasteToFirstmate throug
   focusTimer2.fn();
   await b.settle();
   assert.equal(pasteCommands().length, 0);
-  assert.equal(pb.text, "original clipboard");
-  assert.equal(tempFiles.size, 0);
+  assert.equal(await readClip(), "original clipboard");
+  assert.equal(savedPaths.length, savedCountBefore2, "no temp file created when initial focus fails");
   assert.equal(b.view.pasting, false);
   assert.equal(b.view.notice, "Could not focus the firstmate terminal");
 
@@ -4044,45 +4064,50 @@ test("card draft clicks exercise real insertCardText and pasteToFirstmate throug
   await b.settle();
   loseFocusOnCopy = false;
   assert.equal(pasteCommands().length, 0, "must not paste after focus changed");
-  assert.equal(pb.text, "original clipboard", "must restore original clipboard after mid-flight focus loss");
-  assert.equal(tempFiles.size, 0, "must clean up temp file after mid-flight focus loss");
+  assert.equal(await readClip(), "original clipboard", "must restore original clipboard after mid-flight focus loss");
+  assert.equal(await fileExists(savedPaths.at(-1)), false, "must remove temp file on disk after mid-flight focus loss");
   assert.equal(b.view.pasting, false);
   assert.equal(b.view.notice, "Firstmate terminal focus changed; try again");
 
-  // 4. Clipboard restore failure in finally: surfaces notice, removes temp file, and releases lock
-  // so subsequent inserts still work.
+  // 4. Clipboard restore failure in finally: real sh restore script runs rm -f even when pbcopy exits 1,
+  // surfaces the error notice, and releases the pasting lock so subsequent inserts still work.
   b.commands.length = 0;
   currentFocus = { terminal: FIRSTMATE_TERMINAL };
-  failRestore = true;
   b.click("opt-card:maple-icon-set-A");
   (await waitTimer(100)).fn();
-  (await waitTimer(300)).fn();
+  const restoreTimer4 = await waitTimer(300);
+  const saved4 = savedPaths.at(-1);
+  assert.equal(await fileExists(saved4), true, "temp file exists on disk before failed restore");
+  await writeFile(failCopyFile, "1");
+  restoreTimer4.fn();
   await b.settle();
-  failRestore = false;
+  await rm(failCopyFile, { force: true });
   assert.equal(pasteCommands().length, 1);
-  assert.equal(tempFiles.size, 0, "temp file is removed even when pbcopy restore fails");
+  assert.equal(await fileExists(saved4), false, "real restore command removes temp file on disk even when pbcopy fails");
   assert.equal(b.view.pasting, false, "pasting lock must clear after restore failure");
   assert.equal(b.view.notice, "Could not restore clipboard text");
 
   // 5. Concurrent paste guard while a draft is in flight, followed by clean completion.
   b.commands.length = 0;
-  pb.text = "after failure";
+  await writeFile(clipFile, "after failure");
   b.click("opt-card:maple-icon-set-A");
   const inFlightTimer = await waitTimer(100);
   b.click("ask-card-card:maple-icon-set");
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  for (let i = 0; i < 40 && b.view.notice !== "A card is already being inserted; try again"; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
   assert.equal(b.view.notice, "A card is already being inserted; try again");
   inFlightTimer.fn();
   (await waitTimer(300)).fn();
   await b.settle();
-  assert.equal(pb.text, "after failure");
-  assert.equal(tempFiles.size, 0);
+  assert.equal(await readClip(), "after failure");
+  assert.equal(await fileExists(savedPaths.at(-1)), false);
   assert.equal(b.view.pasting, false);
   assert.equal(b.view.notice, "Text is in the firstmate input, waiting for Enter");
 
   // 6. Image clipboard aborts without focusing or pasting; missing terminal reports notice without filing an inbox note.
   b.commands.length = 0;
-  pb.types = "«class PNGf», 1024";
+  pbTypes = "«class PNGf», 1024";
   b.click("opt-card:maple-icon-set-A");
   await b.settle();
   assert.equal(pasteCommands().length, 0);
@@ -4090,7 +4115,7 @@ test("card draft clicks exercise real insertCardText and pasteToFirstmate throug
   assert.equal(b.view.pasting, false);
   assert.match(b.view.notice, /Clipboard holds an image or file/);
 
-  pb.types = "«class utf8», 13";
+  pbTypes = "«class utf8», 13";
   terminalLive = false;
   b.click("opt-card:maple-icon-set-A");
   await b.settle();

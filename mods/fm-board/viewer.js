@@ -12,10 +12,6 @@ const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.a
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", cs: "csharp", kt: "kotlin" };
 const PER_FOLDER = 500, TOTAL = 5000, CHANGED_LIMIT = 1000, DIFF_LINES = 1500;
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
-const expandLine = (text) => {
-  const clean = text.endsWith("\r") ? text.slice(0, -1) : text;
-  return clean.indexOf("\t") !== -1 ? clean.replace(/\t/g, "    ") : clean;
-};
 
 function isValidRelPath(rel, { allowEmpty = false } = {}) {
   if (typeof rel !== "string") return false;
@@ -71,9 +67,9 @@ function diffRows(lines) {
     const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
     if (match) { old = +match[1]; next = +match[2]; return { kind: "@", text: line }; }
     const kind = line[0];
-    if (kind === "-") return { kind, number: old++, text: expandLine(line.slice(1)) || " " };
-    if (kind === "+") return { kind, number: next++, text: expandLine(line.slice(1)) || " " };
-    if (kind === " ") { old++; return { kind, number: next++, text: expandLine(line.slice(1)) || " " }; }
+    if (kind === "-") return { kind, number: old++, text: line.slice(1) || " " };
+    if (kind === "+") return { kind, number: next++, text: line.slice(1) || " " };
+    if (kind === " ") { old++; return { kind, number: next++, text: line.slice(1) || " " }; }
     return { kind: "", text: line };
   });
 }
@@ -89,7 +85,7 @@ export class FolderViewer {
     this.fileSeq++; this.diffSeq++;
     this.code?.release?.();
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
-    this.file = null; this.code = null; this.codeLanguage = null; this.codeSyntax = null; this.fileError = null; this.error = null; this.loading = false; this.limited = false;
+    this.file = null; this.code = null; this.fileError = null; this.error = null; this.loading = false; this.limited = false;
     this.changed = []; this.rows = []; this.diffSpans = []; this.diffKey = ""; this.diffWidth = 300; this.open = null; this.closed = false;
     this.changesError = null; this.changesLoading = false; this.changesLimited = false; this.gitRoot = null; this.hasHead = false;
   }
@@ -111,13 +107,6 @@ export class FolderViewer {
       timerCx.notify();
     };
     this.diffHighlightTimer = cx.timer.after(0, step);
-  }
-
-  setCode(language, value, t) {
-    const syntax = editorSyntax(t);
-    this.code?.release?.();
-    this.code = EditorState.new({ language, readonly: true, value, font_family: settings().font_family, font_size: 12, syntax });
-    this.codeLanguage = language; this.codeSyntax = JSON.stringify(syntax);
   }
 
   // Same folder again keeps the open folders and file; a new one starts over.
@@ -245,7 +234,9 @@ export class FolderViewer {
         if (text === null) { this.fileError = "This file is no longer available"; return; }
         if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
         const ext = path.includes(".") ? path.split(".").pop() : "txt";
-        this.setCode(LANG[ext] ?? ext, text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text, t);
+        this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
+          value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
+          font_family: settings().font_family, font_size: 12, syntax: editorSyntax(t) });
       } catch { if (seq === this.fileSeq && gen === this.gen) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
       finally { if (seq === this.fileSeq && gen === this.gen) cx.notify(); }
     });
@@ -339,7 +330,7 @@ export class FolderViewer {
     this.cancelDiffHighlight();
     this.diffKey = diffKey;
     this.rows = diffRows(lines);
-    this.diffWidth = Math.max(300, ...this.rows.map((r) => r.text.length * 7 + 50));
+    this.diffWidth = Math.max(300, ...lines.map((l) => l.length * 7 + 50));
     this.diffSpans = [];
     if (path && this.rows.length && detectLanguage(path) !== "plain") this.highlightDiff(path, diffKey, cx);
   }
@@ -398,7 +389,6 @@ export class FolderViewer {
 
   filesBody(t, fs) {
     if (this.file) {
-      if (this.code && this.codeSyntax !== JSON.stringify(editorSyntax(t))) this.setCode(this.codeLanguage, this.code.value(), t);
       return v_flex().flex_1().min_h(0)
         .child(h_flex().flex_none().gap(6).px(6).py(4).items_center().border_b(1).border_color(t.border)
           .child(div().id("vf-back").cursor_pointer().text_color(t.muted).on_click((_e, cx) => this.showFile(null, cx, t)).child("←"))
@@ -428,12 +418,12 @@ export class FolderViewer {
     return tree;
   }
 
-  diffRow({ kind, number, text }, index, gutter, t) {
+  diffRow({ kind, number, text }, index, t) {
     if (kind === "@") return div().w_full().px(10).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
     return h_flex().w_full().h(20).flex_none().gap(8)
       .when(kind === "+", (e) => e.bg(tint(t.ansi2, "1c")))
       .when(kind === "-", (e) => e.bg(tint(t.blocked, "1a")))
-      .child(div().w(gutter).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
+      .child(div().w(30).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
       .child(this.renderHighlightedLine(text, this.diffSpans[index], t));
   }
 
@@ -462,12 +452,10 @@ export class FolderViewer {
     const body = v_flex().flex_1().min_h(0).child(list);
     if (this.changesError && this.changed.length) body.child(div().id("vc-error").flex_none().px(10).py(3).text_size(fs(11)).text_color(t.ansi1).child(this.changesError));
     if (this.changesLimited) body.child(div().px(10).py(3).text_size(fs(11)).text_color(t.dim).child("Showing the first 1,000 changed files"));
-    const maxNum = this.rows.reduce((m, r) => (r.number !== undefined && r.number > m ? r.number : m), 0);
-    const diffGutter = Math.max(30, String(maxNum).length * 7 + 8);
     return body.child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)
       .child(div().id("vc-diff-x").size_full().overflow_x_scrollbar()
         .child(div().w_full().min_w(this.diffWidth).h_full().child(v_virtual_list("vc-diff", this.rows.length, 20, (i) => String(i),
-          (range) => this.rows.slice(range.start, range.end).map((row, off) => this.diffRow(row, range.start + off, diffGutter, t))).size_full())))
+          (range) => this.rows.slice(range.start, range.end).map((row, off) => this.diffRow(row, range.start + off, t))).size_full())))
       .child(Scrollbar.vertical("vc-diff").viewport_from_layout().absolute().inset_0())
       .when(!this.open && this.changed.length > 0, (e) => e.child(div().absolute().top(6).px(10).text_color(t.dim).child("Select a file to view its changes"))));
   }

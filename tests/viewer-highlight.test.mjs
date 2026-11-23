@@ -158,7 +158,7 @@ async function createHighlightedViewer({ exec, readTextFile, virtualRanges } = {
     },
     EditorState: {
       new: (opts) => {
-        const state = { opts, released: false, value: () => opts.value, release() { state.released = true; return true; } };
+        const state = { opts, released: false, release() { state.released = true; return true; } };
         editors.push(state);
         return state;
       },
@@ -382,17 +382,23 @@ test("FolderViewer highlights Files view and Changes view with Herdr theme token
 
   let rendered = v.render();
   assert.equal(findEditorState(rendered.tree), darkState, "Files view renders the Editor for the open file");
-  assert.equal(v.editors.length, 1, "an unchanged theme keeps the same editor state");
 
-  // Switching to a light theme rebuilds the editor with the light colors and the same text.
+  // Rendering never creates or releases editor state, so a theme switch keeps the open file's editor.
   rendered = v.render(LIGHT_THEME);
+  assert.equal(v.editors.length, 1, "render must not create editor state");
+  assert.equal(darkState.released, false, "render must not release editor state");
+  assert.equal(findEditorState(rendered.tree), darkState);
+
+  // The next file opened under the light theme gets the light colors.
+  v.view.showFile("app.ts", v.cx, LIGHT_THEME);
+  await v.settle();
   assert.equal(v.editors.length, 2);
   const lightState = v.editors[1];
-  assert.equal(darkState.released, true, "the dark-theme editor state is released");
+  assert.equal(darkState.released, true, "opening another file releases the previous editor state");
   assert.equal(lightState.opts.value, sampleTs);
   assert.equal(lightState.opts.language, "js");
   assert.deepEqual(lightState.opts.syntax, expectedEditorSyntax(LIGHT_THEME));
-  assert.equal(findEditorState(rendered.tree), lightState);
+  assert.equal(findEditorState(v.render(LIGHT_THEME).tree), lightState);
 
   // Changes view highlights synchronously for small diffs with ansi2+"1c" and blocked+"1a" line tints.
   v.view.tab = "changes";

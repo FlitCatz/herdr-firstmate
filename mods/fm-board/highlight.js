@@ -1,13 +1,13 @@
 // Adapted from the sibling herdr-pr-viewer mod (mods/herdr-pr-viewer/highlight.js).
-// Lightweight syntax tokenizer for file and diff lines, using Herdr theme tokens.
-// Zero dependencies and incremental per line slice so large files and diffs stay fast.
+// Lightweight syntax tokenizer for diff lines, using Herdr theme tokens.
+// Zero dependencies and incremental per line slice so large diffs stay fast.
 
 /** @typedef {"plain" | "keyword" | "string" | "comment" | "number" | "type" | "function" | "constant"} TokenKind */
 /** @typedef {{ kind: TokenKind, text: string }} Span */
 /** @typedef {"csharp" | "ts" | "dart" | "rust" | "json" | "yaml" | "markdown" | "shell" | "plain"} Language */
 /** @typedef {{ kind: string, text: string }} DiffLineRow */
 
-// First 160 rows highlight synchronously; longer files and diffs highlight in 80-row chunks.
+// First 160 rows highlight synchronously; longer diffs highlight in 80-row chunks.
 export const HIGHLIGHT_SYNC_MAX = 160;
 export const HIGHLIGHT_CHUNK = 80;
 export const MAX_LINE_SPANS = 80;
@@ -50,6 +50,20 @@ export function syntaxColor(t, kind) {
     case "constant": return t.ansi6;
     default: return t.foreground;
   }
+}
+
+/**
+ * The same token table as the `syntax` colors of Herdr's code `Editor`.
+ * @param {Record<string, any>} t
+ * @returns {Record<string, string>}
+ */
+export function editorSyntax(t) {
+  const color = (kind) => syntaxColor(t, kind);
+  return {
+    keyword: color("keyword"), string: color("string"), comment: color("comment"), function: color("function"),
+    type: color("type"), number: color("number"), constant: color("constant"), boolean: color("constant"),
+    "string.escape": color("constant"), variable: color("plain"), operator: color("plain"), punctuation: color("plain"),
+  };
 }
 
 /**
@@ -407,73 +421,14 @@ export function highlightLine(line, lang, inComment = false) {
 }
 
 /**
- * Incrementally highlights full-file lines up to `limit`, tracking block-comment state
- * from line 0 and caching computed rows across chunk ticks.
- */
-export class FileHighlighter {
-  constructor() {
-    /** @type {{ path: string, key: string | null, lang: Language, lines: Span[][], inComment: boolean | null } | null} */
-    this.cache = null;
-  }
-
-  /**
-   * Returns already-computed highlight spans for `(path, key)` without tokenizing more lines.
-   * @param {string} path
-   * @param {string | null} key
-   * @returns {Span[][] | null}
-   */
-  cached(path, key) {
-    if (!this.cache || this.cache.path !== path || this.cache.key !== key) return null;
-    return this.cache.lines;
-  }
-
-  /**
-   * @param {string} path
-   * @param {string | null} key
-   * @param {string[]} lines
-   * @param {number} limit
-   * @returns {Span[][]}
-   */
-  highlight(path, key, lines, limit) {
-    if (!this.cache || this.cache.path !== path || this.cache.key !== key) {
-      this.cache = { path, key, lang: detectLanguage(path), lines: [], inComment: false };
-    }
-    const c = this.cache;
-    const target = Math.min(limit, lines.length);
-    for (let i = c.lines.length; i < target; i++) {
-      if (c.lang === "plain") {
-        c.lines.push([{ kind: "plain", text: lines[i] }]);
-      } else {
-        const res = highlightLine(lines[i], c.lang, c.inComment);
-        c.inComment = res.inComment;
-        c.lines.push(res.spans);
-      }
-    }
-    return c.lines;
-  }
-}
-
-/**
  * Incrementally highlights diff rows up to `limit`, tracking separate old/new block-comment
  * state across deleted/added/context lines within each hunk and caching computed rows.
- * Accepts both fm-board viewer row kinds (`"@"`, `"-"`, `"+"`, `" "`, `""`) and pr-viewer kinds
- * (`"hunk"`, `"del"`, `"add"`, `"ctx"`, `"note"`).
+ * Row kinds are the viewer's `diffRows` kinds: `"@"`, `"-"`, `"+"`, `" "`, and `""`.
  */
 export class DiffHighlighter {
   constructor() {
     /** @type {{ path: string, patch: string | null, lang: Language, lines: (Span[] | null)[], oldComment: boolean | null, newComment: boolean | null } | null} */
     this.cache = null;
-  }
-
-  /**
-   * Returns already-computed highlight spans for `(path, patch)` without tokenizing more lines.
-   * @param {string} path
-   * @param {string | null} patch
-   * @returns {(Span[] | null)[] | null}
-   */
-  cached(path, patch) {
-    if (!this.cache || this.cache.path !== path || this.cache.patch !== patch) return null;
-    return this.cache.lines;
   }
 
   /**
@@ -491,19 +446,19 @@ export class DiffHighlighter {
     const target = Math.min(limit, rows.length);
     for (let i = c.lines.length; i < target; i++) {
       const r = rows[i];
-      if (r.kind === "@" || r.kind === "hunk") {
+      if (r.kind === "@") {
         c.oldComment = null;
         c.newComment = null;
         c.lines.push(null);
-      } else if (r.kind === "" || r.kind === "note") {
+      } else if (r.kind === "") {
         c.lines.push(null);
       } else if (c.lang === "plain") {
         c.lines.push([{ kind: "plain", text: r.text }]);
-      } else if (r.kind === "-" || r.kind === "del") {
+      } else if (r.kind === "-") {
         const res = highlightLine(r.text, c.lang, c.oldComment);
         c.oldComment = res.inComment;
         c.lines.push(res.spans);
-      } else if (r.kind === "+" || r.kind === "add") {
+      } else if (r.kind === "+") {
         const res = highlightLine(r.text, c.lang, c.newComment);
         c.newComment = res.inComment;
         c.lines.push(res.spans);

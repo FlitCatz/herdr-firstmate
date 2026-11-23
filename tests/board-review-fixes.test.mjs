@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import vm from "node:vm";
+import * as highlight from "../mods/fm-board/highlight.js";
 
 const runFile = promisify(execFile);
 const rootUrl = new URL("..", import.meta.url);
@@ -107,6 +108,7 @@ async function createViewer({ exec, readTextFile, virtualRanges } = {}) {
     },
     exec: track(rawExec),
     readTextFile: track(rawReadTextFile),
+    ...highlight,
   };
   const FolderViewer = vm.runInNewContext(`${source}\nFolderViewer`, scope);
   const view = new FolderViewer();

@@ -4,22 +4,12 @@
 // isolated copy). It never writes: no commit, and every git read leaves .git untouched,
 // because firstmate does not change project copies.
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, v_virtual_list } from "gpui-base";
+import { v_flex, h_flex, Editor, EditorState, Scrollbar, v_virtual_list } from "gpui-base";
 import { exec, readTextFile, watchFolder, settings } from "herdr";
-import { HIGHLIGHT_SYNC_MAX, HIGHLIGHT_CHUNK, capLineSpans, detectLanguage, DiffHighlighter, FileHighlighter, syntaxColor, tint } from "./highlight.js";
-
-const HL = {
-  syncMax: typeof HIGHLIGHT_SYNC_MAX === "number" ? HIGHLIGHT_SYNC_MAX : 160,
-  chunk: typeof HIGHLIGHT_CHUNK === "number" ? HIGHLIGHT_CHUNK : 80,
-  capLineSpans: typeof capLineSpans === "function" ? capLineSpans : () => null,
-  detectLanguage: typeof detectLanguage === "function" ? detectLanguage : () => "plain",
-  DiffHighlighter: typeof DiffHighlighter === "function" ? DiffHighlighter : null,
-  FileHighlighter: typeof FileHighlighter === "function" ? FileHighlighter : null,
-  syntaxColor: typeof syntaxColor === "function" ? syntaxColor : (t) => t.foreground,
-  tint: typeof tint === "function" ? tint : (color, alpha) => `${color}${alpha}`,
-};
+import { HIGHLIGHT_SYNC_MAX, HIGHLIGHT_CHUNK, capLineSpans, detectLanguage, DiffHighlighter, editorSyntax, syntaxColor, tint } from "./highlight.js";
 
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
+const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", cs: "csharp", kt: "kotlin" };
 const PER_FOLDER = 500, TOTAL = 5000, CHANGED_LIMIT = 1000, DIFF_LINES = 1500;
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 const expandLine = (text) => {
@@ -91,38 +81,43 @@ function diffRows(lines) {
 export class FolderViewer {
   constructor() { this.root = null; this.label = ""; this.tab = "files"; this.gen = 0; this.fileSeq = 0; this.diffSeq = 0; this.reset(); }
 
-  cancelFileHighlight() { this.fileHighlightTimer?.cancel?.(); this.fileHighlightTimer = null; }
-
   cancelDiffHighlight() { this.diffHighlightTimer?.cancel?.(); this.diffHighlightTimer = null; }
 
   reset() {
     this.folderWatch?.cancel(); this.folderWatch = null;
-    this.cancelFileHighlight(); this.cancelDiffHighlight();
+    this.cancelDiffHighlight();
     this.fileSeq++; this.diffSeq++;
     this.code?.release?.();
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
-    this.file = null; this.code = null; this.fileError = null; this.error = null; this.loading = false; this.limited = false;
+    this.file = null; this.code = null; this.codeLanguage = null; this.codeSyntax = null; this.fileError = null; this.error = null; this.loading = false; this.limited = false;
     this.changed = []; this.rows = []; this.diffSpans = []; this.diffKey = ""; this.diffWidth = 300; this.open = null; this.closed = false;
     this.changesError = null; this.changesLoading = false; this.changesLimited = false; this.gitRoot = null; this.hasHead = false;
   }
 
-  startChunkedHighlight({ total, highlighter, path, key, items, targetSpans, cx, setTimer, isCurrent }) {
-    const initial = highlighter.highlight(path, key, items, HL.syncMax);
-    for (let i = 0; i < initial.length; i++) targetSpans[i] = HL.capLineSpans(initial[i]);
-    if (total <= HL.syncMax || !cx?.timer?.after) return;
+  highlightDiff(path, diffKey, cx) {
+    const gen = this.gen, rows = this.rows, spans = this.diffSpans, highlighter = new DiffHighlighter();
+    const isCurrent = () => this.gen === gen && this.diffKey === diffKey && this.open === path;
+    const fill = (limit) => {
+      const res = highlighter.highlight(path, diffKey, rows, limit);
+      for (let i = spans.length; i < res.length; i++) spans[i] = capLineSpans(res[i]);
+    };
+    fill(HIGHLIGHT_SYNC_MAX);
+    if (rows.length <= HIGHLIGHT_SYNC_MAX || !cx?.timer?.after) return;
     const step = (timerCx) => {
       if (!isCurrent()) return;
-      setTimer(null);
-      const prevLen = targetSpans.length;
-      const nextLimit = Math.min(total, prevLen + HL.chunk);
-      const res = highlighter.highlight(path, key, items, nextLimit);
-      for (let i = prevLen; i < res.length; i++) targetSpans[i] = HL.capLineSpans(res[i]);
-      if (nextLimit < total && timerCx?.timer?.after) {
-        setTimer(timerCx.timer.after(0, step));
-      }
+      this.diffHighlightTimer = null;
+      fill(spans.length + HIGHLIGHT_CHUNK);
+      if (spans.length < rows.length && timerCx?.timer?.after) this.diffHighlightTimer = timerCx.timer.after(0, step);
       timerCx.notify();
     };
-    setTimer(cx.timer.after(0, step));
+    this.diffHighlightTimer = cx.timer.after(0, step);
+  }
+
+  setCode(language, value, t) {
+    const syntax = editorSyntax(t);
+    this.code?.release?.();
+    this.code = EditorState.new({ language, readonly: true, value, font_family: settings().font_family, font_size: 12, syntax });
+    this.codeLanguage = language; this.codeSyntax = JSON.stringify(syntax);
   }
 
   // Same folder again keeps the open folders and file; a new one starts over.
@@ -235,9 +230,8 @@ export class FolderViewer {
     cx.notify();
   }
 
-  showFile(path, cx, _t) {
+  showFile(path, cx, t) {
     const seq = ++this.fileSeq;
-    this.cancelFileHighlight();
     this.code?.release?.(); this.code = null; this.file = path; this.fileError = null;
     if (!path) { cx.notify(); return; }
     const gen = this.gen, root = this.root;
@@ -250,29 +244,8 @@ export class FolderViewer {
         if (seq !== this.fileSeq || gen !== this.gen) return;
         if (text === null) { this.fileError = "This file is no longer available"; return; }
         if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
-        const value = text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text;
-        const trimmed = value.endsWith("\n") ? value.slice(0, -1) : value;
-        const lines = (trimmed ? trimmed.split("\n") : [""])
-          .map((l) => {
-            const expanded = expandLine(l);
-            return expanded.length > 4000 ? expanded.slice(0, 4000) + "… (line truncated)" : expanded;
-          });
-        const width = Math.max(300, ...lines.map((l) => l.length * 7 + 60));
-        const spans = [];
-        this.code = { path, value, lines, width, spans };
-        if (HL.FileHighlighter && HL.detectLanguage(path) !== "plain") {
-          this.startChunkedHighlight({
-            total: lines.length,
-            highlighter: new HL.FileHighlighter(),
-            path,
-            key: value,
-            items: lines,
-            targetSpans: spans,
-            cx,
-            setTimer: (timer) => { this.fileHighlightTimer = timer; },
-            isCurrent: () => seq === this.fileSeq && gen === this.gen && this.code?.path === path,
-          });
-        }
+        const ext = path.includes(".") ? path.split(".").pop() : "txt";
+        this.setCode(LANG[ext] ?? ext, text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text, t);
       } catch { if (seq === this.fileSeq && gen === this.gen) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
       finally { if (seq === this.fileSeq && gen === this.gen) cx.notify(); }
     });
@@ -368,20 +341,7 @@ export class FolderViewer {
     this.rows = diffRows(lines);
     this.diffWidth = Math.max(300, ...this.rows.map((r) => r.text.length * 7 + 50));
     this.diffSpans = [];
-    if (path && this.rows.length && HL.DiffHighlighter && HL.detectLanguage(path) !== "plain") {
-      const gen = this.gen, seq = this.diffSeq;
-      this.startChunkedHighlight({
-        total: this.rows.length,
-        highlighter: new HL.DiffHighlighter(),
-        path,
-        key: diffKey,
-        items: this.rows,
-        targetSpans: this.diffSpans,
-        cx,
-        setTimer: (timer) => { this.diffHighlightTimer = timer; },
-        isCurrent: () => this.gen === gen && this.diffSeq === seq && this.open === path,
-      });
-    }
+    if (path && this.rows.length && detectLanguage(path) !== "plain") this.highlightDiff(path, diffKey, cx);
   }
 
   pickChange(path, cx) {
@@ -431,33 +391,19 @@ export class FolderViewer {
     }
     return h_flex().flex_1().min_w(0).overflow_hidden().children(
       spans.map((sp) => div().flex_none().whitespace_nowrap()
-        .when(sp.kind !== "plain", (e) => e.text_color(HL.syntaxColor(t, sp.kind)))
+        .when(sp.kind !== "plain", (e) => e.text_color(syntaxColor(t, sp.kind)))
         .child(sp.text))
     );
   }
 
-  codeRow(index, text, gutter, t) {
-    return h_flex().w_full().h(20).flex_none().gap(8).px(6)
-      .child(div().w(gutter).flex_none().text_right().text_color(t.dim).child(String(index + 1)))
-      .child(this.renderHighlightedLine(text, this.code?.spans?.[index], t));
-  }
-
   filesBody(t, fs) {
     if (this.file) {
-      const code = this.code;
-      const lines = code?.lines ?? [];
-      const gutter = Math.max(30, String(lines.length).length * 8 + 8);
+      if (this.code && this.codeSyntax !== JSON.stringify(editorSyntax(t))) this.setCode(this.codeLanguage, this.code.value(), t);
       return v_flex().flex_1().min_h(0)
         .child(h_flex().flex_none().gap(6).px(6).py(4).items_center().border_b(1).border_color(t.border)
           .child(div().id("vf-back").cursor_pointer().text_color(t.muted).on_click((_e, cx) => this.showFile(null, cx, t)).child("←"))
           .child(div().flex_1().min_w(0).truncate().text_size(fs(11)).text_color(t.dim).child(this.file)))
-        .child(code
-          ? div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
-              .child(div().id("vf-code-x").size_full().overflow_x_scrollbar()
-                .child(div().w_full().min_w(code.width).h_full().child(v_virtual_list("vf-code", lines.length, 20, (i) => String(i),
-                  (range) => lines.slice(range.start, range.end).map((line, off) => this.codeRow(range.start + off, line, gutter, t))).size_full())))
-              .child(Scrollbar.vertical("vf-code").viewport_from_layout().absolute().inset_0())
-          : div().p(10).text_size(fs(12)).text_color(t.dim).child(this.fileError || "Loading file…"));
+        .child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(10).text_size(fs(12)).text_color(t.dim).child(this.fileError || "Loading file…"));
     }
     const rows = this.collectFileRows("", 0, []);
     const rowByPath = new Map(rows.map((r) => [r.path, r]));
@@ -485,8 +431,8 @@ export class FolderViewer {
   diffRow({ kind, number, text }, index, gutter, t) {
     if (kind === "@") return div().w_full().px(10).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
     return h_flex().w_full().h(20).flex_none().gap(8)
-      .when(kind === "+", (e) => e.bg(HL.tint(t.ansi2, "1c")))
-      .when(kind === "-", (e) => e.bg(HL.tint(t.blocked, "1a")))
+      .when(kind === "+", (e) => e.bg(tint(t.ansi2, "1c")))
+      .when(kind === "-", (e) => e.bg(tint(t.blocked, "1a")))
       .child(div().w(gutter).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
       .child(this.renderHighlightedLine(text, this.diffSpans[index], t));
   }

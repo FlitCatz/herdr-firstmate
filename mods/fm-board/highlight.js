@@ -58,7 +58,7 @@ export function syntaxColor(t, kind) {
  * @returns {Record<string, string>}
  */
 export function editorSyntax(t) {
-  const color = (kind) => syntaxColor(t, kind);
+  const color = (/** @type {TokenKind} */ kind) => syntaxColor(t, kind);
   return {
     keyword: color("keyword"), string: color("string"), comment: color("comment"), function: color("function"),
     type: color("type"), number: color("number"), constant: color("constant"), boolean: color("constant"),

@@ -46,6 +46,7 @@ Only captain holds have a bucket: an `external` hold waits on other work, and a 
 A deferred card that has a `hold_until` date shows it on its state row as `until <month>-<day>`, such as `until 12-01`.
 There is no Failed column: a task whose worker reported `failed:` sits in the Blocked column, marked with a red `Failed` label on its state row and a red border (and `failed` in red in the Dependency Inspector and on its Chains node), and keeps its detail text.
 Their heading rules and card bars (and a folded column's dot) use the theme's idle, working, blocked, done, and unknown colors as appropriate.
+Queued uses the theme's `ansi2` (green), distinct from Todo and Paused (`idle`), Done and Review (`done`), and Working (`working`).
 Held and Blocked use the blocked color. Parked uses the theme's `ansi5`, because a parked task waits on review activity rather than on the captain.
 A hold to answer now shows how long it has waited on its state row, such as `2h 14m` from a hold-set time or `3d` from a date.
 Clicking a column header folds it; below 720px wide the columns stack vertically and the board scrolls as one list.

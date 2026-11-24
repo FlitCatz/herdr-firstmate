@@ -2903,14 +2903,14 @@ test("for a topic whose oldest hold lists no options, NEXT MOVE and Focus Enter 
 });
 
 test("every card carries a left bar in its column's status color, and a hold to answer now shows its wait", async () => {
-  const theme = { idle: "#111111", working: "#222222", blocked: "#333333", done: "#444444", ansi1: "#555555", unknown: "#666666" };
+  const theme = { idle: "#111111", working: "#222222", blocked: "#333333", done: "#444444", ansi1: "#555555", ansi2: "#2e8b57", unknown: "#666666" };
   const b = await board({ theme,
     snapshot: changedSnapshot((s) => { record(s, "maple-icon-set").hold_set = new Date(Date.now() - 135 * 60000).toISOString().slice(0, 19) + "Z"; }) });
   const barColor = (id) => b.items.find((x) => x.id === `bar-${id}`)?.calls.find((c) => c[0] === "bg")?.[1];
   assert.equal(barColor("maple-preview-screen"), theme.working);
   assert.equal(barColor("maple-icon-set"), theme.blocked);
   assert.equal(barColor("orchard-seed-data"), theme.done);
-  assert.equal(barColor("maple-card-layout"), theme.idle);
+  assert.equal(barColor("maple-card-layout"), theme.ansi2);
   assert.equal(b.text("age-maple-icon-set"), "2h 15m");
   // Deferred holds keep their date and show no wait.
   assert.ok(!b.ids.includes("age-orchard-tile-refresh"));
@@ -3083,6 +3083,46 @@ test("Parked has its own status color, apart from Held, Blocked, Working, and Re
   for (const col of ["held", "working", "review"].filter((c) => b.ids.includes(`head-${c}`))) {
     assert.notEqual(headRule(col), theme.ansi5, `${col} differs from Parked`);
   }
+});
+
+test("Queued uses the theme's green token (ansi2) across header, collapsed dot, card bar, and ready graph status, distinct from every other column", async () => {
+  const theme = {
+    idle: "#111111", working: "#222222", blocked: "#333333", done: "#444444",
+    ansi1: "#555555", ansi2: "#2e8b57", ansi5: "#7a45c8", unknown: "#666666", muted: "#777777",
+  };
+  const b = await board({ theme });
+  const headRule = (col) => b.items.find((x) => x.id === `head-${col}`).calls.findLast((c) => c[0] === "border_color")[1];
+  const bar = (id) => b.items.find((x) => x.id === `bar-${id}`).calls.find((c) => c[0] === "bg")[1];
+
+  // Expanded column header underline and card left bar use ansi2.
+  assert.equal(b.view.cards.find((c) => c.id === "maple-card-layout").column, "queued");
+  assert.equal(headRule("queued"), theme.ansi2);
+  assert.equal(bar("maple-card-layout"), theme.ansi2);
+
+  // Ready queued node in Dependency Inspector / Chains uses ansi2, while waiting stays blocked.
+  const readyNode = { column: "queued", waitingIds: [] };
+  const waitingNode = { column: "queued", waitingIds: ["maple-theme-tokens"] };
+  assert.deepEqual([...b.view.nodeStatus(readyNode, theme, true)], ["ready", theme.ansi2]);
+  assert.deepEqual([...b.view.nodeStatus(waitingNode, theme, true)], ["waiting", theme.blocked]);
+
+  // Every other shown column uses a distinct color from Queued.
+  for (const col of b.view.shownColumns().map((c) => c.id).filter((id) => id !== "queued")) {
+    assert.notEqual(headRule(col), theme.ansi2, `${col} differs from Queued`);
+  }
+
+  // Collapsed Queued column dot uses ansi2.
+  b.click("head-queued");
+  const queuedCol = b.view.shownColumns().find((c) => c.id === "queued");
+  const collapsedTree = b.view.column(queuedCol, theme, false, false);
+  const dotColors = [];
+  const collectDotColors = (node) => {
+    if (!node || typeof node !== "object" || !node.node) return;
+    const bg = node.node.calls.findLast((c) => c[0] === "bg")?.[1];
+    if (bg) dotColors.push(bg);
+    for (const k of node.node.kids) collectDotColors(k);
+  };
+  collectDotColors(collapsedTree);
+  assert.deepEqual(dotColors, [theme.ansi2], "collapsed Queued dot uses ansi2");
 });
 
 test("a Held topic box wears a hairline, not the accent that marks hover, selection, and the search match", async () => {

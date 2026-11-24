@@ -121,9 +121,10 @@ A round still unfinished after 10 seconds is dropped the same way and the next o
 The command lines are only read to find these jobs; the board does not log or save them.
 
 The Projects list shows up to about 260px of rows and scrolls with the mouse wheel beyond that, so every project is reachable.
+Each project row ends with a folder button that toggles its Files and Changes viewer and a terminal button beside it that opens a new focused terminal tab in that project's local copy (`tab.new`), or on right-click opens a popup menu (`Split Vertical`, `Split Horizontal`, `New Tab`) using `terminal.open` / `tab.new` at that project's folder.
 Project rows can be expanded to show details, a project filter, color choices that replace the automatic color, a folder button, and a removal request.
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
-Folded sections, lanes, and cards, collapsed columns, the `Independent` drawer state, the `Kanban | Chains` view mode, and project colors, automatic and chosen, are remembered locally.
+Folded sections, lanes, and cards, collapsed columns, the `Independent` drawer state, the `Kanban | Chains` view mode, the dragged Files and Changes viewer split width, and project colors, automatic and chosen, are remembered locally (persisted in `localStorage` across closes, reopens, and Herdr restarts; the first open keeps the 1:1 split default).
 Command buttons submit Bearings, Ahoy, Stow, Quiet, Quiet off, AFK, or Update commands to the verified Firstmate terminal; the Scout and Task fields also submit requests there.
 On each insertion or send, the board asks `home/bin/fm-inbox.sh ready` to inspect the session lock and uses its PID only when the lock is held by a live harness.
 It matches that PID to a live terminal's foreground PID, checking its ancestry against terminal PIDs only when no foreground match exists.
@@ -151,7 +152,7 @@ The panel stack contains Herdr's shipped `files` and `changes` mods, the `fm-boa
 `fm-board` uses `props`, `theme`, `settings`, `exec`, `readTextFile`, `watchFolder`, `pickFolder`, `run`, `focused`, `terminals`, `checking`, `appHome`, `layout`, `setShared`, and `nextCommand` from `herdr`.
 It draws Herdr's shipped `files` folder icon and `workspace-chrome` search, terminal, and layers icons.
 It reads a fleet snapshot and project registry, invokes Firstmate's `fm-fleet-snapshot.sh` and `fm-inbox.sh` under `home/bin`, and calls `hc` to inspect or message terminals and `hc read` to read live worker screens for the card lines.
-Its Peek icon and Focus mode run Herdr's `terminal.peek` command, and its PR links run `layout.select` and `layout.show` to show the PR panel.
+Its Peek icon and Focus mode run Herdr's `terminal.peek` command, each project row's Terminal icon runs `tab.new` on left-click and offers a right-click `Popover` menu (`Split Vertical`, `Split Horizontal`, `New Tab`) using `terminal.open` (`place: "right" | "down"`) and `tab.new` at that project's folder, and its PR links run `layout.select` and `layout.show` to show the PR panel.
 Card drafts use macOS `pbpaste` and `pbcopy` to save clipboard text to a temporary file and restore it around Herdr's `terminal.paste` action, checking the pasteboard change counter around reading, saving, and restoring so concurrent clipboard changes are not overwritten; they verify terminal focus before pasting and leave Enter to the owner.
 They first read the clipboard types with `osascript`; plain text is restored as is, and rich text such as HTML, RTF, or a web archive is restored as plain text with its formatting dropped.
 If the clipboard holds an image, files, or RTFD, which can carry attachments, or holds no plain text at all, nothing is inserted, the clipboard is left untouched, and a notice asks you to paste it first.

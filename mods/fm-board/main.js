@@ -94,7 +94,8 @@ const IMAGE_OR_FILE_CLIPBOARD_TYPE = /picture|PNG|TIFF|JPEG|GIF|PDF|BMP|jp2|heic
 const COLUMNS = [
   // Later work: queued items the captain set aside as "future".
   { id: "todo", title: "Todo", color: "idle" },
-  { id: "queued", title: "Queued", color: "idle" },
+  // Queued work uses the theme's green token (ansi2), distinct from Todo (idle) and Done (done).
+  { id: "queued", title: "Queued", color: "ansi2" },
   { id: "held", title: "Held", color: "blocked", optional: true },
   { id: "working", title: "Working", color: "working" },
   // Parked waits on review activity, not on the captain: its own color keeps it apart from Held

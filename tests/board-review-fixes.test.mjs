@@ -406,6 +406,7 @@ async function createBoard({ exec = async () => ({ code: 1, stdout: "", stderr: 
     Input: { new: element },
     h_resizable: element,
     resizable_panel: element,
+    Popover: { new: (popId) => element().popover_id(popId) },
     InputState: { new: input },
     ScrollHandle: { new: () => ({ scroll_to_item() {} }) },
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },

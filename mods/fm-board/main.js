@@ -7,7 +7,7 @@
 // props: { home, snapshot_file?, collapsed?, ui? }. home is the firstmate
 // installation and operational home; the other props support preview fixtures.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel, ScrollHandle } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, h_resizable, resizable_panel, ScrollHandle, Popover } from "gpui-base";
 import { exec, pickFolder, props, readTextFile, watchFolder, theme, settings, run, focused, terminals, checking, appHome, layout, setShared, nextCommand } from "herdr";
 import { FolderViewer } from "./viewer.js";
 
@@ -64,6 +64,14 @@ const COLLAPSED_KEY = "collapsed";
 const FOLDED_KEY = "folded";
 const VIEW_MODE_KEY = "viewMode";
 const INDEPENDENT_OPEN_KEY = "independentOpen";
+const VIEWER_WIDTH_KEY = "viewerWidth";
+const BOARD_MIN_PX = 280;
+const VIEWER_MIN_PX = 260;
+const TERMINAL_MENU_ITEMS = [
+  { id: "split-vertical", label: "Split Vertical", place: "right", icon: "mods/workspace-chrome/panel-right.svg" },
+  { id: "split-horizontal", label: "Split Horizontal", place: "down", icon: "mods/workspace-chrome/panel-bottom.svg" },
+  { id: "new-tab", label: "New Tab", place: "tab", icon: "mods/workspace-chrome/plus.svg" },
+];
 // The tab group below the board: its folded state (in the collapsed set) and its chosen tab.
 const BOTTOM = "bottom";
 const BOTTOM_TAB_KEY = "bottomTab";
@@ -1263,6 +1271,12 @@ export default class FmBoard extends View {
     this.revealed = new Set();
     this.rightSplitWidth = 0;
     this.splitWasOpen = false;
+    /** @type {number | null} */
+    this.savedViewerWidth = this.loadViewerWidth();
+    /** @type {string | null} */
+    this.terminalMenuProject = null;
+    this.terminalMenuAt = 0;
+    this.terminalMenuFocus = cx.focus_handle();
     // One handle per scroll area: the stacked board, each column's card list, and the Chains board.
     this.boardScroll = ScrollHandle.new();
     this.chainsScroll = ScrollHandle.new();
@@ -1319,6 +1333,8 @@ export default class FmBoard extends View {
     // props.ui.focus and props.ui.point (previews): Focus on that card, or that card pointed to.
     if (typeof ui.focus === "string") { this.focusMode = true; this.focusId = ui.focus; }
     if (typeof ui.point === "string") this.pointedId = ui.point;
+    // props.ui.terminalMenu (previews): that project's terminal right-click menu shown open.
+    if (typeof ui.terminalMenu === "string") this.terminalMenuProject = ui.terminalMenu;
     if (ui.pick) this.usePath(ui.pick, cx);
     this.listenCommands(cx);
     this.refresh(cx);
@@ -1342,6 +1358,21 @@ export default class FmBoard extends View {
   loadText(key) {
     try { return localStorage.getItem(key); }
     catch { return null; }
+  }
+
+  loadViewerWidth() {
+    const raw = this.loadText(VIEWER_WIDTH_KEY);
+    if (raw == null || raw === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? Math.max(VIEWER_MIN_PX, Math.round(n)) : null;
+  }
+
+  saveViewerWidth(width) {
+    const px = Number(width);
+    if (!Number.isFinite(px) || px <= 0) return;
+    const saved = Math.max(VIEWER_MIN_PX, Math.round(px));
+    this.savedViewerWidth = saved;
+    try { localStorage.setItem(VIEWER_WIDTH_KEY, String(saved)); } catch {}
   }
 
   colorOf(name, t) {
@@ -1702,7 +1733,8 @@ export default class FmBoard extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(this.fs(12)).text_color(t.foreground).child(p.name))
         .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim)
           .child(counts || "No tasks"))
-        .child(this.viewButton(p.name, t)));
+        .child(this.viewButton(p.name, t))
+        .child(this.terminalButton(p.name, t)));
     if (!open) return row;
     row.child(div().text_size(this.fs(11)).text_color(t.muted).child(p.desc))
       .child(div().text_size(this.fs(11)).text_color(t.dim)
@@ -2606,6 +2638,78 @@ export default class FmBoard extends View {
         else this.openView(project, this.viewSources(project)[0], cx);
       })
       .child(svg("mods/files/folder.svg").size(this.fs(14)).text_color(shown ? t.foreground : t.muted));
+  }
+
+  // Opens a new focused terminal tab on left-click, or a placement menu on right-click
+  // (Split Vertical, Split Horizontal, New Tab) for this project's local copy.
+  // Stops left mouse down and click so the row itself does not fold or unfold.
+  terminalButton(project, t) {
+    const open = this.terminalMenuProject === project;
+    const stop = (_e, cx) => cx.stop_propagation();
+    const trigger = div().id(`terminal-${project}`).flex_none().p(3).rounded(5).cursor_pointer()
+      .role("button").accessibility_label("Open terminal")
+      .when(open, (e) => e.bg(t.selected))
+      .hover((s) => s.bg(t.hover))
+      .tooltip("Open terminal · Right-click for split")
+      .on_mouse_down("left", stop)
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        this.openProjectTerminal(project, cx);
+      })
+      .child(svg("mods/workspace-chrome/terminal.svg").size(this.fs(14)).text_color(open ? t.foreground : t.muted));
+    return Popover.new(`terminal-menu-pop-${project}`)
+      .mouse_button("right")
+      .anchor("bottom_right")
+      .open(open)
+      .track_focus(this.terminalMenuFocus)
+      .on_open_change((next, cx) => {
+        if (next) {
+          this.terminalMenuProject = project;
+          this.terminalMenuAt = 0;
+        } else if (this.terminalMenuProject === project) {
+          this.terminalMenuProject = null;
+        }
+        cx.notify();
+      })
+      .trigger(trigger)
+      .content(open ? this.terminalMenu(project, t) : div());
+  }
+
+  // Matches Herdr's shipped menu mod look (popover surface, 1px border, 31px items, icons, keyboard nav).
+  terminalMenu(project, t) {
+    const stop = (_e, cx) => cx.stop_propagation();
+    const choose = (item, cx) => {
+      this.terminalMenuProject = null;
+      this.openProjectTerminal(project, cx, item.place);
+    };
+    return v_flex().id(`terminal-menu-${project}`).track_focus(this.terminalMenuFocus)
+      .w(188).p(5).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg().text_size(12.8)
+      .on_key_down((e, cx) => {
+        if (e.key === "down") this.terminalMenuAt = (this.terminalMenuAt + 1) % TERMINAL_MENU_ITEMS.length;
+        else if (e.key === "up") this.terminalMenuAt = (this.terminalMenuAt + TERMINAL_MENU_ITEMS.length - 1) % TERMINAL_MENU_ITEMS.length;
+        else if (e.key === "enter") { choose(TERMINAL_MENU_ITEMS[this.terminalMenuAt], cx); cx.stop_propagation(); return; }
+        else if (e.key === "escape") { this.terminalMenuProject = null; }
+        else return;
+        cx.stop_propagation();
+        cx.notify();
+      })
+      .children(TERMINAL_MENU_ITEMS.map((item, i) =>
+        h_flex().id(`terminal-menu-${project}-${item.id}`).h(31).px(8).gap(9).rounded(7).items_center().cursor_pointer()
+          .role("menu_item").text_color(t.foreground)
+          .when(i === this.terminalMenuAt, (el) => el.bg(t.selected))
+          .hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", stop)
+          .on_click((_e, cx) => { cx.stop_propagation(); choose(item, cx); })
+          .child(svg(item.icon).size(14).flex_none().text_color(t.muted))
+          .child(div().flex_1().child(item.label))));
+  }
+
+  openProjectTerminal(project, cx, place = "tab") {
+    this.terminalMenuProject = null;
+    if (!home() || !project) return;
+    const folder = `${home()}/projects/${project}`;
+    if (place === "right" || place === "down") this.focusAway("terminal.open", { folder, place }, cx);
+    else this.focusAway("tab.new", { folder }, cx);
   }
 
   openView(project, source, cx) {
@@ -3934,21 +4038,23 @@ export default class FmBoard extends View {
       .child(back(this.bottomGroup(t)));
     if (this.viewer.root) {
       this.splitWasOpen = true;
-      // The viewer sits on the Board's right behind a draggable divider. Herdr keeps the
-      // dragged width under the group id; the Board half keeps measuring its own width
-      // so the columns still stack when that half gets narrow.
+      // The viewer sits on the Board's right behind a draggable divider. Closing the viewer
+      // unmounts the split (dropping GPUI's keyed resizable state), so on_resize persists the
+      // dragged width in localStorage for later opens and restarts; the Board half keeps
+      // measuring its own width so the columns still stack when that half gets narrow.
       return this.panelFrame(h_resizable("board-viewer-split").size_full().bg(t.canvas)
-        .child(resizable_panel().size_range(280).child(root))
-        .child(resizable_panel().size(this.viewerWidth()).size_range(260)
+        .on_resize((sizes) => this.saveViewerWidth(sizes?.[1]))
+        .child(resizable_panel().size_range(BOARD_MIN_PX).child(root))
+        .child(resizable_panel().size(this.viewerWidth(modWidth)).size_range(VIEWER_MIN_PX)
           .child(div().id("viewer-wrap").size_full().pl(4).pr(8).pt(2.5).pb(3)
             .on_size_change((size, cx) => { this.rightSplitWidth = size.width; cx.notify(); })
             .child(this.viewer.render(t, (px) => this.fs(px), this.viewSources(this.viewProject))))), t);
     }
     if (!narrowMod && inspectorShown) {
       this.splitWasOpen = true;
-      return this.panelFrame(h_resizable("board-viewer-split").size_full().bg(t.canvas)
-        .child(resizable_panel().size_range(280).child(root))
-        .child(resizable_panel().size(this.inspectorWidth(modWidth)).size_range(260)
+      return this.panelFrame(h_resizable("board-inspector-split").size_full().bg(t.canvas)
+        .child(resizable_panel().size_range(BOARD_MIN_PX).child(root))
+        .child(resizable_panel().size(this.inspectorWidth(modWidth)).size_range(VIEWER_MIN_PX)
           .child(div().id("inspector-wrap").size_full().pl(4).pr(8).pt(2.5).pb(3)
             .on_size_change((size, cx) => { this.rightSplitWidth = size.width; cx.notify(); })
             .child(this.renderInspector(activeComp, t)))), t);
@@ -3958,9 +4064,16 @@ export default class FmBoard extends View {
     return this.panelFrame(root, t);
   }
 
-  // The starting width only: after the first drag Herdr keeps the user's width under
-  // the group id. Half the Board when its width is known, else a readable default.
-  viewerWidth() {
+  // Restores the last dragged viewer width (clamped to keep the Board half usable), or starts
+  // at half the Board on first open ever (1:1) when no width has been saved yet.
+  /** @param {number} [totalWidth] the Board's whole width, split included */
+  viewerWidth(totalWidth = this.size?.width ?? Infinity) {
+    if (this.savedViewerWidth !== null) {
+      const max = Number.isFinite(totalWidth)
+        ? Math.max(VIEWER_MIN_PX, Math.round(totalWidth) - BOARD_MIN_PX)
+        : Infinity;
+      return Math.max(VIEWER_MIN_PX, Math.min(this.savedViewerWidth, max));
+    }
     const w = this.size?.width;
     return w ? Math.max(420, Math.round(w / 2)) : 560;
   }

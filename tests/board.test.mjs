@@ -36,12 +36,12 @@ function element() {
     get(target, name) {
       if (name === "node") return target;
       return (...args) => {
-        if (!["child", "children", "when", "id", "on_click"].includes(name)) target.calls.push([name, ...args]);
+        if (!["child", "children", "trigger", "content", "when", "id", "on_click"].includes(name)) target.calls.push([name, ...args]);
         if (name === "id") target.id = args[0];
         else if (name === "on_click") target.click = args[0];
         else if (name === "on_hover") target.hover = args[0];
         else if (name === "on_key_down") target.keyDown = args[0];
-        else if (name === "child") target.kids.push(args[0]);
+        else if (name === "child" || name === "trigger" || name === "content") target.kids.push(args[0]);
         else if (name === "children") target.kids.push(...args[0]);
         else if (name === "when" && args[0]) args[1](self);
         return self;
@@ -129,7 +129,7 @@ async function board({ projects, store = { getItem: () => null, setItem() {} }, 
     : new Proxy({}, { get: () => "#808080" });
   const scope = {
     View: class {}, div: element, svg: element, v_flex: element, h_flex: element, Input: { new: element },
-    h_resizable: element, resizable_panel: element, InputState: { new: input },
+    h_resizable: element, resizable_panel: element, Popover: { new: (popId) => element().popover_id(popId) }, InputState: { new: input },
     ScrollHandle: { new: () => { const handle = { scroll_to_item(idx) { scrolled.push({ handle, idx }); } }; return handle; } },
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
     props: () => ({ home: HOME, ...(preview ? { snapshot_file: snapshotFile } : {}), collapsed: [], ui }),
@@ -1535,7 +1535,7 @@ test("refresh bounds exec timeouts, clears loading after deadline, ignores stale
   const theme = new Proxy({}, { get: () => "#808080" });
   const scope = {
     View: class {}, div: element, svg: element, v_flex: element, h_flex: element, Input: { new: element },
-    h_resizable: element, resizable_panel: element, InputState: { new: input },
+    h_resizable: element, resizable_panel: element, Popover: { new: (popId) => element().popover_id(popId) }, InputState: { new: input },
     ScrollHandle: { new: () => ({ scroll_to_item() {} }) },
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
     props: () => ({ home: HOME, collapsed: [] }), checking: () => false,
@@ -4163,4 +4163,235 @@ test("card draft clicks exercise real insertCardText and pasteToFirstmate throug
   await b.settle();
   assert.equal(b.view.notice, "Could not find the firstmate terminal");
   assert.deepEqual(inboxCalls, [], "insertOnly card drafts never fall back to inbox notes");
+});
+
+test("Files · Changes viewer keeps its default 1:1 width on first open, then restores the last dragged width across close/reopen and restarts", async () => {
+  const store = memoryStore();
+  const findViewerSplit = (tree) => {
+    const walk = (node, parent) => {
+      if (!node || typeof node !== "object") return null;
+      if (node.node.kids.some((k) => k?.node?.id === "viewer-wrap")) {
+        return { panel: node.node, split: parent?.node ?? null };
+      }
+      for (const k of node.node.kids) {
+        const hit = walk(k, node);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return walk(tree, null);
+  };
+  const viewerSize = (b) => {
+    const hit = findViewerSplit(b.view.render({ notify() {} }));
+    assert.ok(hit?.panel, "viewer resizable_panel must be rendered");
+    return {
+      size: hit.panel.calls.find((c) => c[0] === "size")?.[1],
+      onResize: hit.split?.calls.find((c) => c[0] === "on_resize")?.[1],
+    };
+  };
+  const openRealViewer = (b, project = "maple-workshop") => {
+    b.view.viewer.target = (path) => { b.view.viewer.root = path; };
+    b.view.viewer.render = () => null;
+    Object.getPrototypeOf(b.view).openView.call(
+      b.view,
+      project,
+      { path: `${HOME}/projects/${project}`, title: `${project} · local copy` },
+      { notify() {} },
+    );
+  };
+
+  // First open ever: keeps today's 1:1 default (half the board width, min 420; 560 when unmeasured).
+  const b1 = await board({ store, ui: { bottomTab: "projects" } });
+  b1.view.size = { width: 1200, height: 800 };
+  openRealViewer(b1);
+  const first = viewerSize(b1);
+  assert.equal(first.size, 600, "first open uses half of 1200px board (1:1)");
+  assert.equal(typeof first.onResize, "function", "viewer split wires on_resize to capture dragged width");
+
+  // User drags the divider to shrink the viewer to 340px.
+  first.onResize([860, 340], { notify() {} });
+
+  // Closing and reopening in the same session restores 340px, not 1:1.
+  b1.view.viewer.close({ notify() {} });
+  b1.redraw();
+  b1.view.size = { width: 1200, height: 800 };
+  openRealViewer(b1, "orchard-atlas");
+  assert.equal(viewerSize(b1).size, 340, "reopening after close restores dragged width");
+
+  // Restarting Herdr (a fresh Board instance reading the same localStorage) still restores 340px.
+  const b2 = await board({ store, ui: { bottomTab: "projects" } });
+  b2.view.size = { width: 1200, height: 800 };
+  openRealViewer(b2);
+  assert.equal(viewerSize(b2).size, 340, "fresh Board instance after restart restores saved width");
+
+  // Narrower window clamps saved width so the Board half keeps its 280px minimum.
+  b2.view.viewer.close({ notify() {} });
+  b2.redraw();
+  b2.view.size = { width: 580, height: 800 };
+  openRealViewer(b2);
+  assert.equal(viewerSize(b2).size, 300, "saved 340px clamps to 580 - 280 = 300px on a 580px board");
+
+  // Corrupt or non-positive stored width falls back to the 1:1 default.
+  store.setItem("viewerWidth", "not-a-number");
+  const b3 = await board({ store, ui: { bottomTab: "projects" } });
+  b3.view.size = { width: 1200, height: 800 };
+  openRealViewer(b3);
+  assert.equal(viewerSize(b3).size, 600, "corrupt stored width falls back to default");
+});
+
+test("each Projects row has a Terminal button next to its directory button that opens a new terminal tab in that project's folder", async () => {
+  const b = await board({ ui: { bottomTab: "projects" } });
+  for (const name of ["maple-workshop", "orchard-atlas"]) {
+    const row = b.items.find((x) => x.id === `project-${name}`);
+    assert.ok(row, `project row ${name} must be rendered`);
+    const dirIdx = row.childIds.indexOf(`files-${name}`);
+    const termIdx = row.childIds.indexOf(`terminal-${name}`);
+    assert.ok(dirIdx >= 0, `directory button files-${name} must exist`);
+    assert.equal(termIdx, dirIdx + 1, `terminal button terminal-${name} sits right next to files-${name}`);
+
+    const dirBtn = b.items.find((x) => x.id === `files-${name}`);
+    const termBtn = b.items.find((x) => x.id === `terminal-${name}`);
+    for (const styleCall of ["flex_none", "p", "rounded", "cursor_pointer"]) {
+      assert.deepEqual(
+        termBtn.calls.find((c) => c[0] === styleCall),
+        dirBtn.calls.find((c) => c[0] === styleCall),
+        `terminal button matches directory button ${styleCall}`,
+      );
+    }
+    assert.ok(termBtn.calls.some((c) => c[0] === "tooltip" && c[1] === "Open terminal · Right-click for split"), "English tooltip");
+    assert.ok(termBtn.calls.some((c) => c[0] === "accessibility_label" && c[1] === "Open terminal"), "English accessibility label");
+    assert.ok(termBtn.calls.some((c) => c[0] === "on_mouse_down" && c[1] === "left"), "stops left mouse down so row does not toggle");
+  }
+
+  // Clicking the Terminal button opens a new terminal tab in the project's local copy folder without toggling the row.
+  b.commands.length = 0;
+  b.timers.length = 0;
+  b.click("terminal-maple-workshop");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(b.commands)),
+    [{ name: "tab.new", args: { folder: `${HOME}/projects/maple-workshop` } }],
+  );
+  assert.equal(b.view.open.has("maple-workshop"), false, "clicking Terminal does not expand the project row");
+  assert.ok(b.timers.some((t) => t.ms === 0), "schedules a next-tick redraw via focusAway");
+
+  // Directory button behavior stays unchanged.
+  b.opened.length = 0;
+  b.click("files-orchard-atlas");
+  assert.deepEqual(JSON.parse(JSON.stringify(b.opened)), [{
+    project: "orchard-atlas",
+    path: `${HOME}/projects/orchard-atlas`,
+    label: "local copy",
+    title: "orchard-atlas · local copy",
+  }]);
+  assert.equal(b.view.open.has("orchard-atlas"), false, "clicking directory button still does not expand the row");
+});
+
+test("the ui.terminalMenu preview prop shows that project's terminal menu open on first render", async () => {
+  const b = await board({ ui: { bottomTab: "projects", terminalMenu: "maple-workshop" } });
+  const menu = b.items.find((x) => x.id === "terminal-menu-maple-workshop");
+  assert.ok(menu, "maple-workshop's terminal menu is drawn without a right-click");
+  assert.deepEqual(menu.childIds, [
+    "terminal-menu-maple-workshop-split-vertical",
+    "terminal-menu-maple-workshop-split-horizontal",
+    "terminal-menu-maple-workshop-new-tab",
+  ]);
+  assert.ok(!b.ids.includes("terminal-menu-orchard-atlas"), "other projects' menus stay closed");
+  assert.deepEqual(b.commands, [], "showing the menu runs no command");
+});
+
+test("right-clicking a Projects Terminal button opens a popup menu for Split Vertical, Split Horizontal, and New Tab", async () => {
+  const b = await board({ ui: { bottomTab: "projects" } });
+  const findPopover = (project) => {
+    const walk = (node) => {
+      if (!node || typeof node !== "object") return null;
+      if (node.node.calls.some((c) => c[0] === "popover_id" && c[1] === `terminal-menu-pop-${project}`)) return node.node;
+      for (const k of node.node.kids) { const hit = walk(k); if (hit) return hit; }
+      return null;
+    };
+    return walk(b.view.render({ notify() {} }));
+  };
+
+  // Closed by default and configured for right-click opening.
+  const popClosed = findPopover("maple-workshop");
+  assert.ok(popClosed, "terminal button is wrapped in a Popover");
+  assert.ok(popClosed.calls.some((c) => c[0] === "mouse_button" && c[1] === "right"), "Popover opens on right-click");
+  assert.ok(popClosed.calls.some((c) => c[0] === "open" && c[1] === false), "Popover starts closed");
+  assert.ok(!b.ids.includes("terminal-menu-maple-workshop"), "menu content is not drawn while closed");
+
+  const onOpenChange = popClosed.calls.find((c) => c[0] === "on_open_change")?.[1];
+  assert.equal(typeof onOpenChange, "function", "Popover wires on_open_change");
+
+  // Right-clicking opens the popup menu with the three English options in order.
+  onOpenChange(true, { notify() {} });
+  b.redraw();
+  const menu = b.items.find((x) => x.id === "terminal-menu-maple-workshop");
+  assert.ok(menu, "popup menu renders when opened");
+  assert.deepEqual(menu.childIds, [
+    "terminal-menu-maple-workshop-split-vertical",
+    "terminal-menu-maple-workshop-split-horizontal",
+    "terminal-menu-maple-workshop-new-tab",
+  ]);
+  assert.equal(b.text("terminal-menu-maple-workshop-split-vertical"), "Split Vertical");
+  assert.equal(b.text("terminal-menu-maple-workshop-split-horizontal"), "Split Horizontal");
+  assert.equal(b.text("terminal-menu-maple-workshop-new-tab"), "New Tab");
+
+  // Split Vertical opens a right split pane in the project's folder and closes the menu.
+  b.commands.length = 0;
+  b.click("terminal-menu-maple-workshop-split-vertical");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(b.commands)),
+    [{ name: "terminal.open", args: { folder: `${HOME}/projects/maple-workshop`, place: "right" } }],
+  );
+  assert.ok(!b.ids.includes("terminal-menu-maple-workshop"), "choosing an item closes the menu");
+
+  // Split Horizontal opens a down split pane in the project's folder and closes the menu.
+  onOpenChange(true, { notify() {} });
+  b.redraw();
+  b.commands.length = 0;
+  b.click("terminal-menu-maple-workshop-split-horizontal");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(b.commands)),
+    [{ name: "terminal.open", args: { folder: `${HOME}/projects/maple-workshop`, place: "down" } }],
+  );
+  assert.ok(!b.ids.includes("terminal-menu-maple-workshop"));
+
+  // New Tab opens a new tab in the project's folder and closes the menu.
+  onOpenChange(true, { notify() {} });
+  b.redraw();
+  b.commands.length = 0;
+  b.click("terminal-menu-maple-workshop-new-tab");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(b.commands)),
+    [{ name: "tab.new", args: { folder: `${HOME}/projects/maple-workshop` } }],
+  );
+  assert.ok(!b.ids.includes("terminal-menu-maple-workshop"));
+
+  // Escape closes the menu without running any command.
+  onOpenChange(true, { notify() {} });
+  b.redraw();
+  b.commands.length = 0;
+  b.keyDown("terminal-menu-maple-workshop", "escape");
+  assert.deepEqual(b.commands, [], "Escape runs no command");
+  assert.ok(!b.ids.includes("terminal-menu-maple-workshop"), "Escape closes the menu");
+
+  // Outside click dismissal (Popover on_open_change(false)) closes without running any command.
+  onOpenChange(true, { notify() {} });
+  b.redraw();
+  b.commands.length = 0;
+  onOpenChange(false, { notify() {} });
+  b.redraw();
+  assert.deepEqual(b.commands, [], "outside click runs no command");
+  assert.ok(!b.ids.includes("terminal-menu-maple-workshop"), "outside click closes the menu");
+
+  // Keyboard navigation (Down + Enter) selects Split Horizontal and closes the menu.
+  onOpenChange(true, { notify() {} });
+  b.redraw();
+  b.commands.length = 0;
+  b.keyDown("terminal-menu-maple-workshop", "down");
+  b.keyDown("terminal-menu-maple-workshop", "enter");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(b.commands)),
+    [{ name: "terminal.open", args: { folder: `${HOME}/projects/maple-workshop`, place: "down" } }],
+  );
+  assert.ok(!b.ids.includes("terminal-menu-maple-workshop"));
 });

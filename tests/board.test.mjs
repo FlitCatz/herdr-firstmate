@@ -4286,6 +4286,19 @@ test("each Projects row has a Terminal button next to its directory button that 
   assert.equal(b.view.open.has("orchard-atlas"), false, "clicking directory button still does not expand the row");
 });
 
+test("the ui.terminalMenu preview prop shows that project's terminal menu open on first render", async () => {
+  const b = await board({ ui: { bottomTab: "projects", terminalMenu: "maple-workshop" } });
+  const menu = b.items.find((x) => x.id === "terminal-menu-maple-workshop");
+  assert.ok(menu, "maple-workshop's terminal menu is drawn without a right-click");
+  assert.deepEqual(menu.childIds, [
+    "terminal-menu-maple-workshop-split-vertical",
+    "terminal-menu-maple-workshop-split-horizontal",
+    "terminal-menu-maple-workshop-new-tab",
+  ]);
+  assert.ok(!b.ids.includes("terminal-menu-orchard-atlas"), "other projects' menus stay closed");
+  assert.deepEqual(b.commands, [], "showing the menu runs no command");
+});
+
 test("right-clicking a Projects Terminal button opens a popup menu for Split Vertical, Split Horizontal, and New Tab", async () => {
   const b = await board({ ui: { bottomTab: "projects" } });
   const findPopover = (project) => {

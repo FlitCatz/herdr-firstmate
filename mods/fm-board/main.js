@@ -1274,7 +1274,7 @@ export default class FmBoard extends View {
     /** @type {number | null} */
     this.savedViewerWidth = this.loadViewerWidth();
     /** @type {string | null} */
-    this.terminalMenuProject = typeof ui.terminalMenu === "string" ? ui.terminalMenu : null;
+    this.terminalMenuProject = null;
     this.terminalMenuAt = 0;
     this.terminalMenuFocus = cx.focus_handle();
     // One handle per scroll area: the stacked board, each column's card list, and the Chains board.
@@ -1333,6 +1333,8 @@ export default class FmBoard extends View {
     // props.ui.focus and props.ui.point (previews): Focus on that card, or that card pointed to.
     if (typeof ui.focus === "string") { this.focusMode = true; this.focusId = ui.focus; }
     if (typeof ui.point === "string") this.pointedId = ui.point;
+    // props.ui.terminalMenu (previews): that project's terminal right-click menu shown open.
+    if (typeof ui.terminalMenu === "string") this.terminalMenuProject = ui.terminalMenu;
     if (ui.pick) this.usePath(ui.pick, cx);
     this.listenCommands(cx);
     this.refresh(cx);
@@ -2537,7 +2539,6 @@ export default class FmBoard extends View {
     if (!this.keys.is_focused()) return false;
     if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return false;
     if (e.key === "escape") {
-      if (this.terminalMenuProject) { this.terminalMenuProject = null; cx.notify(); return true; }
       if (this.viewer.root) { this.viewer.close(cx); return true; }
       if (this.focusMode) { this.toggleFocus(cx); return true; }
       if (this.inspectorOpen || this.selectedCardId) { this.clearChainSelection(cx); return true; }

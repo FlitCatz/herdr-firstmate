@@ -4,17 +4,7 @@ import { test } from "node:test";
 import vm from "node:vm";
 import * as highlight from "../mods/fm-board/highlight.js";
 
-const {
-  HIGHLIGHT_SYNC_MAX,
-  MAX_LINE_SPANS,
-  DiffHighlighter,
-  capLineSpans,
-  detectLanguage,
-  editorSyntax,
-  highlightLine,
-  syntaxColor,
-  tint,
-} = highlight;
+const { editorSyntax, syntaxColor } = highlight;
 
 const rootUrl = new URL("..", import.meta.url);
 
@@ -86,23 +76,6 @@ function element() {
   return self;
 }
 
-function collectText(node) {
-  if (node === null || node === undefined) return "";
-  if (typeof node !== "object") return String(node);
-  return (node.node?.kids ?? []).map(collectText).join("");
-}
-
-function findColor(node, word) {
-  if (!node || typeof node !== "object") return null;
-  const kids = node.node?.kids ?? [];
-  if (kids.includes(word) && node.node?.props?.text_color) return node.node.props.text_color;
-  for (const k of kids) {
-    const hit = findColor(k, word);
-    if (hit) return hit;
-  }
-  return null;
-}
-
 function findEditorState(node) {
   if (!node || typeof node !== "object") return null;
   if (node.node?.props?.editor) return node.node.props.editor;
@@ -113,10 +86,11 @@ function findEditorState(node) {
   return null;
 }
 
-function hasHighlightedSpans(node) {
-  if (!node || typeof node !== "object") return false;
-  if (node.node?.props?.whitespace_nowrap !== undefined && node.node?.props?.text_color !== undefined) return true;
-  return (node.node?.kids ?? []).some(hasHighlightedSpans);
+function collectIds(node, out = []) {
+  if (!node || typeof node !== "object") return out;
+  if (node.node?.id) out.push(node.node.id);
+  for (const k of node.node?.kids ?? []) collectIds(k, out);
+  return out;
 }
 
 async function createHighlightedViewer({ exec, readTextFile, virtualRanges } = {}) {
@@ -124,9 +98,7 @@ async function createHighlightedViewer({ exec, readTextFile, virtualRanges } = {
     .replace(/^import .*;$/gm, "")
     .replace("export class FolderViewer", "class FolderViewer");
   const vlists = [];
-  const timers = [];
   const editors = [];
-  let notifyCount = 0;
   let inFlight = 0;
   const track = (fn) => async (...args) => {
     inFlight++;
@@ -134,15 +106,8 @@ async function createHighlightedViewer({ exec, readTextFile, virtualRanges } = {
     finally { inFlight--; }
   };
   const cx = {
-    notify() { notifyCount++; },
+    notify() {},
     spawn(fn) { return Promise.resolve().then(() => fn(cx)); },
-    timer: {
-      after(ms, fn) {
-        const entry = { ms, fn, cancelled: false, fired: false };
-        timers.push(entry);
-        return { cancel() { entry.cancelled = true; } };
-      },
-    },
   };
   const scope = {
     div: element,
@@ -194,46 +159,15 @@ async function createHighlightedViewer({ exec, readTextFile, virtualRanges } = {
       await flush();
     }
   };
-  const tickNext = () => {
-    const next = timers.find((t) => !t.cancelled && !t.fired);
-    if (!next) return false;
-    next.fired = true;
-    next.fn(cx);
-    return true;
-  };
   const render = (theme = THEME) => {
     vlists.length = 0;
     const tree = view.render(theme, (px) => px, []);
-    return { tree, vlists: [...vlists] };
+    return { tree, vlists: [...vlists], ids: collectIds(tree) };
   };
-  return { view, cx, timers, editors, tickNext, render, settle, getNotifyCount: () => notifyCount };
+  return { view, cx, editors, render, settle };
 }
 
-test("detectLanguage maps supported extensions and dotfiles and falls back to plain", () => {
-  assert.equal(detectLanguage("src/Api/Auth.cs"), "csharp");
-  assert.equal(detectLanguage("scripts/seed.csx"), "csharp");
-  assert.equal(detectLanguage("mods/main.ts"), "ts");
-  assert.equal(detectLanguage("mods/App.tsx"), "ts");
-  assert.equal(detectLanguage("mods/util.mts"), "ts");
-  assert.equal(detectLanguage("mods/view.jsx"), "ts");
-  assert.equal(detectLanguage("mods/index.mjs"), "ts");
-  assert.equal(detectLanguage("lib/app.dart"), "dart");
-  assert.equal(detectLanguage("crates/pk/src/lib.rs"), "rust");
-  assert.equal(detectLanguage("package.json"), "json");
-  assert.equal(detectLanguage("tsconfig.jsonc"), "json");
-  assert.equal(detectLanguage(".github/workflows/ci.yml"), "yaml");
-  assert.equal(detectLanguage("config/app.yaml"), "yaml");
-  assert.equal(detectLanguage("README.md"), "markdown");
-  assert.equal(detectLanguage("docs/guide.mdx"), "markdown");
-  assert.equal(detectLanguage("bin/fm-spawn.sh"), "shell");
-  assert.equal(detectLanguage(".zshrc"), "shell");
-  assert.equal(detectLanguage(".bashrc"), "shell");
-  assert.equal(detectLanguage("assets/logo.png"), "plain");
-  assert.equal(detectLanguage("Makefile"), "plain");
-  assert.equal(detectLanguage(""), "plain");
-});
-
-test("syntaxColor and editorSyntax map every token kind to the Herdr theme token table and tint appends hex alpha", () => {
+test("syntaxColor and editorSyntax map every token kind to the Herdr theme token table", () => {
   assert.equal(syntaxColor(THEME, "keyword"), THEME.ansi5);
   assert.equal(syntaxColor(THEME, "string"), THEME.ansi2);
   assert.equal(syntaxColor(THEME, "comment"), THEME.dim);
@@ -244,108 +178,15 @@ test("syntaxColor and editorSyntax map every token kind to the Herdr theme token
   assert.equal(syntaxColor(THEME, "plain"), THEME.foreground);
   assert.deepEqual(editorSyntax(THEME), expectedEditorSyntax(THEME));
   assert.deepEqual(editorSyntax(LIGHT_THEME), expectedEditorSyntax(LIGHT_THEME));
-
-  assert.equal(tint("#3fb950", "1c"), "#3fb9501c");
-  assert.equal(tint("#f85149", "1a"), "#f851491a");
-  assert.equal(tint("#3fb95080", "1c"), "#3fb95080");
 });
 
-test("highlightLine tokenizes C#, TypeScript, Markdown, Dart, Rust, JSON, YAML, shell, and plain", () => {
-  const cs = highlightLine('public sealed record AuthResult(int Code = 0x10) => "ok"; // hi', "csharp").spans;
-  assert.ok(cs.some((s) => s.kind === "keyword" && s.text === "public"));
-  assert.ok(cs.some((s) => s.kind === "keyword" && s.text === "record"));
-  assert.ok(cs.some((s) => s.kind === "type" && s.text === "int"));
-  assert.ok(cs.some((s) => s.kind === "function" && s.text === "AuthResult"));
-  assert.ok(cs.some((s) => s.kind === "number" && s.text === "0x10"));
-  assert.ok(cs.some((s) => s.kind === "string" && s.text === '"ok"'));
-  assert.ok(cs.some((s) => s.kind === "comment" && s.text === "// hi"));
-
-  const ts = highlightLine("export async function fetchUser(id: number): Promise<UserRecord> { return 42; }", "ts").spans;
-  assert.deepEqual(
-    ts.filter((s) => s.kind !== "plain").map((s) => [s.kind, s.text]),
-    [
-      ["keyword", "export"],
-      ["keyword", "async"],
-      ["keyword", "function"],
-      ["function", "fetchUser"],
-      ["type", "number"],
-      ["type", "Promise"],
-      ["type", "UserRecord"],
-      ["keyword", "return"],
-      ["number", "42"],
-    ],
-  );
-
-  assert.deepEqual(highlightLine("## Heading", "markdown").spans, [{ kind: "keyword", text: "## Heading" }]);
-  assert.deepEqual(highlightLine("```ts", "markdown").spans, [{ kind: "comment", text: "```ts" }]);
-  const md = highlightLine("- See `main.js` and [README](README.md)", "markdown").spans;
-  assert.ok(md.some((s) => s.kind === "type" && s.text === "- "));
-  assert.ok(md.some((s) => s.kind === "string" && s.text === "`main.js`"));
-  assert.ok(md.some((s) => s.kind === "function" && s.text === "README"));
-  assert.ok(md.some((s) => s.kind === "string" && s.text === "README.md"));
-
-  const rust = highlightLine("pub fn parse<'a>(s: &'a str) -> Option<usize> { None }", "rust").spans;
-  assert.ok(rust.some((s) => s.kind === "type" && s.text === "'a"));
-  assert.ok(rust.some((s) => s.kind === "constant" && s.text === "None"));
-  assert.equal(rust.some((s) => s.kind === "string"), false);
-
-  const yaml = highlightLine("  timeout: 30 # seconds", "yaml").spans;
-  assert.deepEqual(
-    yaml.filter((s) => s.kind !== "plain").map((s) => [s.kind, s.text]),
-    [["constant", "timeout"], ["number", "30"], ["comment", "# seconds"]],
-  );
-});
-
-test("DiffHighlighter produces chunk-consistent spans and capLineSpans caps excessive spans", () => {
-  const addedRows = Array.from({ length: 200 }, (_, i) => {
-    if (i === 78) return { kind: "+", text: "/* multi-line" };
-    if (i === 79) return { kind: "+", text: " * across chunk" };
-    if (i === 80) return { kind: "+", text: " * still comment" };
-    if (i === 81) return { kind: "+", text: " */" };
-    return { kind: "+", text: `const x_${i}: number = calc(${i}, "v${i}");` };
-  });
-  const oneShot = structuredClone(new DiffHighlighter().highlight("src/app.ts", "k1", addedRows, addedRows.length));
-  const chunked = new DiffHighlighter();
-  let chunkedRes = [];
-  for (let limit = 40; limit <= addedRows.length + 40; limit += 40) {
-    chunkedRes = chunked.highlight("src/app.ts", "k1", addedRows, limit);
-  }
-  assert.deepEqual(chunkedRes, oneShot);
-  assert.deepEqual(oneShot[80], [{ kind: "comment", text: " * still comment" }]);
-
-  const diffRows = [
-    { kind: "@", text: "@@ -1,3 +1,3 @@" },
-    { kind: "-", text: "/* old comment" },
-    { kind: "+", text: "const ok = true;" },
-    { kind: " ", text: "render();" },
-  ];
-  const diffRes = new DiffHighlighter().highlight("a.ts", "p1", diffRows, diffRows.length);
-  assert.equal(diffRes[0], null);
-  assert.equal(diffRes[1]?.[0].kind, "comment");
-  assert.ok(diffRes[2]?.some((s) => s.kind === "keyword" && s.text === "const"));
-  assert.ok(diffRes[3]?.some((s) => s.kind === "function" && s.text === "render"));
-
-  const manySpans = Array.from({ length: 120 }, (_, i) => ({ kind: /** @type {const} */ ("function"), text: `f${i}()` }));
-  const capped = capLineSpans(manySpans);
-  assert.ok(capped);
-  assert.equal(capped.length, MAX_LINE_SPANS);
-  assert.equal(capped.at(-1)?.kind, "plain");
-  assert.equal(capLineSpans([{ kind: "plain", text: "hello" }]), null);
-});
-
-test("FolderViewer highlights Files view and Changes view with Herdr theme tokens and added/removed backgrounds", async () => {
+test("FolderViewer highlights Files view with Herdr theme tokens, keeps Git status marks, and omits Changes tab", async () => {
   const sampleTs = [
     'import { readFile } from "node:fs";',
     "export async function loadCount(limit: number): Promise<number> {",
     '  const ok = true; // ready',
     "  return limit + 42;",
     "}",
-  ].join("\n");
-  const samplePatch = [
-    "@@ -1,3 +1,3 @@",
-    "-const oldVal = 1;",
-    "+const newVal: number = compute(2); // added",
-    ' return "done";',
   ].join("\n");
 
   const v = await createHighlightedViewer({
@@ -357,9 +198,6 @@ test("FolderViewer highlights Files view and Changes view with Herdr theme token
       if (cmd === "git") {
         if (args.includes("--show-toplevel")) return { code: 0, stdout: "/repo\n\n", stderr: "" };
         if (args.includes("status")) return { code: 0, stdout: " M app.ts\0", stderr: "" };
-        if (args.includes("--verify")) return { code: 0, stdout: "deadbeef\n", stderr: "" };
-        if (args.includes("--numstat")) return { code: 0, stdout: "1\t1\tapp.ts\0", stderr: "" };
-        if (args.includes("diff")) return { code: 0, stdout: `${samplePatch}\n`, stderr: "" };
       }
       return { code: 1, stdout: "", stderr: "" };
     },
@@ -369,8 +207,14 @@ test("FolderViewer highlights Files view and Changes view with Herdr theme token
   v.view.target("/repo", "repo", v.cx);
   await v.settle();
 
+  // Files list keeps Git status marks and renders the Files label but no Changes tab.
+  let rendered = v.render();
+  assert.equal(v.view.marks["app.ts"], "M");
+  assert.ok(rendered.ids.includes("vf-app.ts"));
+  assert.ok(!rendered.ids.includes("vt-changes"));
+  assert.ok(rendered.ids.includes("vt-files"));
+
   // Files view opens the file in a read-only Editor colored from the theme token table.
-  v.view.tab = "files";
   v.view.showFile("app.ts", v.cx, THEME);
   await v.settle();
   assert.equal(v.editors.length, 1);
@@ -380,7 +224,7 @@ test("FolderViewer highlights Files view and Changes view with Herdr theme token
   assert.equal(darkState.opts.value, sampleTs);
   assert.deepEqual(darkState.opts.syntax, expectedEditorSyntax(THEME));
 
-  let rendered = v.render();
+  rendered = v.render();
   assert.equal(findEditorState(rendered.tree), darkState, "Files view renders the Editor for the open file");
 
   // Rendering never creates or releases editor state, so a theme switch keeps the open file's editor.
@@ -399,114 +243,4 @@ test("FolderViewer highlights Files view and Changes view with Herdr theme token
   assert.equal(lightState.opts.language, "cs");
   assert.deepEqual(lightState.opts.syntax, expectedEditorSyntax(LIGHT_THEME));
   assert.equal(findEditorState(v.render(LIGHT_THEME).tree), lightState);
-
-  // Changes view highlights synchronously for small diffs with ansi2+"1c" and blocked+"1a" line tints.
-  v.view.tab = "changes";
-  rendered = v.render();
-  const diffList = rendered.vlists.find((x) => x.id === "vc-diff");
-  assert.ok(diffList, "Changes view renders diff rows");
-  assert.equal(diffList.rendered[0].node.props.bg, THEME.raised);
-  assert.equal(diffList.rendered[1].node.props.bg, "#f851491a");
-  assert.equal(findColor(diffList.rendered[1].node.kids[1], "const"), THEME.ansi5);
-  assert.equal(findColor(diffList.rendered[1].node.kids[1], "1"), THEME.ansi1);
-  assert.equal(diffList.rendered[2].node.props.bg, "#3fb9501c");
-  assert.equal(findColor(diffList.rendered[2], "const"), THEME.ansi5);
-  assert.equal(findColor(diffList.rendered[2], "compute"), THEME.ansi4);
-  assert.equal(findColor(diffList.rendered[2], "// added"), THEME.dim);
-  assert.equal(findColor(diffList.rendered[3], '"done"'), THEME.ansi2);
-  assert.equal(collectText(diffList.rendered[3]).includes('"done"'), true);
 });
-
-test("FolderViewer defers diff highlighting after the first 160 rows in bounded 80-row chunks", async () => {
-  const bigLines = Array.from({ length: 360 }, (_, i) => {
-    if (i === 158) return "/* comment across sync boundary";
-    if (i === 160) return " * still in block comment";
-    if (i === 162) return " */";
-    return `const v_${i}: number = calc(${i}, "s${i}"); // c${i}`;
-  });
-  const bigPatch = `@@ -1,0 +1,360 @@\n${bigLines.map((l) => `+${l}`).join("\n")}`;
-
-  const v = await createHighlightedViewer({ exec: bigDiffExec(bigPatch), readTextFile: async () => "" });
-
-  v.view.target("/repo", "repo", v.cx);
-  await v.settle();
-
-  // Large diff: the hunk row plus rows 1..159 highlight synchronously; row 200 starts plain, then highlights in chunks.
-  v.view.tab = "changes";
-  let diffRows = renderedDiff(v);
-  assert.equal(hasHighlightedSpans(diffRows[1]), true, "early diff row highlighted synchronously");
-  assert.equal(hasHighlightedSpans(diffRows[159]), true, "row 159 (within first 160) highlighted synchronously");
-  assert.equal(hasHighlightedSpans(diffRows[200]), false, "row 200 deferred beyond sync cap");
-  assert.equal(diffRows[200].node.props.bg, "#3fb9501c", "deferred added row keeps line background tint");
-
-  // One chunk (80 rows: 160..239) highlights row 200 while row 300 stays plain.
-  assert.equal(v.tickNext(), true);
-  diffRows = renderedDiff(v);
-  assert.equal(hasHighlightedSpans(diffRows[200]), true, "row 200 highlighted after first chunk tick");
-  assert.equal(findColor(diffRows[161], " * still in block comment"), THEME.dim, "block comment state preserved across sync/chunk boundary");
-  assert.equal(hasHighlightedSpans(diffRows[300]), false, "row 300 waits for next chunk tick");
-
-  // Switching files mid-chunk cancels the old diff timer cleanly.
-  v.view.pickChange("small.ts", v.cx);
-  await v.settle();
-  assert.equal(v.tickNext(), false, "switching to small diff leaves no active chunk timer from big.ts");
-
-  // Reopening the big diff highlights the rest in 80-row chunks.
-  v.view.pickChange("big.ts", v.cx);
-  await v.settle();
-  let chunkSteps = 0;
-  while (v.tickNext()) chunkSteps++;
-  assert.equal(chunkSteps, Math.ceil((361 - HIGHLIGHT_SYNC_MAX) / 80), "361 diff rows highlight in bounded 80-row chunks");
-  diffRows = renderedDiff(v);
-  assert.equal(findColor(diffRows[351], "const"), THEME.ansi5);
-  assert.equal(findColor(diffRows[351], "calc"), THEME.ansi4);
-
-  // Closing the viewer mid-chunk cancels any pending diff highlight timer.
-  v.view.target("/repo2", "repo2", v.cx);
-  await v.settle();
-  v.view.close(v.cx);
-  assert.equal(v.tickNext(), false, "closing viewer cancels active diff highlight timer");
-});
-
-test("a Changes refresh with an unchanged diff keeps highlighting the rest of a large diff", async () => {
-  const bigPatch = `@@ -1,0 +1,400 @@\n${Array.from({ length: 400 }, (_, i) => `+const v_${i} = calc(${i});`).join("\n")}`;
-  const v = await createHighlightedViewer({ exec: bigDiffExec(bigPatch), readTextFile: async () => "" });
-  v.view.target("/repo", "repo", v.cx);
-  await v.settle();
-  v.view.tab = "changes";
-  assert.equal(v.view.open, "big.ts");
-  assert.equal(hasHighlightedSpans(renderedDiff(v)[350]), false, "row 350 is deferred at first");
-
-  // The folder watch or the Board's 10-second timer refreshes Changes while chunks are pending.
-  v.view.refreshChanges(v.cx);
-  await v.settle();
-  while (v.tickNext());
-
-  const diffRows = renderedDiff(v);
-  assert.equal(hasHighlightedSpans(diffRows[250]), true, "row 250 is highlighted after the refresh");
-  assert.equal(findColor(diffRows[400], "calc"), THEME.ansi4, "the last row is highlighted after the refresh");
-});
-
-function renderedDiff(v) {
-  return v.render().vlists.find((x) => x.id === "vc-diff").rendered;
-}
-
-function bigDiffExec(bigPatch) {
-  return async (cmd, args = []) => {
-    if (cmd === "sh") {
-      if (args[2] === "safe-path") return { code: 0, stdout: "", stderr: "" };
-      return { code: 0, stdout: "f\0big.ts\0f\0small.ts\0", stderr: "" };
-    }
-    if (cmd === "git") {
-      if (args.includes("--show-toplevel")) return { code: 0, stdout: "/repo\n\n", stderr: "" };
-      if (args.includes("status")) return { code: 0, stdout: " M big.ts\0 M small.ts\0", stderr: "" };
-      if (args.includes("--verify")) return { code: 0, stdout: "deadbeef\n", stderr: "" };
-      if (args.includes("--numstat")) return { code: 0, stdout: "360\t0\tbig.ts\0", stderr: "" };
-      if (args.includes("diff")) {
-        const path = args.at(-1);
-        return { code: 0, stdout: path === "small.ts" ? "@@ -1 +1 @@\n+const s = 1;\n" : `${bigPatch}\n`, stderr: "" };
-      }
-    }
-    return { code: 1, stdout: "", stderr: "" };
-  };
-}

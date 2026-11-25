@@ -1,6 +1,6 @@
 # Firstmate for Herdr
 
-A Herdr window with a task board, read-only Files viewer, and a tab bar with PR and Board buttons.
+A Herdr window with a task board, read-only Files viewer, read-only Markdown terminal-link viewer, and a tab bar with PR and Board buttons.
 
 ![Firstmate for Herdr](preview.png)
 
@@ -137,13 +137,17 @@ Idle tabs have no activity marker.
 Tabs without a custom name follow useful live agent session titles, and the active tab scrolls into view when selection or tab sizes change.
 Smooth wheel gestures accumulate and debounce small events, while each wheel notch switches one tab.
 Invalid saved panel data falls back to an empty per-space panel history.
+
+Cmd/Ctrl-clicking an existing local `.md` or `.markdown` file path in a terminal opens that document inside Herdr in a focused, read-only tab in the source space instead of launching the system default application.
+Clicking the same file again in that space selects and focuses its open viewer tab and reloads its contents from disk; clicking the same file from a different space opens a separate tab in that space.
+URLs, remote terminal paths, non-Markdown paths, directories, binary files, and missing files pass through untouched to Herdr's default opener path.
 Controls highlight on hover, and project badges and several buttons have explanatory tooltips.
 The board watches the home's state and data folders and has a 30-second refresh fallback; each refresh is bounded by a 15-second deadline (showing `Update failed` on timeout while keeping the last board on screen so later refreshes can still run), and the `Updated` time on the tab strip is displayed in Korea time; clicking it, or the `Update failed` notice, refreshes immediately.
 The Checks tab's Registered checks section lists one row per `state/*.check.sh` file (named from the filename) and shows the home-wide last check-sweep timestamp from `state/.last-check` in the viewer's local time, labeled `Last sweep (all checks)` (or `Not recorded` when absent); when the read fails or times out, it shows `Could not read registered checks` instead of a list or sweep time. Per-check running state, per-check last-run time, and check results are not recorded by Firstmate, so the board does not display per-check values and never reads check scripts, outputs, or private check state directories.
 
 ## Built from
 
-`layouts/firstmate.json` is a row with a 268px sidebar and a flexible work column. The work column contains the 42px `fm-tabs` block, a row with an active-tab block (weight 1, at least 480px) and a hidden panel stack (weight 2, at least 280px), and a 28px `workspace-status` block.
+`layouts/firstmate.json` is a row with a 268px sidebar and a flexible work column. The work column contains the 42px `fm-tabs` block, a row with an active-tab block (weight 1, at least 480px) and a hidden panel stack (weight 2, at least 280px), and a 28px `workspace-status` block. Its root `"link_handlers": ["fm-md-viewer"]` routes matching terminal Cmd/Ctrl-clicks to `fm-md-viewer`.
 
 The panel stack contains Herdr's shipped `files` and `changes` mods, the `fm-board` mod, and a `pr` block showing the separate `herdr-pr-viewer` mod. Its `home` prop is the path to the Firstmate home; set it before using the layout. Because Herdr 0.1.16's layout `focus` node property only reacts to focused terminal panes and not mod focus handles, `fm-board` draws its own 1px radius-10 perimeter focus border (`border` when unfocused, `accent` when `this.keys` or a Board `InputState` is focused); `files`, `changes`, and `herdr-pr-viewer` are outside this repository and do not receive a layout-level focus border. gpui-kit has no blur event for the Board's focus handle, so the border clears on a next-tick redraw after a mouse press outside the Board, when the Board moves focus away itself (`Esc`, Open worker, or a draft put into the Firstmate input), or on any key pressed in the focused panel (covering leader keys and direct pane-navigation bindings without a polling timer).
 
@@ -161,7 +165,11 @@ Its `viewer.js` reads selected project or worker folders (skipping symlinks with
 The viewer cancels its pending folder watch when its root changes or it closes.
 The viewer shows read-only syntax-highlighted file contents (colored from Herdr `theme()` tokens in `highlight.js`, adapted from `herdr-pr-viewer`: `ansi5` keyword, `ansi2` string, `dim` comment, `ansi1` number, `ansi3` type, `ansi4` function, `ansi6` constant, boolean, and string escape, `foreground` plain, variable, operator, and punctuation; file contents use a read-only `Editor` whose `EditorState` gets that table from `editorSyntax(t)` when the file opens and passes `"cs"` for C# and `"js"` for TypeScript/JavaScript so Herdr's grammar set recognizes them), Git status decorations (`A`, `M`, `D`, `U`), a source picker for local or worker copies, and a draggable divider beside the board. Known limit in the Files viewer `Editor`: TypeScript files use the JavaScript grammar (keywords, strings, comments, numbers, and functions highlight while TS-only type annotations may stay plain), and Markdown stays plain because Herdr's `EditorState` `syntax` keys do not map `markup.*` scopes.
 Optional `snapshot_file`, `collapsed`, and `ui` props supply saved board data and initial UI state for previews. Among the `ui` props, `focus` opens Focus on a card, `point` rings a card as the NEXT MOVE card line does, and `terminalMenu` shows that project's terminal right-click menu open, so previews can show those states without key presses.
-During `herdr-app check`, the Board skips startup reads, helper commands, watches, and refresh timers, and the tab bar skips panel persistence and layout commands.
+`fm-md-viewer` pairs a `link.js` terminal link handler (`mod.json` rule `{"kind": "file", "pattern": "(?i)\\.(?:md|markdown)$"}`) with a minimal read-only `main.js` tab view and shared path/tab helpers in `state.js`.
+Its `link.js` imports `home`, `panes`, `readTextFile`, `run`, `setShared`, `shared`, and `spaces` from `herdr` (making no shell calls or network requests), validates local readable Markdown files with `readTextFile`, reconciles open viewer tabs in `shared("fm-md-viewer.tabs")` against live `spaces()` and `panes()`, and either selects/focuses the existing tab (bumping `shared("fm-md-viewer.reload")`) or runs `tab.new` in the source space with `focus: true`.
+Its `main.js` renders the file with Herdr's native `TextView.markdown` (`.selectable(true).raw_html(false)`), displays the filename, a `Read-only` badge, and the truncated path using active `theme()` colors, registers its tab on mount and unregisters it in `close()`, and skips side effects while `checking()` is true.
+
+During `herdr-app check`, the Board skips startup reads, helper commands, watches, and refresh timers, the tab bar skips panel persistence and layout commands, and `fm-md-viewer` skips file reads and shared tab registration.
 
 ## Watch out
 
@@ -190,9 +198,9 @@ The layout and mods expect Herdr's shipped `workspace-chrome`, `spaces`, `agents
 
 ## Done when
 
-Both mod folders (`fm-board`, `fm-tabs`) pass `herdr-app check`.
+All three mod folders (`fm-board`, `fm-tabs`, `fm-md-viewer`) pass `herdr-app check`.
 
-`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files` button, Files viewer syntax colors, the Held groups, the open decisions with their answer drafts, the Today strip, NEXT MOVE, card bars, Focus keys, Board keyboard navigation/folding/escape, PR links with and without the PR viewer mod, the tab group below the board, and the Registered checks section.
+`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files` button, Files viewer syntax colors, the Held groups, the open decisions with their answer drafts, the Today strip, NEXT MOVE, card bars, Focus keys, Board keyboard navigation/folding/escape, PR links with and without the PR viewer mod, the tab group below the board, the Registered checks section, and `fm-md-viewer` link routing, same-file tab reuse, and read-only Markdown rendering.
 
 The layout opens with the configured Firstmate home, displays the board and panel controls, and switching spaces restores each space's selected panel.
 

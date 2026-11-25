@@ -1,12 +1,11 @@
 // Shared path normalization and live tab-registry helpers for fm-md-viewer.
-// Used by both link.js (terminal Cmd/Ctrl-click routing) and main.js (viewer tab lifecycle).
+// Used by link.js (terminal Cmd/Ctrl-click routing) and main.js (path normalization and tab title).
 
 export const MOD_NAME = "fm-md-viewer";
 export const TABS_SHARED_KEY = "fm-md-viewer.tabs";
-export const RELOAD_SHARED_KEY = "fm-md-viewer.reload";
 
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
-const MARKDOWN_EXT = /\.(?:md|markdown)$/i;
+const MARKDOWN_EXT = /\.md$/i;
 
 /**
  * Normalizes a local POSIX file path without invoking any shell.
@@ -118,27 +117,22 @@ export function findMatchingTab(entries, spaceId, filePath) {
 }
 
 /**
- * Adds or updates a single viewer tab registration in the reconciled list.
- * @param {unknown} rawEntries
+ * Finds the viewer tab that a just-run `tab.new` created: a tab absent from the
+ * pre-command snapshot, in the target space, holding an fm-md-viewer pane.
+ * @param {Set<string>} knownTabIds
  * @param {Array<{ id?: string, tabs?: Array<{ id?: string }> }>} spaceList
  * @param {Array<{ pane?: string, mod?: string, tab?: string }>} paneList
- * @param {{ tab: string, space: string, pane: string, file: string }} record
+ * @param {string | null} spaceId
+ * @returns {{ tab: string, space: string, pane: string } | null}
  */
-export function upsertTabRecord(rawEntries, spaceList, paneList, record) {
-  const { entries } = reconcileTabs(rawEntries, spaceList, paneList);
-  const filtered = entries.filter((e) => e.tab !== record.tab);
-  filtered.push({ tab: record.tab, space: record.space, pane: record.pane, file: record.file });
-  return filtered;
-}
-
-/**
- * Removes a closing viewer tab from the reconciled list.
- * @param {unknown} rawEntries
- * @param {Array<{ id?: string, tabs?: Array<{ id?: string }> }>} spaceList
- * @param {Array<{ pane?: string, mod?: string, tab?: string }>} paneList
- * @param {string | null | undefined} tabId
- */
-export function removeTabRecord(rawEntries, spaceList, paneList, tabId) {
-  const { entries } = reconcileTabs(rawEntries, spaceList, paneList);
-  return tabId ? entries.filter((e) => e.tab !== tabId) : entries;
+export function findNewViewerTab(knownTabIds, spaceList, paneList, spaceId) {
+  for (const space of Array.isArray(spaceList) ? spaceList : []) {
+    if (!space?.id || (spaceId && space.id !== spaceId)) continue;
+    for (const tab of Array.isArray(space.tabs) ? space.tabs : []) {
+      if (!tab?.id || knownTabIds.has(tab.id)) continue;
+      const pane = (Array.isArray(paneList) ? paneList : []).find((p) => p?.mod === MOD_NAME && p.tab === tab.id && p.pane);
+      if (pane) return { tab: tab.id, space: space.id, pane: pane.pane };
+    }
+  }
+  return null;
 }

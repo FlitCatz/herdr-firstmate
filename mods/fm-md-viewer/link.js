@@ -1,13 +1,13 @@
 // Terminal Cmd/Ctrl-click link handler for local Markdown files.
-// Opens existing local .md/.markdown files in a focused, read-only fm-md-viewer tab
+// Opens existing local .md files in a focused, read-only fm-md-viewer tab
 // in the source space (reusing an open tab for the same file), and passes through
 // URLs, remote files, non-Markdown paths, and missing or unreadable files.
 import { home, panes, readTextFile, run, setShared, shared, spaces } from "herdr";
 import {
   MOD_NAME,
-  RELOAD_SHARED_KEY,
   TABS_SHARED_KEY,
   findMatchingTab,
+  findNewViewerTab,
   isMarkdownPath,
   normalizeLocalPath,
   reconcileTabs,
@@ -45,15 +45,12 @@ export async function handleLink(click) {
 
   const targetSpaceId = click.source.space ?? targetSpace?.id ?? null;
   const { entries, changed } = reconcileTabs(shared(TABS_SHARED_KEY), spaceList, panes());
-  if (changed) setShared(TABS_SHARED_KEY, entries);
 
   const existing = findMatchingTab(entries, targetSpaceId, resolvedPath);
   if (existing) {
+    if (changed) setShared(TABS_SHARED_KEY, entries);
     run("tab.select", { id: existing.tab });
-    if (existing.pane) run("pane.focus", { pane: existing.pane });
-    const prev = /** @type {{ seq?: number } | null | undefined} */ (shared(RELOAD_SHARED_KEY));
-    const seq = (typeof prev?.seq === "number" ? prev.seq : 0) + 1;
-    setShared(RELOAD_SHARED_KEY, { tab: existing.tab, file: resolvedPath, seq });
+    run("pane.focus", { pane: existing.pane });
     return "handled";
   }
 
@@ -65,6 +62,14 @@ export async function handleLink(click) {
     focus: true,
   };
   if (targetSpaceId) args.space = targetSpaceId;
+  const knownTabIds = new Set(spaceList.flatMap((s) => (s.tabs ?? []).map((t) => t.id)));
   run("tab.new", args);
+
+  const created = findNewViewerTab(knownTabIds, spaces(), panes(), targetSpaceId);
+  if (created) {
+    setShared(TABS_SHARED_KEY, [...entries, { ...created, file: resolvedPath }]);
+  } else if (changed) {
+    setShared(TABS_SHARED_KEY, entries);
+  }
   return "handled";
 }

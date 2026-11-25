@@ -77,11 +77,25 @@ async function loadLinkHandler({
   shared = {},
   homeDir = "/Users/example",
   readTextFile = fsReadTextFile,
+  applyTabNew = true,
 } = {}) {
   const sharedStore = new Map(Object.entries(shared));
   const commands = [];
   let execCalls = 0;
   let fetchCalls = 0;
+  let newTabCount = 0;
+
+  // Mirrors Herdr's documented `tab.new {space?, name?, mod, props?}`: the command applies
+  // right after run() returns, adding a named tab whose only pane is the mod.
+  function applyHerdrCommand(name, args) {
+    if (!applyTabNew || name !== "tab.new") return;
+    const space = spaces.find((sp) => sp.id === args.space) ?? spaces.find((sp) => sp.active);
+    if (!space) return;
+    newTabCount++;
+    const tab = `tb-new-${newTabCount}`;
+    space.tabs.push({ id: tab, name: args.name, active: Boolean(args.focus) });
+    panes.push({ pane: `p-new-${newTabCount}`, terminal: null, mod: args.mod, tab, focused: Boolean(args.focus) });
+  }
 
   const linkSource = stripImports(await readFile(new URL("mods/fm-md-viewer/link.js", rootUrl), "utf8"))
     .replace(/^export async function handleLink/m, "async function handleLink")
@@ -90,10 +104,11 @@ async function loadLinkHandler({
   const scope = {
     ...stateHelpers,
     home: () => homeDir,
-    spaces: () => spaces,
-    panes: () => panes,
+    spaces: () => structuredClone(spaces),
+    panes: () => structuredClone(panes),
     run: (name, args) => {
       commands.push({ name, args: args === undefined ? undefined : structuredClone(args) });
+      applyHerdrCommand(name, args);
       return null;
     },
     shared: (key) => (sharedStore.has(key) ? structuredClone(sharedStore.get(key)) : undefined),
@@ -117,6 +132,8 @@ async function loadLinkHandler({
     handleLink,
     commands,
     sharedStore,
+    spaces,
+    panes,
     get execCalls() { return execCalls; },
     get fetchCalls() { return fetchCalls; },
   };
@@ -334,7 +351,6 @@ test("handleLink reuses an existing tab for the same file in the same space, iso
     assert.deepEqual(env.sharedStore.get(stateHelpers.TABS_SHARED_KEY), [
       { tab: "tb-md-1", space: "sp-1", pane: "p-md-1", file: mdFile },
     ], "stale closed tab entry is pruned");
-    assert.equal(env.sharedStore.get(stateHelpers.RELOAD_SHARED_KEY)?.tab, "tb-md-1");
 
     // Clicking the same file from a different space opens a new tab in sp-2 instead of jumping to sp-1.
     env.commands.length = 0;
@@ -355,21 +371,27 @@ test("handleLink reuses an existing tab for the same file in the same space, iso
         },
       },
     ]);
+    assert.deepEqual(env.sharedStore.get(stateHelpers.TABS_SHARED_KEY), [
+      { tab: "tb-md-1", space: "sp-1", pane: "p-md-1", file: mdFile },
+      { tab: "tb-new-1", space: "sp-2", pane: "p-new-1", file: mdFile },
+    ], "the tab created by tab.new is recorded with its exact file path");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("handleLink passes through directories named *.md, binary files, control-char paths, null paths, and non-md extensions like .mdx", async () => {
+test("handleLink passes through directories named *.md, binary files, control-char paths, null paths, and non-.md extensions like .mdx and .markdown", async () => {
   const dir = await mkdtemp(join(tmpdir(), "fm-md-edge-"));
   try {
     const dirNamedMd = join(dir, "folder.md");
     const binaryMd = join(dir, "binary.md");
     const mdxFile = join(dir, "page.mdx");
-    const emptyMd = join(dir, "empty.markdown");
+    const longExtMd = join(dir, "guide.markdown");
+    const emptyMd = join(dir, "empty.md");
     await mkdir(dirNamedMd);
     await writeFile(binaryMd, Buffer.from([0x23, 0x20, 0x00, 0x41]));
     await writeFile(mdxFile, "# MDX\n<Widget />\n", "utf8");
+    await writeFile(longExtMd, "# Guide\n", "utf8");
     await writeFile(emptyMd, "", "utf8");
 
     const env = await loadLinkHandler({
@@ -381,14 +403,15 @@ test("handleLink passes through directories named *.md, binary files, control-ch
     assert.equal(await env.handleLink({ link: { kind: "file", raw: dirNamedMd, path: dirNamedMd }, source: src }), "pass");
     assert.equal(await env.handleLink({ link: { kind: "file", raw: binaryMd, path: binaryMd }, source: src }), "pass");
     assert.equal(await env.handleLink({ link: { kind: "file", raw: mdxFile, path: mdxFile }, source: src }), "pass");
+    assert.equal(await env.handleLink({ link: { kind: "file", raw: longExtMd, path: longExtMd }, source: src }), "pass");
     assert.equal(await env.handleLink({ link: { kind: "file", raw: "a.md", path: null }, source: src }), "pass");
     assert.equal(await env.handleLink({ link: { kind: "file", raw: "a.md\nrm -rf /", path: `${dir}/a.md\nrm` }, source: src }), "pass");
     assert.equal(env.commands.length, 0);
 
-    // An existing empty .markdown file is still a valid local Markdown file and opens cleanly.
+    // An existing empty .md file is still a valid local Markdown file and opens cleanly.
     assert.equal(await env.handleLink({ link: { kind: "file", raw: emptyMd, path: emptyMd }, source: src }), "handled");
     assert.equal(env.commands.length, 1);
-    assert.equal(env.commands[0].args.name, "empty.markdown");
+    assert.equal(env.commands[0].args.name, "empty.md");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -408,12 +431,12 @@ test("layouts/firstmate.json and mods/fm-md-viewer/mod.json declare the Herdr li
   const rx = new RegExp(jsPattern, fileRule.pattern.startsWith("(?i)") ? "i" : "");
   assert.equal(rx.test("/tmp/notes.md"), true);
   assert.equal(rx.test("/tmp/README.MD"), true);
-  assert.equal(rx.test("/tmp/guide.markdown"), true);
+  assert.equal(rx.test("/tmp/guide.markdown"), false);
   assert.equal(rx.test("/tmp/page.mdx"), false);
   assert.equal(rx.test("/tmp/notes.txt"), false);
 });
 
-test("FmMdViewer renders local Markdown via native TextView.markdown with raw_html(false), registers/unregisters tab reuse state, and reloads on re-click", async () => {
+test("FmMdViewer renders local Markdown via native TextView.markdown with raw_html(false) and leaves the shared tab registry alone", async () => {
   const dir = await mkdtemp(join(tmpdir(), "fm-md-view-"));
   try {
     const mdFile = join(dir, "architecture.md");
@@ -437,22 +460,7 @@ test("FmMdViewer renders local Markdown via native TextView.markdown with raw_ht
     assert.match(first.textViews[0].props.markdown, /# Architecture/);
     assert.match(first.text, /architecture\.md/);
     assert.match(first.text, /Read-only/);
-    assert.deepEqual(env.sharedStore.get(stateHelpers.TABS_SHARED_KEY), [
-      { tab: "tb-md", space: "sp-1", pane: "p-md", file: mdFile },
-    ]);
-
-    // Update the file on disk and trigger reload signal from link.js reuse.
-    await writeFile(mdFile, "# Architecture v2\n\nUpdated body.\n", "utf8");
-    env.sharedStore.set(stateHelpers.RELOAD_SHARED_KEY, { tab: "tb-md", file: mdFile, seq: 1 });
-    env.render();
-    await env.settle();
-
-    const second = env.render();
-    assert.match(second.textViews[0].props.markdown, /# Architecture v2/);
-
-    // Closing the tab unregisters it from shared state.
-    env.view.close?.();
-    assert.deepEqual(env.sharedStore.get(stateHelpers.TABS_SHARED_KEY), []);
+    assert.equal(env.sharedStore.has(stateHelpers.TABS_SHARED_KEY), false, "the view never registers itself");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -484,11 +492,11 @@ test("FmMdViewer skips side effects during herdr-app check and handles missing o
   }
 });
 
-test("FmMdViewer re-binds an already-registered tab after reload and link.js expands ~/ paths", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "fm-md-reload-"));
+test("link.js expands ~/ paths", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fm-md-home-"));
   try {
     const mdFile = join(dir, "notes.md");
-    await writeFile(mdFile, "# Notes\n\nInitial.\n", "utf8");
+    await writeFile(mdFile, "# Notes\n", "utf8");
 
     const linkEnv = await loadLinkHandler({
       homeDir: dir,
@@ -501,25 +509,93 @@ test("FmMdViewer re-binds an already-registered tab after reload and link.js exp
     });
     assert.equal(res, "handled");
     assert.equal(linkEnv.commands[0].args.props.file, mdFile);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
-    // Simulate reload where shared registry already holds tb-md for mdFile.
-    const viewEnv = await loadMdViewer({
-      props: { file: mdFile },
-      homeDir: dir,
-      spaces: [{ id: "sp-1", active: true, machine: null, tabs: [{ id: "tb-md", name: "notes.md", active: true }] }],
-      panes: [{ pane: "p-md", terminal: null, mod: "fm-md-viewer", tab: "tb-md", focused: true }],
-      focused: { space: "sp-1", tab: "tb-md", pane: "p-md", terminal: null, shown: null, agent: null, cwd: null },
-      shared: {
-        [stateHelpers.TABS_SHARED_KEY]: [{ tab: "tb-md", space: "sp-1", pane: "p-md", file: mdFile }],
-      },
+test("same-basename files in different folders get separate tabs that survive a restart without swapping", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fm-md-basename-"));
+  try {
+    const readmeA = join(dir, "a", "README.md");
+    const readmeB = join(dir, "b", "README.md");
+    await mkdir(join(dir, "a"));
+    await mkdir(join(dir, "b"));
+    await writeFile(readmeA, "# A\n", "utf8");
+    await writeFile(readmeB, "# B\n", "utf8");
+
+    const spaces = [{ id: "sp-1", active: true, machine: null, tabs: [{ id: "tb-term", name: "1", active: true }] }];
+    const panes = [{ pane: "p-term", terminal: "t1", tab: "tb-term", focused: true }];
+    const src = { terminal: "t1", machine: null, cwd: dir, pane: "p-term", tab: "tb-term", space: "sp-1" };
+    const click = (path) => ({ link: { kind: "file", raw: path, path }, source: src });
+
+    const before = await loadLinkHandler({ spaces, panes });
+    assert.equal(await before.handleLink(click(readmeA)), "handled");
+    assert.equal(await before.handleLink(click(readmeB)), "handled");
+    assert.deepEqual(before.commands.map((c) => c.name), ["tab.new", "tab.new"], "same basename, different path: two tabs");
+    const registry = before.sharedStore.get(stateHelpers.TABS_SHARED_KEY);
+    assert.deepEqual(registry, [
+      { tab: "tb-new-1", space: "sp-1", pane: "p-new-1", file: readmeA },
+      { tab: "tb-new-2", space: "sp-1", pane: "p-new-2", file: readmeB },
+    ]);
+
+    // Restart: Herdr restores both viewer tabs and the persisted shared registry, then
+    // initializes each restored view, with B's pane focused and A's view created first.
+    const restoredSpaces = structuredClone(before.spaces);
+    const restoredPanes = structuredClone(before.panes);
+    const focusedB = { space: "sp-1", tab: "tb-new-2", pane: "p-new-2", terminal: null, shown: null, agent: null, cwd: null };
+    let persisted = registry;
+    for (const file of [readmeA, readmeB]) {
+      const viewEnv = await loadMdViewer({
+        props: { file },
+        spaces: restoredSpaces,
+        panes: restoredPanes,
+        focused: focusedB,
+        shared: { [stateHelpers.TABS_SHARED_KEY]: persisted },
+      });
+      viewEnv.view.close?.();
+      persisted = viewEnv.sharedStore.get(stateHelpers.TABS_SHARED_KEY);
+    }
+    assert.deepEqual(persisted, registry, "restored views and app quit leave the registry intact");
+
+    const after = await loadLinkHandler({
+      spaces: restoredSpaces,
+      panes: restoredPanes,
+      shared: { [stateHelpers.TABS_SHARED_KEY]: persisted },
     });
-    assert.equal(viewEnv.view.tabId, "tb-md", "reloaded view must re-bind its existing tab id");
+    assert.equal(await after.handleLink(click(readmeA)), "handled");
+    assert.deepEqual(after.commands, [
+      { name: "tab.select", args: { id: "tb-new-1" } },
+      { name: "pane.focus", args: { pane: "p-new-1" } },
+    ], "clicking a/README.md after restart reuses its own tab, not b/README.md's");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
-    await writeFile(mdFile, "# Notes\n\nReloaded.\n", "utf8");
-    viewEnv.sharedStore.set(stateHelpers.RELOAD_SHARED_KEY, { tab: "tb-md", file: mdFile, seq: 2 });
-    viewEnv.render();
-    await viewEnv.settle();
-    assert.match(viewEnv.render().textViews[0].props.markdown, /Reloaded\./);
+test("handleLink never binds a file to a viewer tab it did not verifiably create", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fm-md-verify-"));
+  try {
+    const mdFile = join(dir, "guide.md");
+    await writeFile(mdFile, "# Guide\n", "utf8");
+
+    // An unregistered viewer tab (for example showing another file) already exists, and the
+    // new tab does not appear in the live model, so there is nothing verified to record.
+    const env = await loadLinkHandler({
+      applyTabNew: false,
+      spaces: [{ id: "sp-1", active: true, machine: null, tabs: [
+        { id: "tb-term", name: "1", active: true },
+        { id: "tb-other", name: "guide.md", active: false },
+      ] }],
+      panes: [
+        { pane: "p-term", terminal: "t1", tab: "tb-term", focused: true },
+        { pane: "p-other", terminal: null, mod: "fm-md-viewer", tab: "tb-other", focused: false },
+      ],
+    });
+    const src = { terminal: "t1", machine: null, cwd: dir, pane: "p-term", tab: "tb-term", space: "sp-1" };
+    assert.equal(await env.handleLink({ link: { kind: "file", raw: mdFile, path: mdFile }, source: src }), "handled");
+    assert.deepEqual(env.commands.map((c) => c.name), ["tab.new"]);
+    assert.equal(env.sharedStore.has(stateHelpers.TABS_SHARED_KEY), false, "same tab name alone is not a match");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

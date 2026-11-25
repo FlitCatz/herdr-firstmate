@@ -44,7 +44,8 @@ export async function handleLink(click) {
   if (text === null || text.includes("\0")) return "pass";
 
   const targetSpaceId = click.source.space ?? targetSpace?.id ?? null;
-  const { entries, changed } = reconcileTabs(shared(TABS_SHARED_KEY), spaceList, panes());
+  const liveSpaces = spaces();
+  const { entries, changed } = reconcileTabs(shared(TABS_SHARED_KEY), liveSpaces, panes());
 
   const existing = findMatchingTab(entries, targetSpaceId, resolvedPath);
   if (existing) {
@@ -62,7 +63,7 @@ export async function handleLink(click) {
     focus: true,
   };
   if (targetSpaceId) args.space = targetSpaceId;
-  const knownTabIds = new Set(spaceList.flatMap((s) => (s.tabs ?? []).map((t) => t.id)));
+  const knownTabIds = new Set(liveSpaces.flatMap((s) => (s.tabs ?? []).map((t) => t.id)));
   run("tab.new", args);
 
   const created = findNewViewerTab(knownTabIds, spaces(), panes(), targetSpaceId);

@@ -600,3 +600,45 @@ test("handleLink never binds a file to a viewer tab it did not verifiably create
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("concurrent clicks: a slow read of one file does not prune or steal the tab another click just opened", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fm-md-race-"));
+  try {
+    const slowMd = join(dir, "slow.md");
+    const fastMd = join(dir, "fast.md");
+    await writeFile(slowMd, "# Slow\n", "utf8");
+    await writeFile(fastMd, "# Fast\n", "utf8");
+
+    let releaseSlow;
+    const slowGate = new Promise((resolve) => { releaseSlow = resolve; });
+    const env = await loadLinkHandler({
+      spaces: [{ id: "sp-1", active: true, machine: null, tabs: [{ id: "tb-term", name: "1", active: true }] }],
+      panes: [{ pane: "p-term", terminal: "t1", tab: "tb-term", focused: true }],
+      readTextFile: async (p) => {
+        if (p === slowMd) await slowGate;
+        return fsReadTextFile(p);
+      },
+    });
+    const src = { terminal: "t1", machine: null, cwd: dir, pane: "p-term", tab: "tb-term", space: "sp-1" };
+    const click = (path) => ({ link: { kind: "file", raw: path, path }, source: src });
+
+    const slowResult = env.handleLink(click(slowMd));
+    assert.equal(await env.handleLink(click(fastMd)), "handled");
+    releaseSlow();
+    assert.equal(await slowResult, "handled");
+
+    assert.deepEqual(env.sharedStore.get(stateHelpers.TABS_SHARED_KEY), [
+      { tab: "tb-new-1", space: "sp-1", pane: "p-new-1", file: fastMd },
+      { tab: "tb-new-2", space: "sp-1", pane: "p-new-2", file: slowMd },
+    ], "each file maps to the tab opened for it");
+
+    env.commands.length = 0;
+    assert.equal(await env.handleLink(click(slowMd)), "handled");
+    assert.deepEqual(env.commands, [
+      { name: "tab.select", args: { id: "tb-new-2" } },
+      { name: "pane.focus", args: { pane: "p-new-2" } },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

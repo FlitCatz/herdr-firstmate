@@ -1,0 +1,10 @@
+{
+  "place": "none",
+  "title": "Markdown",
+  "link_handlers": [
+    {
+      "kind": "file",
+      "pattern": "(?i)\\.md$"
+    }
+  ]
+}

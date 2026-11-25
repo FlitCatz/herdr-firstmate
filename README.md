@@ -1,13 +1,13 @@
 # Firstmate for Herdr
 
-A Herdr layout with a Firstmate task board, read-only Files viewer, and tab bar with PR and Board buttons.
-Requires Herdr 0.1.16 or later.
+A Herdr layout with a Firstmate task board, read-only Files viewer, read-only Markdown terminal-link viewer, and tab bar with PR and Board buttons.
+Requires Herdr 0.1.18 or later (for terminal `link_handlers`).
 It requires a Firstmate installation and home containing its `bin/`, `data/`, `state/`, and `projects/` folders, plus `hc` and the usual Unix command-line tools.
 
 To add it using Herdr's sharing steps:
 
 1. Read [RECIPE.md](RECIPE.md) and the files first: the board runs programs, including Firstmate scripts and `hc`, and reads the Firstmate home and selected project folders outside the mod folder.
-2. Copy `layouts/firstmate.json` into your Herdr home's `layouts/` and the two `mods/` folders (`fm-board`, `fm-tabs`) into its `mods/`, leaving the recipe, preview, and tests out.
+2. Copy `layouts/firstmate.json` into your Herdr home's `layouts/` and the three `mods/` folders (`fm-board`, `fm-tabs`, `fm-md-viewer`) into its `mods/`, leaving the recipe, preview, and tests out.
    The layout's PR panel shows the separate [herdr-pr-viewer](https://github.com/FlitCatz/herdr-pr-viewer) mod: install it as its README says, or remove the `pr` block from the layout's panel stack if you do not want it (the tab bar's PR button only appears while that block exists).
    The default Herdr home is `~/.config/herdr-app`.
    Never overwrite a name: rename the incoming layout or mod and update its layout references and `mods/<name>/` asset paths if a name is taken.
@@ -49,7 +49,9 @@ The Commands section's Memo button saves what is typed in the field as a Firstma
 
 Below the board, one tab strip holds `Commands`, `Projects` (with its count of unhandled requests, plus each row's `Files` folder button and adjacent `Open terminal` button that opens a focused terminal tab on left-click or a `Split Vertical` / `Split Horizontal` / `New Tab` menu on right-click at that project's folder), and `Checks`, with supervision watcher status and the latest refresh time on its right. Clicking the open tab folds the group away, and the chosen tab is remembered. Dragging the `Files` split divider remembers its width locally across closes, reopens, and Herdr restarts (first open keeps the 1:1 default). The Checks tab lists `state/*.check.sh` filenames alongside the home-wide `state/.last-check` sweep time in local time (`Last sweep (all checks)`). Per-check running state, last-run time, and results are not recorded by Firstmate and are not displayed, and the Board never reads check scripts, outputs, or private check state directories.
 
+Cmd/Ctrl-clicking an existing local Markdown file path (`.md`) printed in a Herdr terminal opens it in a focused, read-only tab in the current space (`fm-md-viewer`, registered via `layouts/firstmate.json` `link_handlers`), rendered with Herdr's native `TextView.markdown` with raw HTML disabled; clicking the same file again selects and focuses that space's open tab. URLs, remote terminal paths, non-Markdown files (including `.markdown`), and missing or unreadable files pass through unchanged to Herdr's default link path.
+
 The preview is a headless render of an HTML replica of the board, using fictional projects and tasks.
 
-`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, registered checks, tab behavior, folder-watch cleanup, Files viewer syntax colors, git status marks, and path guards, check-mode side-effect guards, and Board keyboard navigation, card folding, and escape behavior; it needs only Node.js, not Herdr.
+`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, registered checks, tab behavior, folder-watch cleanup, Files viewer syntax colors, git status marks, and path guards, check-mode side-effect guards, Board keyboard navigation, card folding, and escape behavior, and `fm-md-viewer` link routing, tab reuse, and read-only Markdown rendering; it needs only Node.js, not Herdr.
 This repository has no CI and declares that to no-mistakes in `.no-mistakes.yaml`.

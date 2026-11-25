@@ -68,7 +68,7 @@ function element() {
         else if (name === "child") target.kids.push(args[0]);
         else if (name === "children") target.kids.push(...args[0]);
         else if (name === "when") { if (args[0]) args[1](self); }
-        else target.props[name] = args.length === 0 ? true : args.length === 1 ? args.slice(0, 1)[0] : args;
+        else target.props[name] = args.length === 0 ? true : args.length === 1 ? args[0] : args;
         return self;
       };
     },
@@ -207,12 +207,12 @@ test("FolderViewer highlights Files view with Herdr theme tokens, keeps Git stat
   v.view.target("/repo", "repo", v.cx);
   await v.settle();
 
-  // Files list keeps Git status marks and renders no Changes tab or tab switcher.
+  // Files list keeps Git status marks and renders the Files label but no Changes tab.
   let rendered = v.render();
   assert.equal(v.view.marks["app.ts"], "M");
   assert.ok(rendered.ids.includes("vf-app.ts"));
   assert.ok(!rendered.ids.includes("vt-changes"));
-  assert.ok(!rendered.ids.includes("vt-files"));
+  assert.ok(rendered.ids.includes("vt-files"));
 
   // Files view opens the file in a read-only Editor colored from the theme token table.
   v.view.showFile("app.ts", v.cx, THEME);

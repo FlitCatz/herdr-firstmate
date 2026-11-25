@@ -191,6 +191,9 @@ test("Finding 1: FolderViewer marks symlinks as non-clickable links, blocks dire
     // 3) Git status marks scope to selected subpath (excludes packages/other/sibling.js) and symlinks carry no mark in rendered rows.
     assert.equal(v.view.marks["inside.js"], "M", "selected subpath mark is included");
     assert.ok(!Object.keys(v.view.marks).some((p) => p.includes("sibling.js")), "parent/sibling repo changes must be excluded");
+    assert.equal(v.view.marks["link-file.txt"], "A", "git reports the untracked symlink");
+    assert.equal(filesItems.find((x) => x.id === "vf-inside.js")?.text, "inside.js M", "rendered rows show their git mark");
+    assert.equal(linkFileRow.text, "link-file.txt link", "rendered symlink row carries no git mark");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -249,7 +252,10 @@ test("Finding 4: FolderViewer runs one git status per refresh and uses v_virtual
   assert.ok(vfList, "Files uses v_virtual_list");
   assert.equal(vfList.count, 40);
   assert.equal(filesTree.filter((x) => x.id?.startsWith("vf-item-")).length, 4, "Files only builds visible virtual rows");
-  assert.ok(!filesTree.some((x) => x.id === "vt-changes" || x.id === "vt-files"), "viewer header has no Files/Changes tab switcher");
+  const filesLabel = filesTree.find((x) => x.id === "vt-files");
+  assert.equal(filesLabel?.text, "Files", "viewer header labels the view Files");
+  assert.equal(filesLabel.click, null, "the Files label is not a tab switcher");
+  assert.ok(!filesTree.some((x) => x.id === "vt-changes" || /Changes/.test(x.text)), "viewer has no Changes tab");
 });
 
 test("Finding 6: slow file reads never overwrite newer previews", async () => {

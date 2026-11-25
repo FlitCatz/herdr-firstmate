@@ -265,6 +265,7 @@ export class FolderViewer {
     const header = v_flex().flex_none().gap(6).p(8).border_b(1).border_color(t.border)
       .child(h_flex().gap(6).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(fs(12)).font_semibold().text_color(t.foreground).child(this.label))
+        .child(div().id("vt-files").px(8).py(2).rounded(5).bg(t.selected).text_size(fs(11)).text_color(t.foreground).child("Files"))
         .child(div().id("vt-close").px(6).cursor_pointer().text_color(t.dim).hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.close(cx)).child("✕")))
       .child(div().truncate().text_size(fs(10)).text_color(t.dim).child(this.root ?? ""));
     if (sources?.length > 1) {

@@ -1,8 +1,10 @@
 // Shared path normalization and live tab-registry helpers for fm-md-viewer.
-// Used by link.js (terminal Cmd/Ctrl-click routing) and main.js (path normalization and tab title).
+// Used by link.js (terminal Cmd/Ctrl-click routing) and main.js (binding its own tab once Herdr publishes it).
 
 export const MOD_NAME = "fm-md-viewer";
 export const TABS_SHARED_KEY = "fm-md-viewer.tabs";
+export const PENDING_SHARED_KEY = "fm-md-viewer.pending";
+export const PENDING_TTL_MS = 10000;
 
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const MARKDOWN_EXT = /\.md$/i;
@@ -117,22 +119,55 @@ export function findMatchingTab(entries, spaceId, filePath) {
 }
 
 /**
- * Finds the viewer tab that a just-run `tab.new` created: a tab absent from the
- * pre-command snapshot, in the target space, holding an fm-md-viewer pane.
- * @param {Set<string>} knownTabIds
- * @param {Array<{ id?: string, tabs?: Array<{ id?: string }> }>} spaceList
+ * Tab name for a viewer tab while it is being opened. The tag is unique per open and
+ * is carried in the view's props, so the view can find exactly its own tab.
+ * @param {string} filePath
+ * @param {string} tag
+ */
+export function taggedTabName(filePath, tag) {
+  return `${tabTitle(filePath)} · ${tag}`;
+}
+
+/**
+ * Finds the published tab named for this exact open that holds an fm-md-viewer pane.
+ * @param {Array<{ id?: string, tabs?: Array<{ id?: string, name?: string }> }>} spaceList
  * @param {Array<{ pane?: string, mod?: string, tab?: string }>} paneList
- * @param {string | null} spaceId
+ * @param {string} filePath
+ * @param {string} tag
  * @returns {{ tab: string, space: string, pane: string } | null}
  */
-export function findNewViewerTab(knownTabIds, spaceList, paneList, spaceId) {
+export function findTaggedViewerTab(spaceList, paneList, filePath, tag) {
+  const name = taggedTabName(filePath, tag);
   for (const space of Array.isArray(spaceList) ? spaceList : []) {
-    if (!space?.id || (spaceId && space.id !== spaceId)) continue;
-    for (const tab of Array.isArray(space.tabs) ? space.tabs : []) {
-      if (!tab?.id || knownTabIds.has(tab.id)) continue;
-      const pane = (Array.isArray(paneList) ? paneList : []).find((p) => p?.mod === MOD_NAME && p.tab === tab.id && p.pane);
-      if (pane) return { tab: tab.id, space: space.id, pane: pane.pane };
-    }
+    if (!space?.id) continue;
+    const tab = (Array.isArray(space.tabs) ? space.tabs : []).find((t) => t?.id && t.name === name);
+    if (!tab) continue;
+    const pane = (Array.isArray(paneList) ? paneList : []).find((p) => p?.mod === MOD_NAME && p.tab === tab.id && p.pane);
+    return pane ? { tab: tab.id, space: space.id, pane: pane.pane } : null;
   }
   return null;
+}
+
+/**
+ * Records a viewer tab for its exact file, replacing any earlier record for that tab.
+ * @param {unknown} rawEntries
+ * @param {Array<{ id?: string, tabs?: Array<{ id?: string }> }>} spaceList
+ * @param {Array<{ pane?: string, mod?: string, tab?: string }>} paneList
+ * @param {{ tab: string, space: string, pane: string, file: string }} record
+ */
+export function withTabRecord(rawEntries, spaceList, paneList, record) {
+  const { entries } = reconcileTabs(rawEntries, spaceList, paneList);
+  return [...entries.filter((e) => e.tab !== record.tab), record];
+}
+
+/**
+ * Opens still waiting for Herdr to publish their tab, dropping malformed and expired ones.
+ * @param {unknown} rawPending
+ * @param {number} now
+ * @returns {Array<{ tag: string, file: string, space: string | null, at: number }>}
+ */
+export function livePending(rawPending, now) {
+  return (Array.isArray(rawPending) ? rawPending : []).filter((p) =>
+    p && typeof p.tag === "string" && typeof p.file === "string" && typeof p.at === "number"
+      && now - p.at >= 0 && now - p.at < PENDING_TTL_MS);
 }

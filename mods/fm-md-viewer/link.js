@@ -5,13 +5,14 @@
 import { home, panes, readTextFile, run, setShared, shared, spaces } from "herdr";
 import {
   MOD_NAME,
+  PENDING_SHARED_KEY,
   TABS_SHARED_KEY,
   findMatchingTab,
-  findNewViewerTab,
   isMarkdownPath,
+  livePending,
   normalizeLocalPath,
   reconcileTabs,
-  tabTitle,
+  taggedTabName,
 } from "./state.js";
 
 /**
@@ -44,33 +45,31 @@ export async function handleLink(click) {
   if (text === null || text.includes("\0")) return "pass";
 
   const targetSpaceId = click.source.space ?? targetSpace?.id ?? null;
-  const liveSpaces = spaces();
-  const { entries, changed } = reconcileTabs(shared(TABS_SHARED_KEY), liveSpaces, panes());
+  const { entries, changed } = reconcileTabs(shared(TABS_SHARED_KEY), spaces(), panes());
+  if (changed) setShared(TABS_SHARED_KEY, entries);
 
   const existing = findMatchingTab(entries, targetSpaceId, resolvedPath);
   if (existing) {
-    if (changed) setShared(TABS_SHARED_KEY, entries);
     run("tab.select", { id: existing.tab });
     run("pane.focus", { pane: existing.pane });
     return "handled";
   }
 
+  const now = Date.now();
+  const pending = livePending(shared(PENDING_SHARED_KEY), now);
+  if (pending.some((p) => p.file === resolvedPath && p.space === targetSpaceId)) return "handled";
+
+  const tag = `${now.toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  setShared(PENDING_SHARED_KEY, [...pending, { tag, file: resolvedPath, space: targetSpaceId, at: now }]);
+
   /** @type {Record<string, unknown>} */
   const args = {
-    name: tabTitle(resolvedPath),
+    name: taggedTabName(resolvedPath, tag),
     mod: MOD_NAME,
-    props: { file: resolvedPath },
+    props: { file: resolvedPath, tag },
     focus: true,
   };
   if (targetSpaceId) args.space = targetSpaceId;
-  const knownTabIds = new Set(liveSpaces.flatMap((s) => (s.tabs ?? []).map((t) => t.id)));
   run("tab.new", args);
-
-  const created = findNewViewerTab(knownTabIds, spaces(), panes(), targetSpaceId);
-  if (created) {
-    setShared(TABS_SHARED_KEY, [...entries, { ...created, file: resolvedPath }]);
-  } else if (changed) {
-    setShared(TABS_SHARED_KEY, entries);
-  }
   return "handled";
 }

@@ -1,18 +1,27 @@
 // Minimal read-only Markdown document tab for terminal Cmd/Ctrl-clicked .md files.
 // Renders local Markdown using Herdr's native TextView.markdown with raw HTML disabled.
-// props: { file: string }
+// props: { file: string, tag?: string } (tag: the unique open tag link.js gave this tab)
 import { View, div } from "gpui-kit";
 import { TextView, h_flex, v_flex } from "gpui-base";
-import { checking, home, props, readTextFile, settings, theme } from "herdr";
-import { normalizeLocalPath, tabTitle } from "./state.js";
+import { checking, home, panes, props, readTextFile, run, setShared, settings, shared, spaces, theme } from "herdr";
+import {
+  PENDING_SHARED_KEY,
+  TABS_SHARED_KEY,
+  findTaggedViewerTab,
+  livePending,
+  normalizeLocalPath,
+  tabTitle,
+  withTabRecord,
+} from "./state.js";
 
 const DATA_FONT = "Geist Mono";
 const READING_MAX_W = 820;
 
 export default class FmMdViewer extends View {
   init(p, cx) {
-    const rawFile = p && typeof p === "object" && "file" in p ? p.file : props()?.file;
-    this.file = normalizeLocalPath(rawFile, null, home());
+    const src = p && typeof p === "object" && "file" in p ? p : props();
+    this.file = normalizeLocalPath(src?.file, null, home());
+    this.tag = typeof src?.tag === "string" && src.tag ? src.tag : null;
     this.content = null;
     this.error = null;
 
@@ -40,7 +49,20 @@ export default class FmMdViewer extends View {
     });
   }
 
+  bindOwnTab() {
+    const spaceList = spaces();
+    const paneList = panes();
+    const own = findTaggedViewerTab(spaceList, paneList, this.file, this.tag);
+    if (!own) return;
+    const tag = this.tag;
+    this.tag = null;
+    setShared(TABS_SHARED_KEY, withTabRecord(shared(TABS_SHARED_KEY), spaceList, paneList, { ...own, file: this.file }));
+    setShared(PENDING_SHARED_KEY, livePending(shared(PENDING_SHARED_KEY), Date.now()).filter((p) => p.tag !== tag));
+    run("tab.rename", { id: own.tab, name: tabTitle(this.file) });
+  }
+
   render() {
+    if (this.tag && this.file && !checking()) this.bindOwnTab();
     const t = theme();
     const rawSize = Number(settings()?.font_size);
     const bodySize = Number.isFinite(rawSize) && rawSize > 0 ? rawSize : 14;

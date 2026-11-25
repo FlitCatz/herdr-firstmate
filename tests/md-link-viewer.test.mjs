@@ -71,31 +71,82 @@ function nodeText(node) {
   return (node.node?.kids ?? []).map(nodeText).filter(Boolean).join(" ");
 }
 
+// Stand-in for Herdr's live model, shared by the link handler and the viewer views.
+// run() only queues a command: it shows up in spaces()/panes() when publish() runs, because
+// an isolated Herdr 0.1.18 run showed a `tab.new` tab is not in spaces() right after run()
+// returns. publish() applies `tab.new {space?, name, mod, props, focus}` (a named tab whose
+// only pane is the mod) and `tab.rename {id, name}` as Herdr's command docs describe them.
+function fakeHerdr({ spaces = [], panes = [], shared = {}, now = 1_800_000_000_000 } = {}) {
+  const model = {
+    spaces,
+    panes,
+    sharedStore: new Map(Object.entries(shared)),
+    commands: [],
+    queued: [],
+    viewProps: new Map(),
+    now,
+    newTabCount: 0,
+    run(name, args) {
+      const copy = args === undefined ? undefined : structuredClone(args);
+      model.commands.push({ name, args: copy });
+      model.queued.push({ name, args: copy });
+      return null;
+    },
+    publish() {
+      const created = [];
+      for (const { name, args } of model.queued.splice(0)) {
+        if (name === "tab.new") {
+          const space = model.spaces.find((sp) => sp.id === args.space) ?? model.spaces.find((sp) => sp.active);
+          if (!space) continue;
+          model.newTabCount++;
+          const tab = `tb-new-${model.newTabCount}`;
+          space.tabs.push({ id: tab, name: args.name, active: Boolean(args.focus) });
+          model.panes.push({ pane: `p-new-${model.newTabCount}`, terminal: null, mod: args.mod, tab, focused: Boolean(args.focus) });
+          model.viewProps.set(tab, args.props);
+          created.push(tab);
+        } else if (name === "tab.rename") {
+          for (const space of model.spaces) {
+            const tab = space.tabs.find((t) => t.id === args.id);
+            if (tab) tab.name = args.name;
+          }
+        }
+      }
+      return created;
+    },
+    tabName(tabId) {
+      for (const space of model.spaces) {
+        const tab = space.tabs.find((t) => t.id === tabId);
+        if (tab) return tab.name;
+      }
+      return undefined;
+    },
+    api() {
+      return {
+        spaces: () => structuredClone(model.spaces),
+        panes: () => structuredClone(model.panes),
+        run: model.run,
+        shared: (key) => (model.sharedStore.has(key) ? structuredClone(model.sharedStore.get(key)) : undefined),
+        setShared: (key, value) => {
+          model.sharedStore.set(key, structuredClone(value));
+          return null;
+        },
+        Date: { now: () => model.now },
+      };
+    },
+  };
+  return model;
+}
+
 async function loadLinkHandler({
   spaces = [],
   panes = [],
   shared = {},
+  herdr = fakeHerdr({ spaces, panes, shared }),
   homeDir = "/Users/example",
   readTextFile = fsReadTextFile,
-  applyTabNew = true,
 } = {}) {
-  const sharedStore = new Map(Object.entries(shared));
-  const commands = [];
   let execCalls = 0;
   let fetchCalls = 0;
-  let newTabCount = 0;
-
-  // Mirrors Herdr's documented `tab.new {space?, name?, mod, props?}`: the command applies
-  // right after run() returns, adding a named tab whose only pane is the mod.
-  function applyHerdrCommand(name, args) {
-    if (!applyTabNew || name !== "tab.new") return;
-    const space = spaces.find((sp) => sp.id === args.space) ?? spaces.find((sp) => sp.active);
-    if (!space) return;
-    newTabCount++;
-    const tab = `tb-new-${newTabCount}`;
-    space.tabs.push({ id: tab, name: args.name, active: Boolean(args.focus) });
-    panes.push({ pane: `p-new-${newTabCount}`, terminal: null, mod: args.mod, tab, focused: Boolean(args.focus) });
-  }
 
   const linkSource = stripImports(await readFile(new URL("mods/fm-md-viewer/link.js", rootUrl), "utf8"))
     .replace(/^export async function handleLink/m, "async function handleLink")
@@ -103,19 +154,8 @@ async function loadLinkHandler({
 
   const scope = {
     ...stateHelpers,
+    ...herdr.api(),
     home: () => homeDir,
-    spaces: () => structuredClone(spaces),
-    panes: () => structuredClone(panes),
-    run: (name, args) => {
-      commands.push({ name, args: args === undefined ? undefined : structuredClone(args) });
-      applyHerdrCommand(name, args);
-      return null;
-    },
-    shared: (key) => (sharedStore.has(key) ? structuredClone(sharedStore.get(key)) : undefined),
-    setShared: (key, value) => {
-      sharedStore.set(key, structuredClone(value));
-      return null;
-    },
     readTextFile: async (p, opts) => readTextFile(p, opts),
     exec: async () => {
       execCalls++;
@@ -130,10 +170,9 @@ async function loadLinkHandler({
   const handleLink = vm.runInNewContext(`${linkSource}\nhandleLink`, scope);
   return {
     handleLink,
-    commands,
-    sharedStore,
-    spaces,
-    panes,
+    herdr,
+    commands: herdr.commands,
+    sharedStore: herdr.sharedStore,
     get execCalls() { return execCalls; },
     get fetchCalls() { return fetchCalls; },
   };
@@ -143,15 +182,14 @@ async function loadMdViewer({
   props = {},
   spaces = [],
   panes = [],
-  focused = null,
   shared = {},
+  herdr = fakeHerdr({ spaces, panes, shared }),
   homeDir = "/Users/example",
   checking = false,
   settings = { font_size: 14, font_family: "JetBrains Mono" },
   theme = THEME,
   readTextFile = fsReadTextFile,
 } = {}) {
-  const sharedStore = new Map(Object.entries(shared));
   const textViews = [];
   let readCalls = 0;
   let inFlight = 0;
@@ -173,6 +211,7 @@ async function loadMdViewer({
 
   const scope = {
     ...stateHelpers,
+    ...herdr.api(),
     View: class View {},
     div: () => element("div"),
     v_flex: () => element("v_flex"),
@@ -188,17 +227,9 @@ async function loadMdViewer({
     },
     props: () => props,
     home: () => homeDir,
-    spaces: () => spaces,
-    panes: () => panes,
-    focused: () => focused,
     checking: () => checking,
     theme: () => theme,
     settings: () => settings,
-    shared: (key) => (sharedStore.has(key) ? structuredClone(sharedStore.get(key)) : undefined),
-    setShared: (key, value) => {
-      sharedStore.set(key, structuredClone(value));
-      return null;
-    },
     readTextFile: async (p, opts) => {
       readCalls++;
       return readTextFile(p, opts);
@@ -226,12 +257,40 @@ async function loadMdViewer({
   return {
     view,
     cx,
-    sharedStore,
+    herdr,
+    sharedStore: herdr.sharedStore,
     settle,
     render,
     get readCalls() { return readCalls; },
     get notifyCount() { return notifyCount; },
   };
+}
+
+// A tab.new for a viewer tab: focused, in the given space, showing the exact file, and named
+// "<file name> · <tag>" with the same non-empty tag the view receives in its props.
+function assertViewerTabNew(command, { space, file, title }) {
+  assert.equal(command.name, "tab.new");
+  const { tag, ...rest } = command.args.props;
+  assert.equal(typeof tag, "string");
+  assert.ok(tag.length > 0 && !/\s/.test(tag), "the open tag is a non-empty token");
+  assert.deepEqual(rest, { file });
+  const expected = { name: `${title} · ${tag}`, mod: "fm-md-viewer", props: { file, tag }, focus: true };
+  if (space) expected.space = space;
+  assert.deepEqual(command.args, expected);
+  return tag;
+}
+
+// Herdr publishes queued commands, then creates and renders a view for each new viewer tab
+// with the props `tab.new` gave it. Returns those views.
+async function publishAndRender(herdr) {
+  const views = [];
+  for (const tab of herdr.publish()) {
+    const viewEnv = await loadMdViewer({ herdr, props: herdr.viewProps.get(tab) });
+    viewEnv.render();
+    views.push(viewEnv);
+  }
+  herdr.publish();
+  return views;
 }
 
 test("handleLink opens an existing local .md file in a focused read-only tab in source.space and passes through URLs, remote files, non-Markdown, and missing files", async () => {
@@ -254,16 +313,7 @@ test("handleLink opens an existing local .md file in a focused read-only tab in 
     });
     assert.equal(rMd, "handled");
     assert.equal(env.commands.length, 1);
-    assert.deepEqual(env.commands[0], {
-      name: "tab.new",
-      args: {
-        space: "sp-1",
-        name: "guide.md",
-        mod: "fm-md-viewer",
-        props: { file: mdFile },
-        focus: true,
-      },
-    });
+    assertViewerTabNew(env.commands[0], { space: "sp-1", file: mdFile, title: "guide.md" });
 
     // URL -> pass
     assert.equal(
@@ -359,18 +409,9 @@ test("handleLink reuses an existing tab for the same file in the same space, iso
       source: { terminal: "t2", machine: null, cwd: dir, pane: "p-term-2", tab: "tb-term-2", space: "sp-2" },
     });
     assert.equal(rOtherSpace, "handled");
-    assert.deepEqual(env.commands, [
-      {
-        name: "tab.new",
-        args: {
-          space: "sp-2",
-          name: "SPEC.MD",
-          mod: "fm-md-viewer",
-          props: { file: mdFile },
-          focus: true,
-        },
-      },
-    ]);
+    assert.equal(env.commands.length, 1);
+    assertViewerTabNew(env.commands[0], { space: "sp-2", file: mdFile, title: "SPEC.MD" });
+    await publishAndRender(env.herdr);
     assert.deepEqual(env.sharedStore.get(stateHelpers.TABS_SHARED_KEY), [
       { tab: "tb-md-1", space: "sp-1", pane: "p-md-1", file: mdFile },
       { tab: "tb-new-1", space: "sp-2", pane: "p-new-1", file: mdFile },
@@ -411,7 +452,7 @@ test("handleLink passes through directories named *.md, binary files, control-ch
     // An existing empty .md file is still a valid local Markdown file and opens cleanly.
     assert.equal(await env.handleLink({ link: { kind: "file", raw: emptyMd, path: emptyMd }, source: src }), "handled");
     assert.equal(env.commands.length, 1);
-    assert.equal(env.commands[0].args.name, "empty.md");
+    assertViewerTabNew(env.commands[0], { space: "sp-1", file: emptyMd, title: "empty.md" });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -444,13 +485,11 @@ test("FmMdViewer renders local Markdown via native TextView.markdown with raw_ht
 
     const spaces = [{ id: "sp-1", active: true, machine: null, tabs: [{ id: "tb-md", name: "architecture.md", active: true }] }];
     const panes = [{ pane: "p-md", terminal: null, mod: "fm-md-viewer", tab: "tb-md", focused: true }];
-    const focused = { space: "sp-1", tab: "tb-md", pane: "p-md", terminal: null, shown: null, agent: null, cwd: null };
 
     const env = await loadMdViewer({
       props: { file: mdFile },
       spaces,
       panes,
-      focused,
     });
 
     const first = env.render();
@@ -524,47 +563,40 @@ test("same-basename files in different folders get separate tabs that survive a 
     await writeFile(readmeA, "# A\n", "utf8");
     await writeFile(readmeB, "# B\n", "utf8");
 
-    const spaces = [{ id: "sp-1", active: true, machine: null, tabs: [{ id: "tb-term", name: "1", active: true }] }];
-    const panes = [{ pane: "p-term", terminal: "t1", tab: "tb-term", focused: true }];
+    const herdr = fakeHerdr({
+      spaces: [{ id: "sp-1", active: true, machine: null, tabs: [{ id: "tb-term", name: "1", active: true }] }],
+      panes: [{ pane: "p-term", terminal: "t1", tab: "tb-term", focused: true }],
+    });
     const src = { terminal: "t1", machine: null, cwd: dir, pane: "p-term", tab: "tb-term", space: "sp-1" };
     const click = (path) => ({ link: { kind: "file", raw: path, path }, source: src });
 
-    const before = await loadLinkHandler({ spaces, panes });
+    const before = await loadLinkHandler({ herdr });
     assert.equal(await before.handleLink(click(readmeA)), "handled");
     assert.equal(await before.handleLink(click(readmeB)), "handled");
-    assert.deepEqual(before.commands.map((c) => c.name), ["tab.new", "tab.new"], "same basename, different path: two tabs");
-    const registry = before.sharedStore.get(stateHelpers.TABS_SHARED_KEY);
+    assert.deepEqual(herdr.commands.map((c) => c.name), ["tab.new", "tab.new"], "same basename, different path: two tabs");
+    await publishAndRender(herdr);
+
+    const registry = herdr.sharedStore.get(stateHelpers.TABS_SHARED_KEY);
     assert.deepEqual(registry, [
       { tab: "tb-new-1", space: "sp-1", pane: "p-new-1", file: readmeA },
       { tab: "tb-new-2", space: "sp-1", pane: "p-new-2", file: readmeB },
     ]);
+    assert.equal(herdr.tabName("tb-new-1"), "README.md");
+    assert.equal(herdr.tabName("tb-new-2"), "README.md");
 
-    // Restart: Herdr restores both viewer tabs and the persisted shared registry, then
-    // initializes each restored view, with B's pane focused and A's view created first.
-    const restoredSpaces = structuredClone(before.spaces);
-    const restoredPanes = structuredClone(before.panes);
-    const focusedB = { space: "sp-1", tab: "tb-new-2", pane: "p-new-2", terminal: null, shown: null, agent: null, cwd: null };
-    let persisted = registry;
-    for (const file of [readmeA, readmeB]) {
-      const viewEnv = await loadMdViewer({
-        props: { file },
-        spaces: restoredSpaces,
-        panes: restoredPanes,
-        focused: focusedB,
-        shared: { [stateHelpers.TABS_SHARED_KEY]: persisted },
-      });
+    // Restart: Herdr restores both viewer tabs and the persisted shared registry, then creates
+    // each restored view again with its saved props, and both views close on the next quit.
+    for (const tab of ["tb-new-1", "tb-new-2"]) {
+      const viewEnv = await loadMdViewer({ herdr, props: herdr.viewProps.get(tab) });
+      viewEnv.render();
       viewEnv.view.close?.();
-      persisted = viewEnv.sharedStore.get(stateHelpers.TABS_SHARED_KEY);
     }
-    assert.deepEqual(persisted, registry, "restored views and app quit leave the registry intact");
+    assert.deepEqual(herdr.sharedStore.get(stateHelpers.TABS_SHARED_KEY), registry, "restored views and app quit leave the registry intact");
 
-    const after = await loadLinkHandler({
-      spaces: restoredSpaces,
-      panes: restoredPanes,
-      shared: { [stateHelpers.TABS_SHARED_KEY]: persisted },
-    });
+    herdr.commands.length = 0;
+    const after = await loadLinkHandler({ herdr });
     assert.equal(await after.handleLink(click(readmeA)), "handled");
-    assert.deepEqual(after.commands, [
+    assert.deepEqual(herdr.commands, [
       { name: "tab.select", args: { id: "tb-new-1" } },
       { name: "pane.focus", args: { pane: "p-new-1" } },
     ], "clicking a/README.md after restart reuses its own tab, not b/README.md's");
@@ -573,16 +605,15 @@ test("same-basename files in different folders get separate tabs that survive a 
   }
 });
 
-test("handleLink never binds a file to a viewer tab it did not verifiably create", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "fm-md-verify-"));
+test("a new tab is recorded only once Herdr publishes it, and repeat clicks while it opens do not open more tabs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fm-md-pending-"));
   try {
     const mdFile = join(dir, "guide.md");
     await writeFile(mdFile, "# Guide\n", "utf8");
 
-    // An unregistered viewer tab (for example showing another file) already exists, and the
-    // new tab does not appear in the live model, so there is nothing verified to record.
-    const env = await loadLinkHandler({
-      applyTabNew: false,
+    // An unregistered viewer tab with the same tab name already exists (for example a restored
+    // tab for another guide.md); nothing may bind this click to it.
+    const herdr = fakeHerdr({
       spaces: [{ id: "sp-1", active: true, machine: null, tabs: [
         { id: "tb-term", name: "1", active: true },
         { id: "tb-other", name: "guide.md", active: false },
@@ -592,16 +623,62 @@ test("handleLink never binds a file to a viewer tab it did not verifiably create
         { pane: "p-other", terminal: null, mod: "fm-md-viewer", tab: "tb-other", focused: false },
       ],
     });
+    const env = await loadLinkHandler({ herdr });
     const src = { terminal: "t1", machine: null, cwd: dir, pane: "p-term", tab: "tb-term", space: "sp-1" };
-    assert.equal(await env.handleLink({ link: { kind: "file", raw: mdFile, path: mdFile }, source: src }), "handled");
-    assert.deepEqual(env.commands.map((c) => c.name), ["tab.new"]);
-    assert.equal(env.sharedStore.has(stateHelpers.TABS_SHARED_KEY), false, "same tab name alone is not a match");
+    const click = () => env.handleLink({ link: { kind: "file", raw: mdFile, path: mdFile }, source: src });
+
+    assert.equal(await click(), "handled");
+    assert.equal(await click(), "handled");
+    assert.equal(await click(), "handled");
+    assert.deepEqual(herdr.commands.map((c) => c.name), ["tab.new"], "repeat clicks before the tab is published open no more tabs");
+    assert.equal(herdr.sharedStore.has(stateHelpers.TABS_SHARED_KEY), false, "nothing is recorded before Herdr publishes the tab");
+
+    // The view of the unrelated restored tab renders while the new tab is still unpublished.
+    const otherView = await loadMdViewer({ herdr, props: { file: join(dir, "other", "guide.md") } });
+    otherView.render();
+    assert.equal(herdr.sharedStore.has(stateHelpers.TABS_SHARED_KEY), false);
+
+    await publishAndRender(herdr);
+    assert.deepEqual(herdr.sharedStore.get(stateHelpers.TABS_SHARED_KEY), [
+      { tab: "tb-new-1", space: "sp-1", pane: "p-new-1", file: mdFile },
+    ]);
+    assert.equal(herdr.tabName("tb-new-1"), "guide.md", "the tab ends up named after the file");
+
+    herdr.commands.length = 0;
+    assert.equal(await click(), "handled");
+    assert.deepEqual(herdr.commands, [
+      { name: "tab.select", args: { id: "tb-new-1" } },
+      { name: "pane.focus", args: { pane: "p-new-1" } },
+    ]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("concurrent clicks: a slow read of one file does not prune or steal the tab another click just opened", async () => {
+test("an open Herdr never publishes stops blocking new clicks after the pending window", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fm-md-expire-"));
+  try {
+    const mdFile = join(dir, "guide.md");
+    await writeFile(mdFile, "# Guide\n", "utf8");
+    const herdr = fakeHerdr({
+      spaces: [{ id: "sp-1", active: true, machine: null, tabs: [{ id: "tb-term", name: "1", active: true }] }],
+      panes: [{ pane: "p-term", terminal: "t1", tab: "tb-term", focused: true }],
+    });
+    const env = await loadLinkHandler({ herdr });
+    const src = { terminal: "t1", machine: null, cwd: dir, pane: "p-term", tab: "tb-term", space: "sp-1" };
+    const click = () => env.handleLink({ link: { kind: "file", raw: mdFile, path: mdFile }, source: src });
+
+    assert.equal(await click(), "handled");
+    herdr.queued.length = 0;
+    herdr.now += stateHelpers.PENDING_TTL_MS;
+    assert.equal(await click(), "handled");
+    assert.deepEqual(herdr.commands.map((c) => c.name), ["tab.new", "tab.new"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("concurrent clicks: a slow read of one file does not prune or steal the tab another click opened", async () => {
   const dir = await mkdtemp(join(tmpdir(), "fm-md-race-"));
   try {
     const slowMd = join(dir, "slow.md");
@@ -611,9 +688,12 @@ test("concurrent clicks: a slow read of one file does not prune or steal the tab
 
     let releaseSlow;
     const slowGate = new Promise((resolve) => { releaseSlow = resolve; });
-    const env = await loadLinkHandler({
+    const herdr = fakeHerdr({
       spaces: [{ id: "sp-1", active: true, machine: null, tabs: [{ id: "tb-term", name: "1", active: true }] }],
       panes: [{ pane: "p-term", terminal: "t1", tab: "tb-term", focused: true }],
+    });
+    const env = await loadLinkHandler({
+      herdr,
       readTextFile: async (p) => {
         if (p === slowMd) await slowGate;
         return fsReadTextFile(p);
@@ -624,17 +704,20 @@ test("concurrent clicks: a slow read of one file does not prune or steal the tab
 
     const slowResult = env.handleLink(click(slowMd));
     assert.equal(await env.handleLink(click(fastMd)), "handled");
+    await publishAndRender(herdr);
     releaseSlow();
     assert.equal(await slowResult, "handled");
+    await publishAndRender(herdr);
 
-    assert.deepEqual(env.sharedStore.get(stateHelpers.TABS_SHARED_KEY), [
+    assert.deepEqual(herdr.sharedStore.get(stateHelpers.TABS_SHARED_KEY), [
       { tab: "tb-new-1", space: "sp-1", pane: "p-new-1", file: fastMd },
       { tab: "tb-new-2", space: "sp-1", pane: "p-new-2", file: slowMd },
     ], "each file maps to the tab opened for it");
+    assert.deepEqual(herdr.sharedStore.get(stateHelpers.PENDING_SHARED_KEY), [], "bound opens leave the pending list");
 
-    env.commands.length = 0;
+    herdr.commands.length = 0;
     assert.equal(await env.handleLink(click(slowMd)), "handled");
-    assert.deepEqual(env.commands, [
+    assert.deepEqual(herdr.commands, [
       { name: "tab.select", args: { id: "tb-new-2" } },
       { name: "pane.focus", args: { pane: "p-new-2" } },
     ]);

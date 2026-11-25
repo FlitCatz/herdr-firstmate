@@ -1202,7 +1202,7 @@ function cardsFrom(snapshot) {
     branchReady: branchReady(record, task),
     // Only hc runs workers in Herdr terminals, so only those can be opened from here.
     terminal: task?.backend === "hc" ? hcAddress(task) : null,
-    // The worker's isolated copy, for the read-only Files/Changes view.
+    // The worker's isolated copy, for the read-only Files view.
     worktree: task?.paths?.worktree?.present ? task.paths.worktree.path : null,
     };
   });
@@ -1329,7 +1329,6 @@ export default class FmBoard extends View {
     if (checking() || !home()) return;
     // props.ui.view (testing): open the viewer on that project's local copy.
     if (ui.view) this.openView(ui.view, { path: `${home()}/projects/${ui.view}`, title: `${ui.view} · local copy` }, cx);
-    if (ui.viewTab) this.viewer.tab = ui.viewTab;
     // props.ui.focus and props.ui.point (previews): Focus on that card, or that card pointed to.
     if (typeof ui.focus === "string") { this.focusMode = true; this.focusId = ui.focus; }
     if (typeof ui.point === "string") this.pointedId = ui.point;
@@ -2148,7 +2147,7 @@ export default class FmBoard extends View {
     if (openHere || (live && c.worktree && c.project)) {
       const row = h_flex().gap(4).items_center();
       if (openHere) row.child(this.openWorkerIcon(c, t));
-      if (c.worktree && c.project) row.child(this.button(`files-${c.id}`, "Files · Changes", t, (cx) =>
+      if (c.worktree && c.project) row.child(this.button(`files-${c.id}`, "Files", t, (cx) =>
         this.openView(c.project, { path: c.worktree, label: c.id, title: `${c.project} · ${c.id}` }, cx)));
       el.child(row);
     }
@@ -2622,7 +2621,7 @@ export default class FmBoard extends View {
     return [local, ...workers];
   }
 
-  // The icon at the right end of a project's title row: opens that project's Files/Changes,
+  // The icon at the right end of a project's title row: opens that project's Files viewer,
   // switches to it from another project, or closes it when it is already shown.
   // It stops the click so the row itself does not fold or unfold.
   viewButton(project, t) {
@@ -2630,7 +2629,7 @@ export default class FmBoard extends View {
     const stop = (_e, cx) => cx.stop_propagation();
     return div().id(`files-${project}`).flex_none().p(3).rounded(5).cursor_pointer()
       .when(shown, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
-      .tooltip(shown ? "Close Files · Changes" : "Files · Changes")
+      .tooltip(shown ? "Close Files" : "Files")
       .on_mouse_down("left", stop)
       .on_click((_e, cx) => {
         cx.stop_propagation();

@@ -123,7 +123,7 @@ async function createViewer({ exec, readTextFile, virtualRanges } = {}) {
   return { view, cx, theme, vlists, flush, settle, render: () => drawn(view.render(theme, (px) => px, [])) };
 }
 
-test("Finding 1: FolderViewer marks symlinks as non-clickable links, blocks directory/file symlink traversal, and scopes Changes to selected git subpath", async () => {
+test("Finding 1: FolderViewer marks symlinks as non-clickable links, blocks directory/file symlink traversal, and scopes Git marks to selected git subpath", async () => {
   const dir = await mkdtemp(join(tmpdir(), "fm-viewer-f1-"));
   try {
     const outsideDir = join(dir, "outside");
@@ -188,16 +188,9 @@ test("Finding 1: FolderViewer marks symlinks as non-clickable links, blocks dire
     await v.settle();
     assert.equal(v.view.entries.has("link-dir"), false, "symlink dir must not be listed");
 
-    // 3) Changes tab scopes to selected subpath (excludes packages/other/sibling.js) and blocks untracked symlink diff read.
-    const changedPaths = v.view.changed.map((c) => c.path);
-    assert.ok(changedPaths.includes("inside.js"), "selected subpath change is included");
-    assert.ok(!changedPaths.some((p) => p.includes("sibling.js")), "parent/sibling repo changes must be excluded");
-
-    assert.ok(changedPaths.includes("link-file.txt"), "untracked symlink is listed in Changes");
-    v.view.pickChange("link-file.txt", v.cx);
-    await v.settle();
-    const diffText = v.view.rows.map((r) => r.text).join("\n");
-    assert.equal(diffText.includes("OUTSIDE_SECRET_CONTENT"), false, "untracked symlink diff must not leak outside file");
+    // 3) Git status marks scope to selected subpath (excludes packages/other/sibling.js) and symlinks carry no mark in rendered rows.
+    assert.equal(v.view.marks["inside.js"], "M", "selected subpath mark is included");
+    assert.ok(!Object.keys(v.view.marks).some((p) => p.includes("sibling.js")), "parent/sibling repo changes must be excluded");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -219,8 +212,9 @@ test("Finding 1: Files lists a folder whose last glob match is a ..-prefixed nam
   }
 });
 
-test("Finding 4: FolderViewer shares one git status per refresh and uses v_virtual_list for Files and Changes", async () => {
+test("Finding 4: FolderViewer runs one git status per refresh and uses v_virtual_list for Files without Changes UI", async () => {
   let gitStatusCalls = 0;
+  let gitDiffCalls = 0;
   const changedFiles = Array.from({ length: 40 }, (_, i) => `src/file-${i}.js`);
   const exec = async (cmd, args = []) => {
     if (cmd === "sh") {
@@ -234,9 +228,7 @@ test("Finding 4: FolderViewer shares one git status per refresh and uses v_virtu
         gitStatusCalls++;
         return { code: 0, stdout: changedFiles.map((p) => ` M ${p}\0`).join(""), stderr: "" };
       }
-      if (args.includes("--verify")) return { code: 0, stdout: "deadbeef\n", stderr: "" };
-      if (args.includes("--numstat")) return { code: 0, stdout: "", stderr: "" };
-      if (args.includes("diff")) return { code: 0, stdout: "@@ -1,1 +1,1 @@\n+x\n", stderr: "" };
+      if (args.includes("diff")) gitDiffCalls++;
     }
     return { code: 1, stdout: "", stderr: "" };
   };
@@ -244,35 +236,24 @@ test("Finding 4: FolderViewer shares one git status per refresh and uses v_virtu
     exec,
     virtualRanges: {
       "vf-list": { start: 0, end: 4 },
-      "vc-items": { start: 0, end: 3 },
-      "vc-diff": { start: 0, end: 5 },
     },
   });
   v.view.target("/repo", "repo", v.cx);
   await v.settle();
-  assert.equal(gitStatusCalls, 1, "one refresh runs git status once across Files and Changes");
+  assert.equal(gitStatusCalls, 1, "one refresh runs git status once");
+  assert.equal(gitDiffCalls, 0, "refresh does not run git diff");
 
-  v.view.tab = "files";
   v.vlists.length = 0;
   const filesTree = v.render();
   const vfList = v.vlists.find((x) => x.id === "vf-list");
   assert.ok(vfList, "Files uses v_virtual_list");
   assert.equal(vfList.count, 40);
   assert.equal(filesTree.filter((x) => x.id?.startsWith("vf-item-")).length, 4, "Files only builds visible virtual rows");
-
-  v.view.tab = "changes";
-  v.vlists.length = 0;
-  const changesTree = v.render();
-  const vcItems = v.vlists.find((x) => x.id === "vc-items");
-  assert.ok(vcItems, "Changes uses v_virtual_list");
-  assert.equal(vcItems.count, 40);
-  assert.equal(changesTree.filter((x) => x.id?.startsWith("vc-src/")).length, 3, "Changes only builds visible virtual rows");
+  assert.ok(!filesTree.some((x) => x.id === "vt-changes" || x.id === "vt-files"), "viewer header has no Files/Changes tab switcher");
 });
 
-test("Finding 6: slow file/diff reads never overwrite newer previews and changesError remains visible with cached changes", async () => {
+test("Finding 6: slow file reads never overwrite newer previews", async () => {
   const fileResolvers = new Map();
-  const diffResolvers = new Map();
-  let failGitStatus = false;
 
   const exec = async (cmd, args = []) => {
     if (cmd === "sh") {
@@ -281,18 +262,7 @@ test("Finding 6: slow file/diff reads never overwrite newer previews and changes
     }
     if (cmd === "git") {
       if (args.includes("--show-toplevel")) return { code: 0, stdout: "/repo\n\n", stderr: "" };
-      if (args.includes("status")) {
-        if (failGitStatus) return { code: 1, stdout: "", stderr: "status failed" };
-        return { code: 0, stdout: " M A.txt\0 M B.txt\0", stderr: "" };
-      }
-      if (args.includes("--verify")) return { code: 0, stdout: "deadbeef\n", stderr: "" };
-      if (args.includes("--numstat")) return { code: 0, stdout: "", stderr: "" };
-      if (args.includes("diff")) {
-        const target = args.at(-1);
-        return await new Promise((resolve) => {
-          (diffResolvers.get(target) ?? diffResolvers.set(target, []).get(target)).push(resolve);
-        });
-      }
+      if (args.includes("status")) return { code: 0, stdout: " M A.txt\0 M B.txt\0", stderr: "" };
     }
     return { code: 1, stdout: "", stderr: "" };
   };
@@ -303,10 +273,6 @@ test("Finding 6: slow file/diff reads never overwrite newer previews and changes
 
   const v = await createViewer({ exec, readTextFile });
   v.view.target("/repo", "repo", v.cx);
-  await v.flush();
-  // Resolve initial auto-opened A.txt diff
-  const initDiff = diffResolvers.get("A.txt")?.shift();
-  if (initDiff) initDiff({ code: 0, stdout: "@@ -1 +1 @@\n+init\n", stderr: "" });
   await v.settle();
 
   // File read race: A -> B -> A; newest A returns first ("new content"), oldest A returns last ("old content").
@@ -326,33 +292,6 @@ test("Finding 6: slow file/diff reads never overwrite newer previews and changes
   aReads[0]("old content");
   await v.settle();
   assert.equal(v.view.code?.value, "new content", "stale A read must not overwrite newer A preview");
-
-  // Diff read race: pick B -> A -> B; newest B returns first, oldest B returns last.
-  v.view.pickChange("B.txt", v.cx);
-  await v.flush();
-  v.view.pickChange("A.txt", v.cx);
-  await v.flush();
-  v.view.pickChange("B.txt", v.cx);
-  await v.flush();
-  const bDiffs = diffResolvers.get("B.txt");
-  const aDiffs = diffResolvers.get("A.txt");
-  assert.equal(bDiffs?.length, 2);
-  bDiffs[1]({ code: 0, stdout: "@@ -1 +1 @@\n+new diff\n", stderr: "" });
-  await v.flush();
-  assert.match(v.view.rows.map((r) => r.text).join("\n"), /new diff/);
-  aDiffs?.shift()?.({ code: 0, stdout: "@@ -1 +1 @@\n+a diff\n", stderr: "" });
-  bDiffs[0]({ code: 0, stdout: "@@ -1 +1 @@\n+old diff\n", stderr: "" });
-  await v.settle();
-  assert.match(v.view.rows.map((r) => r.text).join("\n"), /new diff/, "stale diff must not overwrite newer diff");
-
-  // Failed changes refresh still surfaces error even when cached changes remain.
-  failGitStatus = true;
-  v.view.tab = "changes";
-  v.view.refresh(v.cx);
-  await v.settle();
-  const items = v.render();
-  assert.ok(v.view.changed.length > 0, "cached changes remain visible");
-  assert.ok(items.some((x) => x.text.includes("status failed")), "changesError must be visible when cached list is non-empty");
 });
 
 const snapshotFile = new URL("tests/fixtures/snapshot.json", rootUrl).pathname;

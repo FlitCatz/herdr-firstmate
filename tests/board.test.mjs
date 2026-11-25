@@ -259,8 +259,9 @@ test("the fixture has the real snapshot's shape", () => {
   }
 });
 
-test("a live card opens Files · Changes on the worker copy from paths.worktree", async () => {
+test("a live card opens Files on the worker copy from paths.worktree", async () => {
   const b = await board();
+  assert.equal(b.text("files-maple-preview-screen"), "Files");
   b.click("files-maple-preview-screen");
   assert.deepEqual(b.opened, [{ project: "maple-workshop", path: `${HOME}/worktrees/maple-preview-screen`,
     label: "maple-preview-screen", title: "maple-workshop · maple-preview-screen" }]);
@@ -268,6 +269,16 @@ test("a live card opens Files · Changes on the worker copy from paths.worktree"
   assert.ok(!b.ids.includes("files-orchard-export-check"));
   // The project viewer's source list offers each live worker copy of that project.
   assert.deepEqual(labels(b.view.viewSources("orchard-atlas")), ["local copy", "orchard-nav-style"]);
+  // Project rows tooltip the Files button and update it while open.
+  const bProj = await board({ ui: { bottomTab: "projects" } });
+  const projBtn = bProj.items.find((x) => x.id === "files-maple-workshop");
+  assert.equal(projBtn?.calls.find((c) => c[0] === "tooltip")?.[1], "Files");
+  bProj.view.viewProject = "maple-workshop";
+  bProj.view.viewer.root = `${HOME}/projects/maple-workshop`;
+  bProj.view.viewer.render = () => null;
+  bProj.redraw();
+  const openBtn = bProj.items.find((x) => x.id === "files-maple-workshop");
+  assert.equal(openBtn?.calls.find((c) => c[0] === "tooltip")?.[1], "Close Files");
 });
 
 test("the Held column draws three labelled groups, answer now first", async () => {
@@ -1105,7 +1116,7 @@ test("clicking a badge or toolbar toggle opens the Dependency Inspector, highlig
   // K6 is the second card drawn in Queued (K4, K6, U1).
   assert.deepEqual(b.scrollsOn("list-queued"), [1]);
 
-  // Opening a Files · Changes viewer takes the inspector's split slot, so it ends the chain
+  // Opening a Files viewer takes the inspector's split slot, so it ends the chain
   // selection: nothing stays dimmed, the toolbar offers to open the inspector, and closing the
   // viewer does not bring the inspector back.
   assert.ok(b.view.highlight.dimmedIds.has("U1"));
@@ -1877,7 +1888,7 @@ for (const saved of ["{broken", "null", "[]", "42", '"text"']) {
   });
 }
 
-test("tabs keep the Board control and restore Board as a saved panel", async () => {
+test("tabs keep the Board and built-in Changes controls and restore saved panels", async () => {
   const t = await tabs({ saved: '{"s1":"board"}', spaceList: [{ id: "s1", active: true, tabs: [] }],
     rootLayout: { children: [{ id: "panel", hidden: true }, { id: "panel-body", active: "files" }] } });
   assert.deepEqual(t.actions.map((x) => x.action), ["layout.select", "layout.show"]);
@@ -1887,6 +1898,14 @@ test("tabs keep the Board control and restore Board as a saved panel", async () 
   t.click("panel-board");
   assert.equal(t.actions.at(-2).args.child, "board");
   assert.equal(t.actions.at(-1).action, "layout.show");
+  t.click("panel-changes");
+  assert.equal(t.actions.at(-2).action, "layout.select");
+  assert.equal(t.actions.at(-2).args.child, "changes");
+  assert.equal(t.actions.at(-1).action, "layout.show");
+  const restoredChanges = await tabs({ saved: '{"s1":"changes"}', spaceList: [{ id: "s1", active: true, tabs: [] }],
+    rootLayout: { children: [{ id: "panel", hidden: true }, { id: "panel-body", active: "files" }] } });
+  assert.equal(restoredChanges.actions[0].args.child, "changes");
+  assert.equal(restoredChanges.actions[1].action, "layout.show");
 });
 
 test("tabs show a PR button beside Board only when the layout gives the PR viewer a panel slot", async () => {
@@ -4165,7 +4184,7 @@ test("card draft clicks exercise real insertCardText and pasteToFirstmate throug
   assert.deepEqual(inboxCalls, [], "insertOnly card drafts never fall back to inbox notes");
 });
 
-test("Files · Changes viewer keeps its default 1:1 width on first open, then restores the last dragged width across close/reopen and restarts", async () => {
+test("Files viewer keeps its default 1:1 width on first open, then restores the last dragged width across close/reopen and restarts", async () => {
   const store = memoryStore();
   const findViewerSplit = (tree) => {
     const walk = (node, parent) => {

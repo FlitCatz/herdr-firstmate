@@ -65,6 +65,7 @@ const FOLDED_KEY = "folded";
 const VIEW_MODE_KEY = "viewMode";
 const INDEPENDENT_OPEN_KEY = "independentOpen";
 const VIEWER_WIDTH_KEY = "viewerWidth";
+const HIDDEN_PROJECTS_KEY = "hiddenProjects";
 const BOARD_MIN_PX = 280;
 const VIEWER_MIN_PX = 260;
 const TERMINAL_MENU_ITEMS = [
@@ -1244,6 +1245,11 @@ export default class FmBoard extends View {
     this.size = null; this.collapsed = new Set(props()?.collapsed ?? this.loadSet(COLLAPSED_KEY));
     this.folded = new Set(ui.folded ?? this.loadSet(FOLDED_KEY));
     this.open = new Set(ui.open ?? []); this.filter = ui.filter ?? null;
+    this.hiddenProjects = Array.isArray(ui.hiddenProjects)
+      ? new Set(ui.hiddenProjects.map((x) => (typeof x === "string" ? projectOf(x.trim()) : "")).filter(Boolean))
+      : this.loadHiddenProjects();
+    this.projectMenuOpen = Boolean(ui.projectMenu);
+    this.projectMenuFocus = cx.focus_handle();
     this.viewMode = ui.viewMode === "chains" || ui.viewMode === "kanban"
       ? ui.viewMode
       : (this.loadText(VIEW_MODE_KEY) === "chains" ? "chains" : "kanban");
@@ -1357,6 +1363,52 @@ export default class FmBoard extends View {
   loadText(key) {
     try { return localStorage.getItem(key); }
     catch { return null; }
+  }
+
+  loadHiddenProjects() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(HIDDEN_PROJECTS_KEY) ?? "[]");
+      if (!Array.isArray(raw)) return new Set();
+      return new Set(raw.map((x) => (typeof x === "string" ? projectOf(x.trim()) : "")).filter(Boolean));
+    } catch {
+      return new Set();
+    }
+  }
+
+  // Canonical repository-tag names available in Kanban, from the registry and tagged cards.
+  kanbanProjects() {
+    return [...new Set(this.projectNames().map((n) => projectOf(n)).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  activeHiddenProjects() {
+    return this.kanbanProjects().filter((name) => this.hiddenProjects.has(name));
+  }
+
+  // Cards without a project tag always stay visible in Kanban.
+  isKanbanProjectVisible(c) {
+    return !c?.project || !this.hiddenProjects.has(c.project);
+  }
+
+  saveHiddenProjects() {
+    try { localStorage.setItem(HIDDEN_PROJECTS_KEY, JSON.stringify([...this.hiddenProjects])); } catch {}
+  }
+
+  /** @param {string} name @param {import("gpui-kit").Context} cx */
+  toggleProjectVisibility(name, cx) {
+    const key = projectOf(name);
+    if (!key) return;
+    if (!this.hiddenProjects.delete(key)) this.hiddenProjects.add(key);
+    this.saveHiddenProjects();
+    cx.notify();
+  }
+
+  /** @param {import("gpui-kit").Context} cx */
+  showAllProjects(cx) {
+    if (!this.hiddenProjects.size) return;
+    this.hiddenProjects.clear();
+    this.saveHiddenProjects();
+    cx.notify();
   }
 
   loadViewerWidth() {
@@ -2538,6 +2590,7 @@ export default class FmBoard extends View {
     if (!this.keys.is_focused()) return false;
     if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return false;
     if (e.key === "escape") {
+      if (this.projectMenuOpen) { this.projectMenuOpen = false; cx.notify(); return true; }
       if (this.viewer.root) { this.viewer.close(cx); return true; }
       if (this.focusMode) { this.toggleFocus(cx); return true; }
       if (this.inspectorOpen || this.selectedCardId) { this.clearChainSelection(cx); return true; }
@@ -2724,7 +2777,7 @@ export default class FmBoard extends View {
     this.viewMode = mode;
     this.hoveredCardId = null;
     if (mode === "kanban" && !this.inspectorOpen) this.selectedCardId = null;
-    if (mode === "chains") { this.inspectorOpen = false; this.focusMode = false; this.focusId = null; }
+    if (mode === "chains") { this.inspectorOpen = false; this.focusMode = false; this.focusId = null; this.projectMenuOpen = false; }
     try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch {}
     cx.notify();
   }
@@ -3682,8 +3735,127 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
+  // Compact Kanban toolbar control to mark projects Visible or Invisible by repository tag.
+  projectFilterControl(t) {
+    const hidden = this.activeHiddenProjects();
+    const hiddenCount = hidden.length;
+    const open = this.projectMenuOpen;
+    const active = open || hiddenCount > 0;
+    const trigger = h_flex().id("kanban-projects-toggle").flex_none().gap(5).items_center()
+      .px(7).py(3.5).rounded(5).cursor_pointer()
+      .role("button").accessibility_label("Projects")
+      .border(1).border_color(open ? t.accent : hiddenCount > 0 ? t.muted : t.border)
+      .bg(active ? t.selected : t.raised)
+      .text_size(this.fs(11)).font_semibold().text_color(active ? t.foreground : t.muted)
+      .hover((s) => s.opacity(0.85))
+      .tooltip(hiddenCount > 0
+        ? `${hiddenCount} project${hiddenCount === 1 ? "" : "s"} hidden in Kanban · Click to mark projects Visible or Invisible`
+        : "Mark projects Visible or Invisible in Kanban")
+      .child(div().child("Projects"))
+      .when(hiddenCount > 0, (el) => el.child(
+        div().id("kanban-projects-badge").flex_none().px(4).rounded(3).bg(t.background)
+          .border(1).border_color(t.border)
+          .font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.foreground)
+          .child(`${hiddenCount} hidden`),
+      ))
+      .child(div().flex_none().text_size(this.fs(9.5)).text_color(active ? t.foreground : t.dim).child(open ? "▴" : "▾"));
+    return Popover.new("kanban-projects-pop")
+      .mouse_button("left")
+      .anchor("top_right")
+      .open(open)
+      .track_focus(this.projectMenuFocus)
+      .on_open_change((next, cx) => {
+        this.projectMenuOpen = Boolean(next);
+        cx.notify();
+      })
+      .trigger(trigger)
+      .content(open ? this.projectFilterMenu(t) : div());
+  }
+
+  projectFilterMenu(t) {
+    const projects = this.kanbanProjects();
+    const hidden = this.activeHiddenProjects();
+    const visibleCount = projects.length - hidden.length;
+    const stop = (_e, cx) => cx.stop_propagation();
+    const rows = v_flex().id("kanban-projects-list").gap(2).max_h(280).min_h(0).flex_shrink(1).overflow_y_scroll();
+    if (!projects.length) {
+      rows.child(div().px(6).py(6).text_size(this.fs(11)).text_color(t.dim).child("No tagged projects in Kanban"));
+    } else {
+      rows.children(projects.map((name) => {
+        const visible = !this.hiddenProjects.has(name);
+        return h_flex().id(`kanban-project-row-${name}`).gap(8).px(6).py(5).rounded(6).items_center().cursor_pointer()
+          .role("menu_item")
+          .hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", stop)
+          .on_click((_e, cx) => { cx.stop_propagation(); this.toggleProjectVisibility(name, cx); })
+          .child(div().flex_none().when(!visible, (el) => el.opacity(0.45))
+            .child(this.projectBadge(name, t, `kanban-ptag-${name}`)))
+          .child(div().flex_1().min_w(0).truncate().text_size(this.fs(11.5))
+            .text_color(visible ? t.foreground : t.dim).child(name))
+          .child(h_flex().id(`kanban-project-state-${name}`).flex_none().w(this.fs(68)).justify_center().py(1).rounded(4)
+            .border(1).border_color(t.border)
+            .bg(visible ? t.raised : t.background)
+            .font_family(DATA_FONT).text_size(this.fs(10)).font_semibold()
+            .text_color(visible ? t.foreground : t.dim)
+            .child(visible ? "Visible" : "Invisible"));
+      }));
+    }
+    return v_flex().id("kanban-projects-menu").track_focus(this.projectMenuFocus)
+      .w(292).p(8).gap(6).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+      .on_key_down((e, cx) => {
+        if (e.key === "escape") { this.projectMenuOpen = false; cx.stop_propagation(); cx.notify(); }
+      })
+      .child(h_flex().gap(8).pb(6).items_center().border_b(1).border_color(t.border)
+        .child(div().flex_1().min_w(0).text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child("Kanban projects"))
+        .child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.dim)
+          .child(`${visibleCount}/${projects.length} visible`))
+        .when(hidden.length > 0, (el) => el.child(
+          this.button("kanban-projects-show-all", "Show All", t, (cx) => this.showAllProjects(cx)),
+        )))
+      .child(rows)
+      .child(div().pt(4).border_t(1).border_color(t.border).text_size(this.fs(10)).text_color(t.dim)
+        .child("Cards without a project tag always stay visible."));
+  }
+
+  // Visible indicator below the Kanban toolbar whenever one or more projects are marked Invisible,
+  // naming hidden projects and offering a one-step Show All.
+  hiddenProjectsBar(t) {
+    const hidden = this.activeHiddenProjects();
+    if (!hidden.length) return null;
+    const shownChips = hidden.slice(0, 5);
+    const extra = hidden.length - shownChips.length;
+    return h_flex().id("kanban-hidden-bar").flex_none().gap(6).items_center().flex_wrap()
+      .px(8).py(5).rounded(6).bg(t.surface).border(1).border_color(t.border)
+      .child(div().id("kanban-hidden-summary").flex_none().text_size(this.fs(11)).font_semibold().text_color(t.muted)
+        .child(`${hidden.length} hidden ${hidden.length === 1 ? "project" : "projects"}`))
+      .children(shownChips.map((name) => {
+        const tag = this.tags?.get(name) ?? name.slice(0, 3).toUpperCase();
+        return h_flex().id(`kanban-hidden-chip-${name}`).flex_none().gap(5).items_center()
+          .pl(3).pr(6).py(1.5).rounded(4).bg(t.background).border(1).border_color(t.border)
+          .cursor_pointer().hover((s) => s.bg(t.hover))
+          .tooltip(`Click to show ${name} in Kanban`)
+          .on_click((_e, cx) => { cx.stop_propagation(); this.toggleProjectVisibility(name, cx); })
+          .child(div().flex_none().px(4).py(0.5).rounded(3).bg(this.colorOf(name, t)).opacity(0.7)
+            .font_family(DATA_FONT).text_size(this.fs(9.5)).font_semibold().text_color("#ffffff").child(tag))
+          .child(div().flex_none().text_size(this.fs(11)).text_color(t.muted).child(name))
+          .child(div().flex_none().text_size(this.fs(10.5)).text_color(t.dim).child("×"));
+      }))
+      .when(extra > 0, (el) => el.child(
+        div().id("kanban-hidden-more").flex_none().font_family(DATA_FONT).text_size(this.fs(10.5)).text_color(t.dim)
+          .child(`+${extra} more`),
+      ))
+      .child(div().flex_1().min_w(0))
+      .child(div().id("kanban-show-all").flex_none().px(8).py(2.5).rounded(4).cursor_pointer()
+        .bg(t.raised).border(1).border_color(t.border)
+        .text_size(this.fs(11)).font_semibold().text_color(t.foreground)
+        .hover((s) => s.bg(t.hover))
+        .tooltip("Show all hidden projects in Kanban")
+        .on_click((_e, cx) => { cx.stop_propagation(); this.showAllProjects(cx); })
+        .child("Show All"));
+  }
+
   // The top of the task board: the Kanban | Chains view toggle, search field, find icon,
-  // match count, and (in Kanban) the Dependency Inspector toggle.
+  // match count, and (in Kanban) the Projects visibility control, Dependency Inspector, and Focus toggles.
   searchRow(t, matches) {
     const count = !this.query ? null : matches.length ? `${this.matchAt % matches.length + 1}/${matches.length}` : "No matches";
     const chainCount = this.graph?.components?.length ?? 0;
@@ -3714,14 +3886,15 @@ export default class FmBoard extends View {
       .when(count !== null, (el) =>
         el.child(div().flex_none().text_size(this.fs(11)).text_color(matches.length ? t.muted : t.blocked).child(count)))
       .when(this.viewMode === "kanban", (el) =>
-        el.child(div().id("dep-inspector-toggle").flex_none().px(7).py(3.5).rounded(5).cursor_pointer()
-          .border(1).border_color(this.inspectorOpen ? t.accent : t.border)
-          .bg(this.inspectorOpen ? t.selected : t.raised)
-          .text_size(this.fs(11)).font_semibold().text_color(this.inspectorOpen ? t.foreground : t.muted)
-          .hover((s) => s.opacity(0.85))
-          .tooltip(this.inspectorOpen ? "Close Dependency Inspector (Esc)" : "Open Dependency Inspector")
-          .on_click((_e, cx) => this.toggleInspector(cx))
-          .child(toggleLabel))
+        el.child(this.projectFilterControl(t))
+          .child(div().id("dep-inspector-toggle").flex_none().px(7).py(3.5).rounded(5).cursor_pointer()
+            .border(1).border_color(this.inspectorOpen ? t.accent : t.border)
+            .bg(this.inspectorOpen ? t.selected : t.raised)
+            .text_size(this.fs(11)).font_semibold().text_color(this.inspectorOpen ? t.foreground : t.muted)
+            .hover((s) => s.opacity(0.85))
+            .tooltip(this.inspectorOpen ? "Close Dependency Inspector (Esc)" : "Open Dependency Inspector")
+            .on_click((_e, cx) => this.toggleInspector(cx))
+            .child(toggleLabel))
           .child(h_flex().id("focus-toggle").flex_none().gap(6).items_center().px(7).py(3.5).rounded(3).cursor_pointer()
             .border(1).border_color(this.focusMode ? t.accent : t.border).bg(this.focusMode ? t.accent : t.raised)
             .text_size(this.fs(11)).font_semibold().text_color(this.focusMode ? t.accent_foreground : t.muted)
@@ -3755,7 +3928,9 @@ export default class FmBoard extends View {
 
   cardsIn(id) {
     const q = this.query.toLowerCase();
-    const all = (this.cards ?? []).filter((c) => c.column === id && (!this.filter || c.project === this.filter)
+    const all = (this.cards ?? []).filter((c) => c.column === id
+      && (!this.filter || c.project === this.filter)
+      && (this.isKanbanProjectVisible(c) || this.pointedId === c.id)
       && (!q || searchText(c).includes(q)));
     // Highest priority first; equal or unset priorities keep backlog order (sort is stable).
     const rank = (c) => c.priority ?? Infinity;
@@ -4029,8 +4204,10 @@ export default class FmBoard extends View {
         .child(div().text_size(this.fs(11)).text_color(t.muted).child(`Filter: ${this.filter}`))
         .child(this.button("filter-clear", "Clear", t, (cx) => { this.filter = null; cx.notify(); })));
     }
+    const hiddenBar = !isChains ? this.hiddenProjectsBar(t) : null;
     root.child(this.frame(v_flex().flex_1().min_h(0).overflow_hidden().gap(6), t)
       .child(this.searchRow(t, matches))
+      .when(Boolean(hiddenBar), (e) => e.child(hiddenBar))
       .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))
       .child(board))

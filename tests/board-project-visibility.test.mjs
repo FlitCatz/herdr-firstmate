@@ -63,11 +63,13 @@ async function mountBoard({ projects = ["maple-workshop", "orchard-atlas"], stor
     .replace(/^import .*;$/gm, "").replace("export default class FmBoard", "class FmBoard");
   const pending = [];
   const focused = [];
+  const timers = [];
+  const scrolled = [];
   const cx = {
     notify() {},
     stop_propagation() {},
     spawn(fn) { pending.push(fn(cx)); },
-    timer: { every() {}, after() {} },
+    timer: { every() {}, after(ms, fn) { timers.push({ ms, fn }); } },
     focus_handle() {
       const handle = { focus() { focused.push(handle); }, is_focused: () => focused.at(-1) === handle, release: () => true };
       return handle;
@@ -91,7 +93,7 @@ async function mountBoard({ projects = ["maple-workshop", "orchard-atlas"], stor
     h_resizable: element, resizable_panel: element,
     Popover: { new: (popId) => element().popover_id(popId) },
     InputState: { new: input },
-    ScrollHandle: { new: () => ({ scroll_to_item() {} }) },
+    ScrollHandle: { new: () => ({ scroll_to_item(idx) { scrolled.push(idx); } }) },
     FolderViewer: class { constructor() { this.root = null; } close() { this.root = null; } },
     props: () => ({ home: HOME, snapshot_file: snapshotFile, collapsed: [], ui }),
     checking: () => false,
@@ -150,7 +152,7 @@ async function mountBoard({ projects = ["maple-workshop", "orchard-atlas"], stor
     return redraw();
   };
   return {
-    view, store, cx, redraw, click, reload, findPopover,
+    view, store, cx, redraw, click, reload, findPopover, timers, scrolled,
     get items() { return items; },
     get ids() { return items.map((x) => x.id); },
     text: (id) => items.find((x) => x.id === id)?.text,
@@ -233,14 +235,10 @@ test("marking a project Invisible hides its Kanban cards, shows a clear indicato
   assert.ok(b.drawnCards().includes("maple-preview-screen"));
   assert.ok(b.drawnCards().includes("orchard-nav-style"));
 
-  // Clicking a hidden chip restores just that project; existing card/project tags are not overloaded.
+  // Hidden chips only name projects, the menu has no second Show All, and card tags are not overloaded.
   b.click("kanban-project-row-maple-workshop");
-  b.click("kanban-project-row-orchard-atlas");
-  b.click("kanban-hidden-chip-maple-workshop");
-  assert.equal(b.text("kanban-project-state-maple-workshop"), "Visible");
-  assert.equal(b.text("kanban-project-state-orchard-atlas"), "Invisible");
-  assert.ok(b.drawnCards().includes("maple-preview-screen"));
-  assert.ok(!b.drawnCards().includes("orchard-nav-style"));
+  assert.equal(b.items.find((x) => x.id === "kanban-hidden-chip-maple-workshop")?.click ?? null, null, "hidden chip is informational");
+  assert.equal(b.ids.filter((id) => b.text(id) === "Show All").length, 1, "exactly one Show All control");
   assert.equal(b.items.find((x) => x.id === "tag-maple-preview-screen")?.click ?? null, null, "card tag badge has no overloaded click handler");
 });
 
@@ -390,7 +388,7 @@ test("Kanban project visibility does not alter Chains, Today strip, NEXT MOVE, P
   assert.equal(JSON.stringify(snapshotCopy), beforeJson, "backlog snapshot data is untouched");
 });
 
-test("more than 5 hidden projects summarize overflow cleanly and menu Show All + Escape work", async () => {
+test("more than 5 hidden projects summarize overflow cleanly and Show All + Escape work", async () => {
   const manyProjects = ["alpha-one", "bravo-two", "charlie-three", "delta-four", "echo-five", "foxtrot-six", "golf-seven"];
   const store = memoryStore({ hiddenProjects: JSON.stringify(manyProjects) });
   const b = await mountBoard({ projects: manyProjects, store, ui: { projectMenu: true } });
@@ -400,8 +398,8 @@ test("more than 5 hidden projects summarize overflow cleanly and menu Show All +
   assert.equal(b.text("kanban-hidden-more"), "+2 more");
   assert.equal(b.ids.filter((id) => id.startsWith("kanban-hidden-chip-")).length, 5);
 
-  // Menu header Show All clears all 7 in one step.
-  b.click("kanban-projects-show-all");
+  // The indicator's Show All clears all 7 in one step.
+  b.click("kanban-show-all");
   assert.ok(!b.ids.includes("kanban-hidden-bar"));
   assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), []);
 
@@ -414,3 +412,44 @@ test("more than 5 hidden projects summarize overflow cleanly and menu Show All +
 });
 
 
+
+test("an explicit Inspector click shows a card of an Invisible project only while it is pointed at; opening the Inspector shows nothing", async () => {
+  // Fixture chain: maple-theme-tokens (maple-workshop) blocks orchard-theme-sync (orchard-atlas).
+  const store = memoryStore({ hiddenProjects: JSON.stringify(["maple-workshop"]) });
+  const b = await mountBoard({ store });
+  const hiddenMaple = b.view.cards.filter((c) => c.project === "maple-workshop").map((c) => c.id);
+  assert.ok(!b.drawnCards().some((id) => hiddenMaple.includes(id)), "maple-workshop starts hidden");
+  assert.ok(b.drawnCards().includes("orchard-theme-sync"));
+
+  // Opening the Inspector auto-selects a chain root but reveals no hidden card.
+  b.click("dep-inspector-toggle");
+  assert.ok(b.view.inspectorOpen);
+  assert.ok(b.ids.includes("dep-node-maple-theme-tokens"), "Inspector lists the hidden project's node");
+  assert.ok(!b.drawnCards().some((id) => hiddenMaple.includes(id)), "opening the Inspector reveals nothing");
+  assert.deepEqual(b.scrolled, [], "opening the Inspector scrolls nowhere");
+
+  // An explicit node click draws only that card, rings it, and scrolls to it.
+  b.click("dep-node-maple-theme-tokens");
+  assert.equal(b.view.selectedCardId, "maple-theme-tokens");
+  const shown = b.drawnCards().filter((id) => hiddenMaple.includes(id));
+  assert.deepEqual(shown, ["maple-theme-tokens"], "only the clicked card of the Invisible project is drawn");
+  assert.equal(b.text("hl-maple-theme-tokens"), "Selected", "the revealed card is highlighted as Selected");
+  assert.ok(b.scrolled.length > 0, "the board scrolls to the revealed card");
+  assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), ["maple-workshop"], "saved visibility is unchanged");
+  assert.ok(b.ids.includes("kanban-hidden-bar"), "the hidden-project indicator stays");
+
+  // The reveal is temporary: once its ring timer fires, the card hides again.
+  const ring = b.timers.findLast((x) => x.ms === 4000);
+  assert.ok(ring, "the reveal sets the NEXT MOVE ring timer");
+  ring.fn(b.cx);
+  b.redraw();
+  assert.ok(!b.drawnCards().some((id) => hiddenMaple.includes(id)), "the card hides again when the ring clears");
+  assert.equal(b.view.selectedCardId, "maple-theme-tokens", "the Inspector selection stays");
+
+  // Clicking a visible node keeps the ordinary path: no ring, card drawn and scrolled to.
+  b.scrolled.length = 0;
+  b.click("dep-node-orchard-theme-sync");
+  assert.equal(b.view.pointedId, null);
+  assert.ok(b.drawnCards().includes("orchard-theme-sync"));
+  assert.ok(b.scrolled.length > 0);
+});

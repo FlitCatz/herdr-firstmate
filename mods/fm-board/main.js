@@ -1245,9 +1245,7 @@ export default class FmBoard extends View {
     this.size = null; this.collapsed = new Set(props()?.collapsed ?? this.loadSet(COLLAPSED_KEY));
     this.folded = new Set(ui.folded ?? this.loadSet(FOLDED_KEY));
     this.open = new Set(ui.open ?? []); this.filter = ui.filter ?? null;
-    this.hiddenProjects = Array.isArray(ui.hiddenProjects)
-      ? new Set(ui.hiddenProjects.map((x) => (typeof x === "string" ? projectOf(x.trim()) : "")).filter(Boolean))
-      : this.loadHiddenProjects();
+    this.hiddenProjects = this.loadHiddenProjects();
     this.projectMenuOpen = Boolean(ui.projectMenu);
     this.projectMenuFocus = cx.focus_handle();
     this.viewMode = ui.viewMode === "chains" || ui.viewMode === "kanban"
@@ -2860,8 +2858,9 @@ export default class FmBoard extends View {
   focusCardFromInspector(id, cx) {
     this.selectedCardId = id;
     this.inspectorOpen = true;
-    this.keys.focus();
     const card = (this.cards ?? []).find((c) => c.id === id);
+    if (card && !this.isKanbanProjectVisible(card)) { this.revealCard(id, cx); return; }
+    this.keys.focus();
     if (card) this.showCard(card, cx);
     cx.notify();
   }
@@ -3774,8 +3773,7 @@ export default class FmBoard extends View {
 
   projectFilterMenu(t) {
     const projects = this.kanbanProjects();
-    const hidden = this.activeHiddenProjects();
-    const visibleCount = projects.length - hidden.length;
+    const visibleCount = projects.length - this.activeHiddenProjects().length;
     const stop = (_e, cx) => cx.stop_propagation();
     const rows = v_flex().id("kanban-projects-list").gap(2).max_h(280).min_h(0).flex_shrink(1).overflow_y_scroll();
     if (!projects.length) {
@@ -3808,10 +3806,7 @@ export default class FmBoard extends View {
       .child(h_flex().gap(8).pb(6).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(0).text_size(this.fs(11.5)).font_semibold().text_color(t.foreground).child("Kanban projects"))
         .child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.dim)
-          .child(`${visibleCount}/${projects.length} visible`))
-        .when(hidden.length > 0, (el) => el.child(
-          this.button("kanban-projects-show-all", "Show All", t, (cx) => this.showAllProjects(cx)),
-        )))
+          .child(`${visibleCount}/${projects.length} visible`)))
       .child(rows)
       .child(div().pt(4).border_t(1).border_color(t.border).text_size(this.fs(10)).text_color(t.dim)
         .child("Cards without a project tag always stay visible."));
@@ -3832,13 +3827,9 @@ export default class FmBoard extends View {
         const tag = this.tags?.get(name) ?? name.slice(0, 3).toUpperCase();
         return h_flex().id(`kanban-hidden-chip-${name}`).flex_none().gap(5).items_center()
           .pl(3).pr(6).py(1.5).rounded(4).bg(t.background).border(1).border_color(t.border)
-          .cursor_pointer().hover((s) => s.bg(t.hover))
-          .tooltip(`Click to show ${name} in Kanban`)
-          .on_click((_e, cx) => { cx.stop_propagation(); this.toggleProjectVisibility(name, cx); })
           .child(div().flex_none().px(4).py(0.5).rounded(3).bg(this.colorOf(name, t)).opacity(0.7)
             .font_family(DATA_FONT).text_size(this.fs(9.5)).font_semibold().text_color("#ffffff").child(tag))
-          .child(div().flex_none().text_size(this.fs(11)).text_color(t.muted).child(name))
-          .child(div().flex_none().text_size(this.fs(10.5)).text_color(t.dim).child("×"));
+          .child(div().flex_none().text_size(this.fs(11)).text_color(t.muted).child(name));
       }))
       .when(extra > 0, (el) => el.child(
         div().id("kanban-hidden-more").flex_none().font_family(DATA_FONT).text_size(this.fs(10.5)).text_color(t.dim)

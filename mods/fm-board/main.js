@@ -1837,8 +1837,13 @@ export default class FmBoard extends View {
         .on_click((_e, cx) => { if (!this.open.delete(p.name)) this.open.add(p.name); cx.notify(); })
         .child(div().text_size(this.fs(10)).text_color(t.dim).child(open ? "▾" : "▸"))
         .child(this.projectBadge(p.name, t, `ptag-${p.name}`))
-        .child(div().flex_1().min_w(0).truncate().text_size(this.fs(12)).text_color(t.foreground).child(p.name))
-        .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim)
+        // The name group keeps a floor of 96px and clips its own overflow, so on a narrow panel the
+        // task counts give way (truncating) before the name and tags are squeezed away or overlap them.
+        .child(h_flex().flex_1().min_w(96).overflow_hidden().gap(6).items_center()
+          .child(div().min_w(0).flex_shrink(1).truncate().text_size(this.fs(12)).text_color(t.foreground).child(p.name))
+          .child(this.projectModeTag(p, t))
+          .when(p.yolo, (el) => el.child(this.projectAutoMergeTag(p, t))))
+        .child(div().flex_shrink(1).min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim)
           .child(counts || "No tasks"))
         .child(this.viewButton(p.name, t))
         .child(this.terminalButton(p.name, t)));
@@ -1858,6 +1863,19 @@ export default class FmBoard extends View {
       .child(this.showOnBoardButton(p.name, t))
       .child(this.button(`dir-${p.name}`, "Open folder", t, () => { exec("open", [`${home()}/projects/${p.name}`]); }))
       .child(this.button(`rm-${p.name}`, "Remove from firstmate", t, (cx) => { this.confirm = p.name; cx.notify(); })));
+  }
+
+  // Small tags beside a collapsed project's name: the delivery mode as a quiet filled chip, and
+  // Auto-merge as a hairline outline (drawn only when it is on), so the two never look alike.
+  // The mode chip truncates before the auto-merge tag does, so the on/off fact stays readable.
+  projectModeTag(p, t) {
+    return div().id(`project-mode-${p.name}`).min_w(0).flex_shrink(1).truncate().px(5).rounded(3)
+      .bg(t.raised).text_size(this.fs(10)).text_color(t.muted).child(modeLabel(p.mode));
+  }
+
+  projectAutoMergeTag(p, t) {
+    return div().id(`project-automerge-${p.name}`).flex_none().px(5).rounded(3)
+      .border_1().border_color(t.border).text_size(this.fs(10)).text_color(t.muted).child("Auto-merge");
   }
 
   // In Kanban the project's tab is the board filter, so this selects and remembers that tab;

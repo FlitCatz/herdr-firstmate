@@ -1422,7 +1422,9 @@ export default class FmBoard extends View {
     const base = (this.cards ?? []).filter((c) => columns.has(c.column));
     const byProject = new Map();
     for (const c of base) {
-      if (c.project) byProject.set(c.project, [...(byProject.get(c.project) ?? []), c]);
+      if (!c.project) continue;
+      if (!byProject.has(c.project)) byProject.set(c.project, []);
+      byProject.get(c.project).push(c);
     }
     const names = new Set(byProject.keys());
     if (this.kanbanProjectTab) names.add(this.kanbanProjectTab);

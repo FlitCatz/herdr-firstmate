@@ -622,3 +622,24 @@ test("Show on board in Chains keeps filtering Chains without changing the Kanban
   b.click("head-independent");
   assert.ok(!b.drawnCards().includes("maple-preview-screen"), "Chains Independent drawer follows the Chains filter");
 });
+
+test("under All with a hidden project, the hidden-projects row sits directly below the toolbar and project tabs sit directly above the columns", async () => {
+  const store = memoryStore({ hiddenProjects: JSON.stringify(["maple-workshop"]) });
+  const b = await mountBoard({ store });
+
+  const searchIdx = b.ids.indexOf("kanban-search");
+  const hiddenIdx = b.ids.indexOf("kanban-hidden-bar");
+  const tabsIdx = b.ids.indexOf("kanban-project-tabs-wrap");
+  const boardIdx = b.ids.indexOf("board");
+  assert.ok(searchIdx >= 0 && hiddenIdx >= 0 && tabsIdx >= 0 && boardIdx >= 0,
+    "toolbar, hidden-projects row, project tab strip, and Kanban columns all render under All with a hidden project");
+  assert.ok(searchIdx < hiddenIdx, "hidden-projects row sits below the toolbar");
+  assert.ok(hiddenIdx < tabsIdx, "hidden-projects row sits above the project tab strip");
+  assert.ok(tabsIdx < boardIdx, "project tab strip sits directly above the Kanban columns");
+
+  // Switching to a project tab hides the All-only hidden row while keeping the project tabs above the columns.
+  b.click("kanban-project-tab-maple-workshop");
+  assert.ok(!b.ids.includes("kanban-hidden-bar"));
+  assert.ok(b.ids.indexOf("kanban-search") < b.ids.indexOf("kanban-project-tabs-wrap"));
+  assert.ok(b.ids.indexOf("kanban-project-tabs-wrap") < b.ids.indexOf("board"));
+});

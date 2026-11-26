@@ -3943,7 +3943,7 @@ export default class FmBoard extends View {
       .child(track);
   }
 
-  // Visible indicator below the Kanban project tab strip whenever viewing All with projects marked
+  // Visible indicator directly below the Kanban toolbar whenever viewing All with projects marked
   // Invisible, naming hidden projects and offering a one-step Show All.
   hiddenProjectsBar(t) {
     if (this.kanbanProjectTab) return null;
@@ -4329,8 +4329,8 @@ export default class FmBoard extends View {
     const hiddenBar = !isChains ? this.hiddenProjectsBar(t) : null;
     root.child(this.frame(v_flex().flex_1().min_h(0).overflow_hidden().gap(6), t)
       .child(this.searchRow(t, matches))
-      .when(!isChains, (e) => e.child(this.kanbanProjectTabs(t)))
       .when(Boolean(hiddenBar), (e) => e.child(hiddenBar))
+      .when(!isChains, (e) => e.child(this.kanbanProjectTabs(t)))
       .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))
       .child(board))

@@ -1178,6 +1178,7 @@ function cardsFrom(snapshot) {
     id: record?.id ?? task.id,
     decision,
     openDecisions,
+    inFlight: record?.state === "in_flight",
     // Which HOLD_GROUPS entry a Held card is drawn under, and the date a deferred one waits for.
     holdGroup: holdGroupOf(record),
     holdUntil: typeof record?.hold_until === "string" ? record.hold_until : null,
@@ -2381,18 +2382,18 @@ export default class FmBoard extends View {
         .child(div().min_w(0).truncate().text_size(this.fs(10)).text_color(t.dim).child(sub || blank))));
   }
 
-  // The longest-waiting hold to answer now, at the top of the board in the Ledger idiom: a hairline
-  // frame with a bar in the held status color. Its first line names the card the decision comes
-  // from and brings that card into view; its options and Write answer put the same drafts in the
-  // firstmate input as the Held card does.
-  /** @param {Record<string, string>} t @param {any[]} holds */
-  nextMove(t, holds) {
-    const c = holds[0];
-    if (!c) return null;
-    const ids = this.answerIds(c), decision = this.answerDecision(c);
+  // Surface live decision requests on current in-flight work, in Board order and then in the
+  // snapshot's decision order. An answer names the same key as an answer from the card.
+  /** @param {Record<string, string>} t */
+  nextMove(t) {
+    const calls = this.cards.filter((c) => c.inFlight && !c.failed)
+      .flatMap((card) => card.openDecisions.filter((d) => d.verb === "needs-decision")
+        .map((request) => ({ card, request })));
+    if (!calls.length) return null;
+    const { card: c, request } = calls[0];
+    const ids = [c.id], { decision, key, summary } = request;
     const options = decision?.options ?? [];
     const rec = this.recommendedOption(decision);
-    const age = waitAge(c.heldSince, Date.now());
     const action = (id, label, tooltip, onClick, primary) => h_flex().id(id).flex_none().gap(6).items_center()
       .px(8).py(4).rounded(3).cursor_pointer().border(1).border_color(primary ? t.solid : t.border)
       .bg(primary ? t.solid : t.raised).text_size(this.fs(11.5)).text_color(primary ? t.solid_foreground : t.foreground)
@@ -2412,19 +2413,17 @@ export default class FmBoard extends View {
             .child(this.projectBadge(c.project || "firstmate", t, `next-tag-${c.id}`))
             .child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).text_color(t.dim).child(c.id))
             .child(div().min_w(0).truncate().text_size(this.fs(11.5)).font_semibold().text_color(t.muted).child(c.title)))
-          .when(Boolean(age), (e) => e.child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(11)).font_semibold()
-            .text_color(t.blocked).child(`waiting ${age}`)))
-          .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(`Next move, 1 of ${holds.length}`)))
+          .child(div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(`Next move, 1 of ${calls.length}`)))
         .child(div().id("next-move-question").text_size(this.fs(14)).font_semibold().text_color(t.foreground)
-          .child(decision?.question || c.detail || c.title)))
+          .child(decision?.question || summary || c.title)))
       .child(h_flex().flex_none().gap(6).items_center().flex_wrap()
         .children(options.map((o) => {
           const primary = o === rec;
           return action(`next-opt-${o.label}`, [letter(o, primary), o.text], "Put this answer in the firstmate input",
-            (cx) => this.answerOption(ids, o, "", cx), primary);
+            (cx) => this.answerOption(ids, o, key, cx), primary);
         }))
         .child(action("next-write", ["Write answer"], "Start an answer in the firstmate input",
-          (cx) => this.insertCardText(answerHead(ids), cx), false)));
+          (cx) => this.insertCardText(answerHead(ids, key), cx), false)));
   }
 
   // Brings a card on the Kanban board into view and rings it in the held color for a few seconds
@@ -2464,7 +2463,7 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
-  // Moves the Focus selection through the captain's calls (starting at the NEXT MOVE card), shows
+  // Moves the Focus selection through the captain's calls (starting at the oldest Held call), shows
   // its card, and peeks at its worker: Herdr draws the terminal over the tab beside the Board
   // without taking the keyboard, so j and k keep working.
   /** @param {number} delta @param {import("gpui-kit").Context} cx */
@@ -4299,7 +4298,7 @@ export default class FmBoard extends View {
     if (this.cards) {
       const holds = this.waitingHolds();
       root.child(this.todayStrip(t, holds, stacked));
-      const next = this.nextMove(t, holds);
+      const next = this.nextMove(t);
       if (next) root.child(next);
     }
     if (this.filter && isChains) {

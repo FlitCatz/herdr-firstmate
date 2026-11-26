@@ -467,12 +467,14 @@ test("Dependency Inspector and NEXT MOVE temporarily reveal out-of-tab cards wit
   assert.equal(b.view.kanbanProjectTab, "orchard-atlas");
 
   // NEXT MOVE card click also temporarily reveals its out-of-tab card without altering kanbanProjectTab.
+  b.click("kanban-project-tab-maple-workshop");
+  assert.ok(!b.drawnCards().includes("orchard-nav-style"));
   b.click("next-move-card");
-  assert.ok(b.drawnCards().includes("maple-icon-set"), "NEXT MOVE temporarily reveals maple-icon-set");
-  assert.equal(store.getItem("kanbanProjectTab"), "orchard-atlas");
+  assert.ok(b.drawnCards().includes("orchard-nav-style"), "NEXT MOVE temporarily reveals the open decision's card");
+  assert.equal(store.getItem("kanbanProjectTab"), "maple-workshop");
   b.view.pointedId = null;
   b.redraw();
-  assert.ok(!b.drawnCards().includes("maple-icon-set"));
+  assert.ok(!b.drawnCards().includes("orchard-nav-style"));
 });
 
 test("selecting a Kanban project tab leaves Today strip, NEXT MOVE, Chains, bottom tabs, and backlog data untouched", async () => {
@@ -635,10 +637,10 @@ test("revealing another project's card in Kanban keeps the Chains project filter
   b.click("view-orchard-atlas");
   assert.equal(b.view.filter, "orchard-atlas");
 
-  // NEXT MOVE points at a maple-workshop card and switches to Kanban to show it.
+  // NEXT MOVE points at the open decision and switches to Kanban to show it.
   b.click("next-move-card");
   assert.equal(b.view.viewMode, "kanban");
-  assert.ok(b.drawnCards().includes("maple-icon-set"));
+  assert.ok(b.drawnCards().includes("orchard-nav-style"));
   b.click("dep-inspector-toggle");
   b.click("dep-node-maple-theme-tokens");
   assert.equal(b.view.selectedCardId, "maple-theme-tokens");

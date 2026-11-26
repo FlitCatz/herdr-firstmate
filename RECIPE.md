@@ -24,10 +24,13 @@ The board uses the Ledger look, which it shares with the separate PR viewer mod.
 The Today strip shows five counts with one line under each.
 `Done today` counts finished backlog items whose merged, reported, or done date is today in Korea time.
 `Waiting on you` counts holds to answer now and shows the oldest one's wait, `Working` counts working cards and their background jobs, `Ready to land` counts cards in Review, with a PR waiting, or with a finished `local-only` branch waiting to land, and `Blocked` counts Blocked cards and how many failed.
-While a hold waits to be answered now, a NEXT MOVE band sits below the strip. It is a plain frame on the theme's background with a bar in the held (blocked) color on its left edge, and it shows the longest-waiting hold to answer now.
-Its first line names the card the decision comes from: the project tag, task id, and title, then the wait and its place among the holds to answer now. Clicking that card line switches to Kanban if needed, shows the card where a filter, search, or fold hides it, scrolls to it, and rings it in the held (blocked) color for 4 seconds or until `Esc`. That ring is the NEXT MOVE band's color, so it is not mistaken for the accent ring that hovering or selecting a card in a dependency chain draws.
-The hold's question follows in the normal text color; for a hold with a topic, the band shows the topic's shared question and options, as the Held column's topic box does.
-Holds are ordered by the backlog's hold-set time, else their filing date, with ties kept in backlog order.
+NEXT MOVE appears below the strip while an in-flight backlog item has an open `needs-decision` request in the current snapshot.
+It shows the first request in backlog order and then in the worker's open-decision order, with the number of eligible requests.
+The band uses the theme's background and a bar in the held (blocked) color.
+Its first line shows the project tag, task id, and title.
+Clicking that line switches to Kanban if needed, reveals and scrolls to the card, and rings it in the held color for 4 seconds or until `Esc`.
+The question, its options, and `Write answer` use the same decision key as the card's own answer actions.
+Held calls are ordered by the backlog's hold-set time or filing date, with ties kept in backlog order.
 
 ## How it behaves
 

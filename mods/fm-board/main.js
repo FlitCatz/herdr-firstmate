@@ -66,6 +66,7 @@ const VIEW_MODE_KEY = "viewMode";
 const INDEPENDENT_OPEN_KEY = "independentOpen";
 const VIEWER_WIDTH_KEY = "viewerWidth";
 const HIDDEN_PROJECTS_KEY = "hiddenProjects";
+const KANBAN_PROJECT_TAB_KEY = "kanbanProjectTab";
 const BOARD_MIN_PX = 280;
 const VIEWER_MIN_PX = 260;
 const TERMINAL_MENU_ITEMS = [
@@ -1246,6 +1247,8 @@ export default class FmBoard extends View {
     this.folded = new Set(ui.folded ?? this.loadSet(FOLDED_KEY));
     this.open = new Set(ui.open ?? []); this.filter = ui.filter ?? null;
     this.hiddenProjects = this.loadHiddenProjects();
+    this.kanbanProjectTab = this.loadKanbanProjectTab();
+    this.projectTabsScrolledTo = this.kanbanProjectTab ? null : "";
     this.projectMenuOpen = Boolean(ui.projectMenu);
     this.projectMenuFocus = cx.focus_handle();
     this.viewMode = ui.viewMode === "chains" || ui.viewMode === "kanban"
@@ -1281,9 +1284,10 @@ export default class FmBoard extends View {
     this.terminalMenuProject = null;
     this.terminalMenuAt = 0;
     this.terminalMenuFocus = cx.focus_handle();
-    // One handle per scroll area: the stacked board, each column's card list, and the Chains board.
+    // One handle per scroll area: the stacked board, each column's card list, the Kanban project tab strip, and the Chains board.
     this.boardScroll = ScrollHandle.new();
     this.chainsScroll = ScrollHandle.new();
+    this.projectTabsScroll = ScrollHandle.new();
     this.colScrolls = new Map(COLUMNS.map((c) => [c.id, ScrollHandle.new()]));
     this.pasting = false;
     // Worker screen tails by terminal address. Display only: never logged or written anywhere.
@@ -1373,9 +1377,33 @@ export default class FmBoard extends View {
     }
   }
 
-  // Canonical repository-tag names available in Kanban, from the registry and tagged cards.
+  loadKanbanProjectTab() {
+    const raw = this.loadText(KANBAN_PROJECT_TAB_KEY);
+    if (typeof raw !== "string") return null;
+    const key = projectOf(raw.trim());
+    return key || null;
+  }
+
+  saveKanbanProjectTab() {
+    try { localStorage.setItem(KANBAN_PROJECT_TAB_KEY, this.kanbanProjectTab ?? ""); } catch {}
+  }
+
+  /** @param {string | null} name @param {import("gpui-kit").Context} cx */
+  selectKanbanProjectTab(name, cx) {
+    const next = name ? (projectOf(name) || null) : null;
+    if (this.kanbanProjectTab === next) return;
+    this.kanbanProjectTab = next;
+    this.saveKanbanProjectTab();
+    const { tabs } = this.kanbanProjectTabData();
+    const idx = next ? tabs.findIndex((x) => x.name === next) + 1 : 0;
+    this.projectTabsScrolledTo = next ?? "";
+    if (idx >= 0) this.projectTabsScroll.scroll_to_item(idx);
+    cx.notify();
+  }
+
+  // Canonical repository-tag names available in Kanban, from the registry, tagged cards, and hidden choices.
   kanbanProjects() {
-    return [...new Set(this.projectNames().map((n) => projectOf(n)).filter(Boolean))]
+    return [...new Set([...this.projectNames(), ...this.hiddenProjects].map((n) => projectOf(n)).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b));
   }
 
@@ -1383,8 +1411,45 @@ export default class FmBoard extends View {
     return this.kanbanProjects().filter((name) => this.hiddenProjects.has(name));
   }
 
-  // Cards without a project tag always stay visible in Kanban.
+  // Current Kanban card set before applying the project tab or visibility filter, preserving
+  // Kanban's per-column Done cap so tab counts match Kanban without zeroing other projects.
+  kanbanBaseCards() {
+    const cards = this.cards ?? [];
+    const out = [];
+    for (const col of COLUMNS) {
+      const inCol = cards.filter((c) => c.column === col.id);
+      if (col.id === "done") out.push(...inCol.slice(-DONE_LIMIT));
+      else out.push(...inCol);
+    }
+    return out;
+  }
+
+  // Project tabs for Kanban: All first, then each project with Kanban cards plus any selected or
+  // hidden project even at count 0 so the user can always change it back.
+  kanbanProjectTabData() {
+    const base = this.kanbanBaseCards();
+    const counts = new Map();
+    for (const c of base) {
+      if (!c.project) continue;
+      counts.set(c.project, (counts.get(c.project) ?? 0) + 1);
+    }
+    const names = new Set(counts.keys());
+    if (this.kanbanProjectTab) names.add(this.kanbanProjectTab);
+    for (const name of this.hiddenProjects) names.add(name);
+    const tabs = [...names].sort((a, b) => a.localeCompare(b))
+      .map((name) => ({ name, count: counts.get(name) ?? 0 }));
+    return { allCount: base.length, tabs };
+  }
+
+  // Three-letter tag for any project name, falling back safely for persisted names outside this.tags.
+  projectTag(name) {
+    return this.tags?.get(name) ?? abbreviations([name]).get(name) ?? name.slice(0, 3).toUpperCase();
+  }
+
+  // Cards shown in Kanban under the current project tab: a selected project tab shows only that
+  // project's cards; All applies hiddenProjects while keeping untagged cards visible.
   isKanbanProjectVisible(c) {
+    if (this.kanbanProjectTab) return c?.project === this.kanbanProjectTab;
     return !c?.project || !this.hiddenProjects.has(c.project);
   }
 
@@ -3748,8 +3813,8 @@ export default class FmBoard extends View {
       .text_size(this.fs(11)).font_semibold().text_color(active ? t.foreground : t.muted)
       .hover((s) => s.opacity(0.85))
       .tooltip(hiddenCount > 0
-        ? `${hiddenCount} project${hiddenCount === 1 ? "" : "s"} hidden in Kanban · Click to mark projects Visible or Invisible`
-        : "Mark projects Visible or Invisible in Kanban")
+        ? `${hiddenCount} project${hiddenCount === 1 ? "" : "s"} hidden in All · Click to mark projects Visible or Invisible`
+        : "Mark projects Visible or Invisible in All")
       .child(div().child("Projects"))
       .when(hiddenCount > 0, (el) => el.child(
         div().id("kanban-projects-badge").flex_none().px(4).rounded(3).bg(t.background)
@@ -3809,12 +3874,74 @@ export default class FmBoard extends View {
           .child(`${visibleCount}/${projects.length} visible`)))
       .child(rows)
       .child(div().pt(4).border_t(1).border_color(t.border).text_size(this.fs(10)).text_color(t.dim)
-        .child("Cards without a project tag always stay visible."));
+        .child("Applies to All. Cards without a project tag always stay visible under All."));
   }
 
-  // Visible indicator below the Kanban toolbar whenever one or more projects are marked Invisible,
-  // naming hidden projects and offering a one-step Show All.
+  // Horizontal Ledger tab strip above the Kanban columns: All first, then one tab per project with
+  // Kanban cards (plus any selected or hidden project even at count 0). Overflowing tabs stay on
+  // one row and scroll horizontally like the Board's tab strips.
+  kanbanProjectTabs(t) {
+    const { allCount, tabs } = this.kanbanProjectTabData();
+    const activeTab = this.kanbanProjectTab ?? "";
+    const activeIdx = this.kanbanProjectTab ? tabs.findIndex((x) => x.name === this.kanbanProjectTab) + 1 : 0;
+    if (this.projectTabsScrolledTo !== activeTab) {
+      this.projectTabsScrolledTo = activeTab;
+      if (activeIdx > 0) this.projectTabsScroll.scroll_to_item(activeIdx);
+    }
+    const isAll = !this.kanbanProjectTab;
+    const hiddenCount = this.activeHiddenProjects().length;
+    const allTip = hiddenCount > 0
+      ? `Show all visible projects in Kanban (${hiddenCount} hidden in All)`
+      : "Show all projects in Kanban";
+    const allEl = h_flex().id("kanban-project-tab-all").role("tab").flex_none().gap(5).items_center()
+      .px(4).pt(2).pb(5).cursor_pointer()
+      .border_b(2).border_color(isAll ? t.foreground : t.background)
+      .hover((s) => s.opacity(0.8))
+      .tooltip(allTip)
+      .on_click((_e, cx) => { cx.stop_propagation(); this.selectKanbanProjectTab(null, cx); })
+      .child(div().text_size(this.fs(11.5)).font_semibold().text_color(isAll ? t.foreground : t.muted).child("All"))
+      .child(div().id("kanban-project-tab-count-all").flex_none().font_family(DATA_FONT).text_size(this.fs(10.5))
+        .text_color(isAll ? t.muted : t.dim).child(String(allCount)));
+    const projectEls = tabs.map(({ name, count }) => {
+      const active = this.kanbanProjectTab === name;
+      const hidden = this.hiddenProjects.has(name);
+      const color = this.colorOf(name, t);
+      const tag = this.projectTag(name);
+      const cardWord = count === 1 ? "card" : "cards";
+      const tip = hidden
+        ? `${name} · ${count} ${cardWord} · Hidden in All`
+        : `${name} · ${count} ${cardWord}`;
+      const dot = div().flex_none().w(6).h(6).rounded(3)
+        .when(hidden && !active, (el) => el.border(1).border_color(color).bg(t.background).opacity(0.75))
+        .when(!hidden || active, (el) => el.bg(color));
+      return h_flex().id(`kanban-project-tab-${name}`).role("tab").flex_none().gap(5).items_center()
+        .px(4).pt(2).pb(5).cursor_pointer()
+        .border_b(2).border_color(active ? color : t.background)
+        .hover((s) => s.opacity(0.8))
+        .tooltip(tip)
+        .on_click((_e, cx) => { cx.stop_propagation(); this.selectKanbanProjectTab(name, cx); })
+        .child(dot)
+        .child(div().font_family(DATA_FONT).text_size(this.fs(11.5)).font_semibold()
+          .text_color(active ? t.foreground : hidden ? t.dim : t.muted).child(tag))
+        .child(div().id(`kanban-project-tab-count-${name}`).flex_none().font_family(DATA_FONT).text_size(this.fs(10.5))
+          .text_color(active ? t.muted : t.dim).child(String(count)));
+    });
+    const track = h_flex().id("kanban-project-tabs").role("tab_list").flex_1().min_w(0).gap(12).items_end()
+      .overflow_x_scroll().track_scroll(this.projectTabsScroll)
+      .on_size_change((_size, cx) => {
+        if (activeIdx > 0) { this.projectTabsScroll.scroll_to_item(activeIdx); cx.notify(); }
+      })
+      .child(allEl)
+      .children(projectEls);
+    return h_flex().id("kanban-project-tabs-wrap").flex_none().w_full().min_w(0)
+      .border_b(1).border_color(t.border)
+      .child(track);
+  }
+
+  // Visible indicator below the Kanban project tab strip whenever viewing All with projects marked
+  // Invisible, naming hidden projects and offering a one-step Show All.
   hiddenProjectsBar(t) {
+    if (this.kanbanProjectTab) return null;
     const hidden = this.activeHiddenProjects();
     if (!hidden.length) return null;
     const shownChips = hidden.slice(0, 5);
@@ -4198,6 +4325,7 @@ export default class FmBoard extends View {
     const hiddenBar = !isChains ? this.hiddenProjectsBar(t) : null;
     root.child(this.frame(v_flex().flex_1().min_h(0).overflow_hidden().gap(6), t)
       .child(this.searchRow(t, matches))
+      .when(!isChains, (e) => e.child(this.kanbanProjectTabs(t)))
       .when(Boolean(hiddenBar), (e) => e.child(hiddenBar))
       .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))

@@ -123,7 +123,10 @@ The command lines are only read to find these jobs; the board does not log or sa
 
 The Projects list shows up to about 260px of rows and scrolls with the mouse wheel beyond that, so every project is reachable.
 Each project row ends with a folder button that toggles its Files viewer and a terminal button beside it that opens a new focused terminal tab in that project's local copy (`tab.new`), or on right-click opens a popup menu (`Split Vertical`, `Split Horizontal`, `New Tab`) using `terminal.open` / `tab.new` at that project's folder.
-Project rows can be expanded to show details, a project filter (selecting the project's tab in Kanban and filtering lanes in Chains), color choices that replace the automatic color, a folder button, and a removal request.
+Each collapsed project row shows its delivery mode as a small chip (`Validate product changes`, `Always validate`, `Direct PR`, or `Local only`) and a small outlined `Auto-merge` tag when auto-merge is on for that project.
+Wide panels put the tags beside the project name.
+Narrow panels put the tags and task counts below the title line so the name has more space and the tags can wrap.
+Project rows can be expanded to show details (including the delivery mode and `Auto-merge on` or `off`), a project filter (selecting the project's tab in Kanban and filtering lanes in Chains), color choices that replace the automatic color, a folder button, and a removal request.
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
 Folded sections, lanes, and cards, collapsed columns, the `Independent` drawer state, the `Kanban | Chains` view mode, the selected Kanban project tab, Kanban hidden projects, the dragged Files viewer split width, and project colors, automatic and chosen, are remembered locally (persisted in `localStorage` across closes, reopens, and Herdr restarts; the first open keeps the 1:1 split default).
 Command buttons submit Bearings, Ahoy, Stow, Quiet, Quiet off, AFK, or Update commands to the verified Firstmate terminal; the Scout and Task fields also submit requests there.
@@ -203,7 +206,7 @@ The layout and mods expect Herdr's shipped `workspace-chrome`, `spaces`, `agents
 
 All three mod folders (`fm-board`, `fm-tabs`, `fm-md-viewer`) pass `herdr-app check`.
 
-`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files` button, Files viewer syntax colors, the Held groups, the open decisions with their answer drafts, hiding retained decision options on done cards, the Today strip, NEXT MOVE, card bars, Focus keys, Kanban project focus tabs, per-project visibility filtering, and persistence, Board keyboard navigation/folding/escape, PR links with and without the PR viewer mod, the tab group below the board, the Registered checks section, and `fm-md-viewer` link routing, same-file tab reuse, and read-only Markdown rendering.
+`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files` button, Files viewer syntax colors, the Held groups, the open decisions with their answer drafts, hiding retained decision options on done cards, the Today strip, NEXT MOVE, card bars, Focus keys, Kanban project focus tabs, collapsed Projects row delivery-mode and `Auto-merge` tags, per-project visibility filtering, and persistence, Board keyboard navigation/folding/escape, PR links with and without the PR viewer mod, the tab group below the board, the Registered checks section, and `fm-md-viewer` link routing, same-file tab reuse, and read-only Markdown rendering.
 
 The layout opens with the configured Firstmate home, displays the board and panel controls, and switching spaces restores each space's selected panel.
 

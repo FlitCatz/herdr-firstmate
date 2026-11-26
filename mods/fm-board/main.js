@@ -3843,7 +3843,8 @@ export default class FmBoard extends View {
 
   projectFilterMenu(t) {
     const projects = this.kanbanProjects();
-    const visibleCount = projects.length - this.activeHiddenProjects().length;
+    const hiddenCount = this.activeHiddenProjects().length;
+    const visibleCount = projects.length - hiddenCount;
     const stop = (_e, cx) => cx.stop_propagation();
     const rows = v_flex().id("kanban-projects-list").gap(2).max_h(280).min_h(0).flex_shrink(1).overflow_y_scroll();
     if (!projects.length) {
@@ -3878,8 +3879,20 @@ export default class FmBoard extends View {
         .child(div().flex_none().font_family(DATA_FONT).text_size(this.fs(10)).text_color(t.dim)
           .child(`${visibleCount}/${projects.length} visible`)))
       .child(rows)
-      .child(div().pt(4).border_t(1).border_color(t.border).text_size(this.fs(10)).text_color(t.dim)
-        .child("Applies to All. Cards without a project tag always stay visible under All."));
+      .child(h_flex().pt(5).gap(8).items_center().border_t(1).border_color(t.border)
+        .child(div().flex_1().min_w(0).text_size(this.fs(10)).text_color(t.dim)
+          .child("Applies to All. Untagged cards stay visible."))
+        .when(hiddenCount > 0, (el) => el.child(
+          div().id("kanban-show-all").flex_none().px(8).py(3).rounded(4).cursor_pointer()
+            .role("button")
+            .bg(t.raised).border(1).border_color(t.border)
+            .text_size(this.fs(11)).font_semibold().text_color(t.foreground)
+            .hover((s) => s.bg(t.hover))
+            .tooltip("Show all hidden projects in All")
+            .on_mouse_down("left", stop)
+            .on_click((_e, cx) => { cx.stop_propagation(); this.showAllProjects(cx); })
+            .child("Show all"),
+        )));
   }
 
   // Horizontal Ledger tab strip above the Kanban columns: All first, then one tab per project with
@@ -3941,40 +3954,6 @@ export default class FmBoard extends View {
     return h_flex().id("kanban-project-tabs-wrap").flex_none().w_full().min_w(0)
       .border_b(1).border_color(t.border)
       .child(track);
-  }
-
-  // Visible indicator directly below the Kanban toolbar whenever viewing All with projects marked
-  // Invisible, naming hidden projects and offering a one-step Show All.
-  hiddenProjectsBar(t) {
-    if (this.kanbanProjectTab) return null;
-    const hidden = this.activeHiddenProjects();
-    if (!hidden.length) return null;
-    const shownChips = hidden.slice(0, 5);
-    const extra = hidden.length - shownChips.length;
-    return h_flex().id("kanban-hidden-bar").flex_none().gap(6).items_center().flex_wrap()
-      .px(8).py(5).rounded(6).bg(t.surface).border(1).border_color(t.border)
-      .child(div().id("kanban-hidden-summary").flex_none().text_size(this.fs(11)).font_semibold().text_color(t.muted)
-        .child(`${hidden.length} hidden ${hidden.length === 1 ? "project" : "projects"}`))
-      .children(shownChips.map((name) => {
-        const tag = this.tags?.get(name) ?? name.slice(0, 3).toUpperCase();
-        return h_flex().id(`kanban-hidden-chip-${name}`).flex_none().gap(5).items_center()
-          .pl(3).pr(6).py(1.5).rounded(4).bg(t.background).border(1).border_color(t.border)
-          .child(div().flex_none().px(4).py(0.5).rounded(3).bg(this.colorOf(name, t)).opacity(0.7)
-            .font_family(DATA_FONT).text_size(this.fs(9.5)).font_semibold().text_color("#ffffff").child(tag))
-          .child(div().flex_none().text_size(this.fs(11)).text_color(t.muted).child(name));
-      }))
-      .when(extra > 0, (el) => el.child(
-        div().id("kanban-hidden-more").flex_none().font_family(DATA_FONT).text_size(this.fs(10.5)).text_color(t.dim)
-          .child(`+${extra} more`),
-      ))
-      .child(div().flex_1().min_w(0))
-      .child(div().id("kanban-show-all").flex_none().px(8).py(2.5).rounded(4).cursor_pointer()
-        .bg(t.raised).border(1).border_color(t.border)
-        .text_size(this.fs(11)).font_semibold().text_color(t.foreground)
-        .hover((s) => s.bg(t.hover))
-        .tooltip("Show all hidden projects in Kanban")
-        .on_click((_e, cx) => { cx.stop_propagation(); this.showAllProjects(cx); })
-        .child("Show All"));
   }
 
   // The top of the task board: the Kanban | Chains view toggle, search field, find icon,
@@ -4326,10 +4305,8 @@ export default class FmBoard extends View {
         .child(div().text_size(this.fs(11)).text_color(t.muted).child(`Filter: ${this.filter}`))
         .child(this.button("filter-clear", "Clear", t, (cx) => { this.filter = null; cx.notify(); })));
     }
-    const hiddenBar = !isChains ? this.hiddenProjectsBar(t) : null;
     root.child(this.frame(v_flex().flex_1().min_h(0).overflow_hidden().gap(6), t)
       .child(this.searchRow(t, matches))
-      .when(Boolean(hiddenBar), (e) => e.child(hiddenBar))
       .when(!isChains, (e) => e.child(this.kanbanProjectTabs(t)))
       .when(this.focusMode && !isChains, (e) => e.child(this.focusHint(t)))
       .when(narrowMod && inspectorShown, (e) => e.child(this.renderCompactInspector(activeComp, t)))

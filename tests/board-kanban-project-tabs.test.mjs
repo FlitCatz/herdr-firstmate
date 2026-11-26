@@ -310,29 +310,33 @@ test("per-project Visible/Invisible filtering is secondary and applied only to A
   b.click("kanban-project-row-maple-workshop");
   assert.ok(!b.drawnCards().includes("maple-preview-screen"), "maple-workshop is hidden under All");
   assert.ok(b.drawnCards().includes("orchard-nav-style"), "orchard-atlas remains visible under All");
-  assert.ok(b.ids.includes("kanban-hidden-bar"), "hidden indicator appears under All");
+  assert.ok(!b.ids.includes("kanban-hidden-bar"), "no standalone hidden-projects row under All");
+  assert.equal(b.text("kanban-projects-badge"), "1 hidden", "Projects button shows hidden count");
+  assert.equal(b.text("kanban-project-state-maple-workshop"), "Invisible");
+  assert.equal(b.text("kanban-show-all"), "Show all", "popover offers one Show all action");
   assert.equal(b.text("kanban-project-tab-maple-workshop"), "MAW 12", "hiding does not zero the tab count");
   assert.equal(b.text("kanban-project-tab-all"), "All 20", "hiding does not change All count");
 
-  // Focusing the hidden project's tab shows ONLY its cards and hides the All-only hidden bar,
-  // while preserving hiddenProjects in storage.
+  // Focusing the hidden project's tab shows ONLY its cards while preserving hiddenProjects in storage.
   b.click("kanban-project-tab-maple-workshop");
   assert.ok(b.drawnCards().includes("maple-preview-screen"), "clicking a hidden project's tab shows its cards");
   assert.ok(!b.drawnCards().includes("orchard-nav-style"));
-  assert.ok(!b.ids.includes("kanban-hidden-bar"), "hidden-projects bar is limited to All");
+  assert.ok(!b.ids.includes("kanban-hidden-bar"), "no standalone hidden-projects row on project tab");
   assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), ["maple-workshop"], "tab selection never resets hiddenProjects");
 
   // Returning to All restores multi-project view WITH saved hide preferences still applied.
   b.click("kanban-project-tab-all");
   assert.ok(!b.drawnCards().includes("maple-preview-screen"), "maple-workshop stays hidden on return to All");
   assert.ok(b.drawnCards().includes("orchard-nav-style"));
-  assert.ok(b.ids.includes("kanban-hidden-bar"), "hidden indicator returns under All");
-  assert.equal(b.text("kanban-show-all"), "Show All");
+  assert.equal(b.text("kanban-projects-badge"), "1 hidden");
+  assert.equal(b.text("kanban-show-all"), "Show all");
 
-  // Existing Show All action still clears hiddenProjects under All.
+  // Show all inside the Projects popover clears hiddenProjects and restores visibility under All.
   b.click("kanban-show-all");
   assert.ok(b.drawnCards().includes("maple-preview-screen"));
-  assert.ok(!b.ids.includes("kanban-hidden-bar"));
+  assert.ok(!b.ids.includes("kanban-projects-badge"));
+  assert.ok(!b.ids.includes("kanban-show-all"));
+  assert.equal(b.text("kanban-project-state-maple-workshop"), "Visible");
   assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), []);
 });
 
@@ -623,23 +627,32 @@ test("Show on board in Chains keeps filtering Chains without changing the Kanban
   assert.ok(!b.drawnCards().includes("maple-preview-screen"), "Chains Independent drawer follows the Chains filter");
 });
 
-test("under All with a hidden project, the hidden-projects row sits directly below the toolbar and project tabs sit directly above the columns", async () => {
+test("there is no standalone hidden-projects row; project tabs sit directly above columns and one Show all lives in the Projects popover", async () => {
   const store = memoryStore({ hiddenProjects: JSON.stringify(["maple-workshop"]) });
-  const b = await mountBoard({ store });
+  const b = await mountBoard({ store, ui: { projectMenu: true } });
+
+  assert.ok(!b.ids.includes("kanban-hidden-bar"), "standalone hidden-projects row is removed");
+  assert.equal(b.text("kanban-projects-badge"), "1 hidden", "Projects button retains hidden count");
+  assert.equal(b.text("kanban-project-state-maple-workshop"), "Invisible");
+  assert.equal(b.text("kanban-project-state-orchard-atlas"), "Visible");
 
   const searchIdx = b.ids.indexOf("kanban-search");
-  const hiddenIdx = b.ids.indexOf("kanban-hidden-bar");
   const tabsIdx = b.ids.indexOf("kanban-project-tabs-wrap");
   const boardIdx = b.ids.indexOf("board");
-  assert.ok(searchIdx >= 0 && hiddenIdx >= 0 && tabsIdx >= 0 && boardIdx >= 0,
-    "toolbar, hidden-projects row, project tab strip, and Kanban columns all render under All with a hidden project");
-  assert.ok(searchIdx < hiddenIdx, "hidden-projects row sits below the toolbar");
-  assert.ok(hiddenIdx < tabsIdx, "hidden-projects row sits above the project tab strip");
-  assert.ok(tabsIdx < boardIdx, "project tab strip sits directly above the Kanban columns");
+  assert.ok(searchIdx >= 0 && tabsIdx >= 0 && boardIdx >= 0);
+  assert.ok(searchIdx < tabsIdx && tabsIdx < boardIdx, "project tab strip sits directly between toolbar and Kanban columns");
 
-  // Switching to a project tab hides the All-only hidden row while keeping the project tabs above the columns.
-  b.click("kanban-project-tab-maple-workshop");
-  assert.ok(!b.ids.includes("kanban-hidden-bar"));
-  assert.ok(b.ids.indexOf("kanban-search") < b.ids.indexOf("kanban-project-tabs-wrap"));
-  assert.ok(b.ids.indexOf("kanban-project-tabs-wrap") < b.ids.indexOf("board"));
+  // Exactly one Show all button inside the popover restores visibility without changing selected project tab.
+  const menu = b.item("kanban-projects-menu");
+  assert.ok(menu, "Projects popover menu is open");
+  assert.equal(b.ids.filter((id) => b.text(id) === "Show all").length, 1, "exactly one Show all action");
+  assert.ok(b.ids.indexOf("kanban-show-all") > b.ids.indexOf("kanban-projects-menu"), "Show all lives inside the Projects popover");
+
+  b.click("kanban-project-tab-orchard-atlas");
+  b.click("kanban-show-all");
+  assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), [], "Show all resets hiddenProjects");
+  assert.equal(b.view.kanbanProjectTab, "orchard-atlas", "Show all does not change the selected project tab");
+  assert.equal(b.text("kanban-project-state-maple-workshop"), "Visible");
+  assert.ok(!b.ids.includes("kanban-projects-badge"));
+  assert.ok(!b.ids.includes("kanban-show-all"));
 });

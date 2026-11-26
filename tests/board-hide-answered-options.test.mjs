@@ -241,8 +241,9 @@ test("done cards with retained hold_reason options stay visible without choices,
   assert.ok(!b.ids.includes("group-promo-scope"));
   assert.deepEqual(b.ids.filter((x) => x.startsWith("opt-group:promo-scope-")), []);
 
-  // Pending held cards and NEXT MOVE remain unaffected.
+  // Pending held cards and the live in-flight decision remain available.
   assert.ok(b.ids.includes("opt-card:maple-icon-set-A"));
+  assert.match(b.text("next-move-card"), /orchard-nav-style/);
   assert.ok(b.ids.includes("next-opt-A"));
 
   // Underlying backlog history in the snapshot is untouched.

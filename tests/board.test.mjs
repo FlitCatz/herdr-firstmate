@@ -2868,57 +2868,78 @@ test("the Today strip counts what landed today, what waits on the captain, what 
   assert.match(old.text("today-done"), /^Done today 0/);
 });
 
-test("NEXT MOVE shows the longest-waiting hold to answer now, and its options make the Held card's drafts", async () => {
-  // With equal filing dates the backlog order decides: the icon set comes first.
-  const b = await board();
-  assert.match(b.text("next-move"), /maple-icon-set .*Next move, 1 of 3 Choose an icon style/);
-  // The first line names the card the decision comes from: its tag, id, and title.
-  const title = b.view.cards.find((c) => c.id === "maple-icon-set").title;
-  assert.equal(b.text("next-move-card"), `${b.view.tags.get("maple-workshop")} maple-icon-set ${title}`);
-  b.click("next-opt-A");
+test("NEXT MOVE shows an in-flight open decision ahead of queued holds and drafts an answer to its key", async () => {
+  const b = await board({ snapshot: changedSnapshot((s) => {
+    const nav = s.tasks.find((t) => t.id === "orchard-nav-style");
+    nav.hints.last_event_text = "resolved [key=old-check]: The older check finished";
+  }) });
+  assert.match(b.text("today-waiting"), /^Waiting on you 3 oldest \d+d$/);
+  assert.match(b.text("hold-now"), /^Answer now 3 /);
+  assert.ok(b.ids.includes("card-maple-icon-set"));
+  assert.match(b.text("next-move-card"), /orchard-nav-style/);
+  assert.match(b.text("next-move"), /Next move, 1 of 3/);
+  assert.equal(b.text("next-move-question"), "Pick the navigation style");
+  b.click("next-opt-B");
   b.click("next-write");
-  assert.deepEqual(b.drafts, ["[Board answer] maple-icon-set: A (Rounded)", "[Board answer] maple-icon-set:"]);
-  // A stamped hold that has waited longest wins, and a topic's answer covers every hold sharing it.
-  const stamped = await board({ snapshot: changedSnapshot((s) => { record(s, "maple-empty-state").hold_set = "2026-11-01T08:00:00Z"; }) });
-  assert.match(stamped.text("next-move"), /maple-empty-state .*Choose the preview style/);
-  stamped.click("next-opt-B");
-  assert.deepEqual(stamped.drafts, ["[Board answer] maple-tour-sketch, maple-empty-state: B (Bright)"]);
+  assert.deepEqual(b.drafts, [
+    "[Board answer] orchard-nav-style [key=nav-style]: B (Top bar)",
+    "[Board answer] orchard-nav-style [key=nav-style]:",
+  ]);
+});
+
+test("NEXT MOVE hides when the only remaining holds are queued or the in-flight decisions are closed or terminal", async () => {
+  const b = await board({ snapshot: changedSnapshot((s) => {
+    const labels = s.tasks.find((t) => t.id === "maple-button-labels");
+    const nav = s.tasks.find((t) => t.id === "orchard-nav-style");
+    nav.hints.open_decisions = nav.hints.open_decisions.filter((d) => d.verb === "blocked");
+    nav.hints.pending_decision = false;
+    // Historical text from a resolved gate can still look like a decision request.
+    nav.hints.last_event_text = "needs-decision [key=nav-style]: Pick the navigation style";
+    // Task metadata can outlast the current backlog state. A matching decision is insufficient.
+    record(s, "maple-button-labels").state = "queued";
+    const preview = s.tasks.find((t) => t.id === "maple-preview-screen");
+    preview.current_state.state = "done";
+    preview.hints.open_decisions = labels.hints.open_decisions;
+  }) });
+  assert.match(b.text("today-waiting"), /^Waiting on you 3 oldest \d+d$/);
+  assert.match(b.text("hold-now"), /^Answer now 3 /);
+  assert.ok(b.ids.includes("card-maple-icon-set"));
+  assert.ok(!b.ids.includes("next-move"));
+});
+
+test("NEXT MOVE keeps its card reference, Held color, and recommended option styling", async () => {
   // A plain Ledger frame, not an inverted band: the background, a bar in the held color, and the
   // recommended option as the one primary (solid) button among raised ones.
   const theme = { background: "#fefefe", solid: "#000000", raised: "#eeeeee", blocked: "#c93c2c", accent: "#1f62d0" };
   const styled = await board({ theme });
+  assert.equal(styled.text("next-move-card"),
+    `${styled.view.tags.get("orchard-atlas")} orchard-nav-style Rework the map navigation`);
   const fill = (id) => styled.items.find((x) => x.id === id).calls.find((c) => c[0] === "bg")[1];
   assert.equal(fill("next-move"), theme.background);
   assert.equal(fill("next-move-bar"), theme.blocked);
   assert.equal(fill("next-opt-A"), theme.solid);
   assert.equal(fill("next-opt-B"), theme.raised);
   assert.equal(fill("next-write"), theme.raised);
-  // No hold to answer now, no banner.
+  // In-flight decisions still appear without Held calls.
   const none = await board({ snapshot: changedSnapshot((s) => {
     for (const id of ["maple-icon-set", "maple-tour-sketch", "maple-empty-state"]) record(s, id).hold_bucket = "aged";
   }) });
-  assert.ok(!none.ids.includes("next-move"));
+  assert.ok(none.ids.includes("next-move"));
   assert.match(none.text("today-waiting"), /^Waiting on you 0/);
 });
 
-test("for a topic whose oldest hold lists no options, NEXT MOVE and Focus Enter answer with the topic's options", async () => {
+test("for a topic whose oldest hold lists no options, Focus Enter answers with the topic's options", async () => {
   // The oldest preview-style hold only points at its sibling, which carries the question and options.
   const snapshot = changedSnapshot((s) => {
     record(s, "maple-tour-sketch").hold_reason = "[topic=preview-style] Same call as the empty state";
     record(s, "maple-tour-sketch").hold_set = "2026-11-01T08:00:00Z";
   });
   const b = await board({ snapshot });
-  assert.match(b.text("next-move-card"), /maple-tour-sketch/);
-  assert.equal(b.text("next-move-question"), "Choose the preview style");
-  assert.ok(b.ids.includes("next-opt-A") && b.ids.includes("next-opt-B"));
   assert.match(b.text("group-preview-style"), /Choose the preview style/);
-  b.click("next-opt-A");
+  b.click("focus-toggle");
+  assert.equal(b.view.focusId, "maple-tour-sketch");
+  b.keyDown("root", "enter");
   assert.deepEqual(b.drafts, ["[Board answer] maple-tour-sketch, maple-empty-state: A (Soft)"]);
-  const f = await board({ snapshot });
-  f.click("focus-toggle");
-  assert.equal(f.view.focusId, "maple-tour-sketch");
-  f.keyDown("root", "enter");
-  assert.deepEqual(f.drafts, ["[Board answer] maple-tour-sketch, maple-empty-state: A (Soft)"]);
 });
 
 test("every card carries a left bar in its column's status color, and a hold to answer now shows its wait", async () => {
@@ -3055,37 +3076,37 @@ test("below the board one tab strip holds Commands, Projects with its unhandled 
 test("the NEXT MOVE card line brings its card into view and rings it in the held color, apart from the hover accent", async () => {
   const theme = { accent: "#1f62d0", blocked: "#c93c2c", border: "#dddddd" };
   const b = await board({ theme, store: memoryStore(), ui: { viewMode: "chains" } });
-  b.view.folded.add("card:maple-icon-set");
-  b.view.collapsed.add("held");
+  b.view.folded.add("card:orchard-nav-style");
+  b.view.collapsed.add("parked");
   b.redraw();
   b.click("next-move-card");
-  assert.equal(b.view.viewMode, "kanban", "the Held card lives on Kanban");
+  assert.equal(b.view.viewMode, "kanban", "the card is revealed on Kanban");
   const ring = (id) => {
     const calls = b.items.find((x) => x.id === id).calls;
     return { color: calls.findLast((c) => c[0] === "border_color")[1], width: calls.findLast((c) => c[0] === "border")[1] };
   };
   // The pointed card wears the NEXT MOVE band's held color, not the accent hover and selection use.
-  assert.deepEqual(ring("card-maple-icon-set"), { color: theme.blocked, width: 2 });
+  assert.deepEqual(ring("card-orchard-nav-style"), { color: theme.blocked, width: 2 });
   b.hover("card-maple-theme-tokens");
   assert.deepEqual(ring("card-maple-theme-tokens"), { color: theme.accent, width: 1 }, "hovering a chain card keeps the accent");
-  assert.equal(ring("card-maple-icon-set").color, theme.blocked);
+  assert.equal(ring("card-orchard-nav-style").color, theme.blocked);
   b.hover("card-maple-theme-tokens", false);
-  assert.ok(b.ids.includes("age-maple-icon-set") || b.ids.includes("tag-maple-icon-set"), "the folded card and column show open");
-  assert.ok(b.scrollsOn("list-held").length > 0, "the Held list scrolls to it");
+  assert.ok(b.ids.includes("open-orchard-nav-style-0"), "the folded card and column show open");
+  assert.ok(b.scrollsOn("list-parked").length > 0, "the Parked list scrolls to it");
   assert.ok(b.focusedOn("root"));
   // The ring clears by itself after a few seconds; an older timer leaves a newer point alone.
   const first = b.timers.at(-1);
   assert.equal(first.ms, 4000);
   b.click("next-move-card");
   first.fn({ notify() {} });
-  assert.equal(b.redraw() && ring("card-maple-icon-set").color, theme.blocked);
+  assert.equal(b.redraw() && ring("card-orchard-nav-style").color, theme.blocked);
   b.timers.at(-1).fn({ notify() {} });
   b.redraw();
-  assert.deepEqual(ring("card-maple-icon-set"), { color: theme.border, width: 1 });
+  assert.deepEqual(ring("card-orchard-nav-style"), { color: theme.border, width: 1 });
   // Escape clears it sooner.
   b.click("next-move-card");
   b.keyDown("root", "escape");
-  assert.deepEqual(ring("card-maple-icon-set"), { color: theme.border, width: 1 });
+  assert.deepEqual(ring("card-orchard-nav-style"), { color: theme.border, width: 1 });
 });
 
 test("Parked has its own status color, apart from Held, Blocked, Working, and Review", async () => {

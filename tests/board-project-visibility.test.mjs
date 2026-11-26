@@ -356,12 +356,14 @@ test("Kanban project visibility does not alter Chains, Today strip, NEXT MOVE, P
   assert.equal(b.text("next-move"), baselineNextMove, "NEXT MOVE hold selection and copy remain unchanged");
 
   // Clicking NEXT MOVE temporarily points at the card without mutating persisted hiddenProjects.
+  b.click("kanban-project-row-orchard-atlas");
   b.click("next-move-card");
-  assert.ok(b.drawnCards().includes("maple-icon-set"), "NEXT MOVE click still reveals its pointed card");
-  assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), ["maple-workshop"], "persisted hiddenProjects stays unchanged");
+  assert.ok(b.drawnCards().includes("orchard-nav-style"), "NEXT MOVE click still reveals its pointed card");
+  assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), ["maple-workshop", "orchard-atlas"], "persisted hiddenProjects stays unchanged");
   b.view.pointedId = null;
   b.redraw();
-  assert.ok(!b.drawnCards().includes("maple-icon-set"), "card hides again once NEXT MOVE ring clears");
+  assert.ok(!b.drawnCards().includes("orchard-nav-style"), "card hides again once NEXT MOVE ring clears");
+  b.click("kanban-project-row-orchard-atlas");
 
   // Switching to Chains shows no Kanban visibility controls and leaves Chains + Independent unfiltered.
   b.click("view-mode-chains");

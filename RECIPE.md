@@ -82,7 +82,7 @@ Clicking an option of a held decision puts `[Board answer] <ids>: <label> (<opti
 The Ask icon inserts `` `[Board card] <ids>: <title or group question>` `` followed by one space for questions about the task; backticks inside the title or group question are inserted as single quotes so they cannot close the code span early.
 Clicking an open decision's text puts `[Board answer] <id> [key=<key>]: ` there, and clicking one of its options puts `[Board answer] <id> [key=<key>]: <label> (<option text>) `; the key names that one decision, so Firstmate can close it with `fm-send.sh --resolve-key <key>` even when the card has several.
 All these drafts stay on one line with a trailing space, and the input receives focus so you can keep typing.
-Held cards without options use the chat input for free-text answers; a hold's options outside the Held column are shown as plain text.
+Held cards without options use the chat input for free-text answers; decision choices and their answer buttons appear only while a card is actively held and not done, so done or released cards hide retained historical hold options without modifying the backlog record.
 The NEXT MOVE band's options put the same drafts in the chat input as the Held card's options, covering every hold to answer now that shares its topic. Its options are the board's ordinary raised buttons, with the recommended one as the solid primary button, and `Write answer` starts a free-text draft.
 In Kanban, the toolbar's `Focus` button (or `f` while the Board itself has the keyboard) turns Focus on and off.
 Focus dims everything except the captain's calls (holds to answer now and failed workers) and rings the selected call in the held (blocked) color, starting with the NEXT MOVE card. A key row under the search field lists its keys.
@@ -203,7 +203,7 @@ The layout and mods expect Herdr's shipped `workspace-chrome`, `spaces`, `agents
 
 All three mod folders (`fm-board`, `fm-tabs`, `fm-md-viewer`) pass `herdr-app check`.
 
-`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files` button, Files viewer syntax colors, the Held groups, the open decisions with their answer drafts, the Today strip, NEXT MOVE, card bars, Focus keys, Kanban project focus tabs, per-project visibility filtering, and persistence, Board keyboard navigation/folding/escape, PR links with and without the PR viewer mod, the tab group below the board, the Registered checks section, and `fm-md-viewer` link routing, same-file tab reuse, and read-only Markdown rendering.
+`node --test tests/` passes: it draws the board outside Herdr from `tests/fixtures/snapshot.json`, a fictional snapshot in the shape `fm-fleet-snapshot.sh` prints, and checks the `Files` button, Files viewer syntax colors, the Held groups, the open decisions with their answer drafts, hiding retained decision options on done or released cards, the Today strip, NEXT MOVE, card bars, Focus keys, Kanban project focus tabs, per-project visibility filtering, and persistence, Board keyboard navigation/folding/escape, PR links with and without the PR viewer mod, the tab group below the board, the Registered checks section, and `fm-md-viewer` link routing, same-file tab reuse, and read-only Markdown rendering.
 
 The layout opens with the configured Firstmate home, displays the board and panel controls, and switching spaces restores each space's selected panel.
 

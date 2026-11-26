@@ -207,38 +207,36 @@ test("marking a project Invisible hides its Kanban cards, shows a clear indicato
   for (const id of initialMaple) assert.ok(!afterHide.includes(id), `hidden maple-workshop card ${id} is removed from Kanban`);
   assert.ok(afterHide.includes("orchard-nav-style"), "visible orchard-atlas cards stay in Kanban");
 
-  // Clear hidden-project indicator and toolbar badge appear with a one-step Show All control.
+  // Toolbar hidden-count badge and a single Show all control inside the popover appear (no standalone hidden row).
   assert.equal(b.text("kanban-projects-badge"), "1 hidden");
-  assert.ok(b.ids.includes("kanban-hidden-bar"), "hidden-project indicator is visible");
-  assert.match(b.text("kanban-hidden-bar"), /1 hidden project/);
-  assert.ok(b.ids.includes("kanban-hidden-chip-maple-workshop"), "hidden project chip names maple-workshop");
-  assert.equal(b.text("kanban-show-all"), "Show All");
+  assert.ok(!b.ids.includes("kanban-hidden-bar"), "no standalone hidden-projects row");
+  assert.equal(b.text("kanban-show-all"), "Show all");
 
   // Toggle maple-workshop back to Visible from the menu row.
   b.click("kanban-project-row-maple-workshop");
   assert.equal(b.text("kanban-project-state-maple-workshop"), "Visible");
   assert.ok(b.drawnCards().includes("maple-preview-screen"), "maple-workshop cards return when marked Visible");
-  assert.ok(!b.ids.includes("kanban-hidden-bar"), "hidden indicator disappears when all projects are visible");
+  assert.ok(!b.ids.includes("kanban-projects-badge"), "toolbar hidden badge clears when all projects are visible");
+  assert.ok(!b.ids.includes("kanban-show-all"), "Show all hides when no project is hidden");
 
-  // Hide both projects, then restore all in one step via Show All.
+  // Hide both projects, then restore all in one step via Show all inside the popover.
   b.click("kanban-project-row-maple-workshop");
   b.click("kanban-project-row-orchard-atlas");
   assert.equal(b.text("kanban-projects-badge"), "2 hidden");
-  assert.match(b.text("kanban-hidden-bar"), /2 hidden projects/);
   assert.deepEqual(b.drawnCards(), [], "all tagged project cards are hidden");
 
   b.click("kanban-show-all");
-  assert.ok(!b.ids.includes("kanban-hidden-bar"), "Show All clears the hidden indicator");
-  assert.ok(!b.ids.includes("kanban-projects-badge"), "Show All clears the toolbar hidden badge");
+  assert.ok(!b.ids.includes("kanban-hidden-bar"), "no standalone hidden row");
+  assert.ok(!b.ids.includes("kanban-projects-badge"), "Show all clears the toolbar hidden badge");
+  assert.ok(!b.ids.includes("kanban-show-all"), "Show all disappears once every project is visible");
   assert.equal(b.text("kanban-project-state-maple-workshop"), "Visible");
   assert.equal(b.text("kanban-project-state-orchard-atlas"), "Visible");
   assert.ok(b.drawnCards().includes("maple-preview-screen"));
   assert.ok(b.drawnCards().includes("orchard-nav-style"));
 
-  // Hidden chips only name projects, the menu has no second Show All, and card tags are not overloaded.
+  // Exactly one Show all control exists when hidden, and card tags are not overloaded.
   b.click("kanban-project-row-maple-workshop");
-  assert.equal(b.items.find((x) => x.id === "kanban-hidden-chip-maple-workshop")?.click ?? null, null, "hidden chip is informational");
-  assert.equal(b.ids.filter((id) => b.text(id) === "Show All").length, 1, "exactly one Show All control");
+  assert.equal(b.ids.filter((id) => b.text(id) === "Show all").length, 1, "exactly one Show all control");
   assert.equal(b.items.find((x) => x.id === "tag-maple-preview-screen")?.click ?? null, null, "card tag badge has no overloaded click handler");
 });
 
@@ -253,26 +251,28 @@ test("project visibility persists across Board reloads, fresh Board mounts (rest
   await first.reload();
   assert.ok(!first.drawnCards().includes("maple-preview-screen"), "maple-workshop remains hidden after Board reload");
   assert.ok(first.drawnCards().includes("orchard-nav-style"), "orchard-atlas remains visible after Board reload");
-  assert.ok(first.ids.includes("kanban-hidden-bar"), "hidden indicator remains visible after Board reload");
+  assert.equal(first.text("kanban-projects-badge"), "1 hidden");
+  assert.ok(!first.ids.includes("kanban-hidden-bar"), "no standalone hidden row");
 
   // Retained across a fresh Board instance sharing storage (Herdr restart).
-  const restarted = await mountBoard({ store });
+  const restarted = await mountBoard({ store, ui: { projectMenu: true } });
   assert.ok(!restarted.drawnCards().includes("maple-preview-screen"), "maple-workshop remains hidden after restart");
   assert.ok(restarted.drawnCards().includes("orchard-nav-style"), "orchard-atlas remains visible after restart");
   assert.equal(restarted.text("kanban-projects-badge"), "1 hidden");
-  assert.ok(restarted.ids.includes("kanban-hidden-chip-maple-workshop"));
+  assert.equal(restarted.text("kanban-project-state-maple-workshop"), "Invisible");
+  assert.equal(restarted.text("kanban-show-all"), "Show all");
 
-  // Show All persists the cleared state so the next restart starts with all projects visible.
+  // Show all inside the popover persists the cleared state so the next restart starts with all projects visible.
   restarted.click("kanban-show-all");
   assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), []);
   const afterShowAll = await mountBoard({ store });
   assert.ok(afterShowAll.drawnCards().includes("maple-preview-screen"));
-  assert.ok(!afterShowAll.ids.includes("kanban-hidden-bar"));
+  assert.ok(!afterShowAll.ids.includes("kanban-projects-badge"));
 
   // Corrupted or non-canonical storage entries fail safe without throwing.
   const corrupt = await mountBoard({ store: memoryStore({ hiddenProjects: "{not-json" }) });
   assert.ok(corrupt.drawnCards().includes("maple-preview-screen"));
-  assert.ok(!corrupt.ids.includes("kanban-hidden-bar"));
+  assert.ok(!corrupt.ids.includes("kanban-projects-badge"));
 
   const mixed = await mountBoard({
     store: memoryStore({ hiddenProjects: JSON.stringify(["/path/to/maple-workshop", "-", "", 42, null]) }),
@@ -373,10 +373,11 @@ test("Kanban project visibility does not alter Chains, Today strip, NEXT MOVE, P
   b.click("head-independent");
   assert.ok(b.drawnCards().includes("maple-preview-screen"), "Chains Independent drawer still draws maple-workshop cards");
 
-  // Switching back to Kanban restores the hidden filter and indicator.
+  // Switching back to Kanban restores the hidden filter and toolbar badge.
   b.click("view-mode-kanban");
   assert.ok(!b.drawnCards().includes("maple-preview-screen"));
-  assert.ok(b.ids.includes("kanban-hidden-bar"));
+  assert.equal(b.text("kanban-projects-badge"), "1 hidden");
+  assert.ok(!b.ids.includes("kanban-hidden-bar"));
 
   // Projects and Commands bottom tabs still include maple-workshop untouched.
   b.click("bottom-tab-projects");
@@ -388,19 +389,22 @@ test("Kanban project visibility does not alter Chains, Today strip, NEXT MOVE, P
   assert.equal(JSON.stringify(snapshotCopy), beforeJson, "backlog snapshot data is untouched");
 });
 
-test("more than 5 hidden projects summarize overflow cleanly and Show All + Escape work", async () => {
+test("many hidden projects report count on the Projects button and Show all + Escape work in the popover", async () => {
   const manyProjects = ["alpha-one", "bravo-two", "charlie-three", "delta-four", "echo-five", "foxtrot-six", "golf-seven"];
   const store = memoryStore({ hiddenProjects: JSON.stringify(manyProjects) });
   const b = await mountBoard({ projects: manyProjects, store, ui: { projectMenu: true } });
 
   assert.equal(b.text("kanban-projects-badge"), "7 hidden");
-  assert.match(b.text("kanban-hidden-summary"), /7 hidden projects/);
-  assert.equal(b.text("kanban-hidden-more"), "+2 more");
-  assert.equal(b.ids.filter((id) => id.startsWith("kanban-hidden-chip-")).length, 5);
+  assert.ok(!b.ids.includes("kanban-hidden-bar"), "no standalone hidden-projects row");
+  assert.equal(b.text("kanban-show-all"), "Show all");
+  assert.equal(b.text("kanban-project-state-alpha-one"), "Invisible");
+  assert.equal(b.text("kanban-project-state-golf-seven"), "Invisible");
 
-  // The indicator's Show All clears all 7 in one step.
+  // The popover's Show all clears all 7 in one step.
   b.click("kanban-show-all");
-  assert.ok(!b.ids.includes("kanban-hidden-bar"));
+  assert.ok(!b.ids.includes("kanban-projects-badge"));
+  assert.ok(!b.ids.includes("kanban-show-all"));
+  assert.equal(b.text("kanban-project-state-alpha-one"), "Visible");
   assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), []);
 
   // Pressing Escape inside the open menu closes it.
@@ -436,7 +440,8 @@ test("an explicit Inspector click shows a card of an Invisible project only whil
   assert.equal(b.text("hl-maple-theme-tokens"), "Selected", "the revealed card is highlighted as Selected");
   assert.ok(b.scrolled.length > 0, "the board scrolls to the revealed card");
   assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), ["maple-workshop"], "saved visibility is unchanged");
-  assert.ok(b.ids.includes("kanban-hidden-bar"), "the hidden-project indicator stays");
+  assert.equal(b.text("kanban-projects-badge"), "1 hidden", "the Projects button hidden count stays");
+  assert.ok(!b.ids.includes("kanban-hidden-bar"), "no standalone hidden-projects row");
 
   // The reveal is temporary: once its ring timer fires, the card hides again.
   const ring = b.timers.findLast((x) => x.ms === 4000);

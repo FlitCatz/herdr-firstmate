@@ -1,5 +1,5 @@
-// Regression tests ensuring Kanban hides decision choices and answer buttons on done or released
-// cards even when historical hold_reason / hold_kind metadata remains intact in the backlog record.
+// Regression tests ensuring Kanban hides decision choices and answer buttons on done cards even when
+// historical hold_reason / hold_kind metadata remains intact in the backlog record.
 // Run with: node --test tests/board-hide-answered-options.test.mjs
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -249,113 +249,94 @@ test("done cards with retained hold_reason options stay visible without choices,
   assert.equal(JSON.stringify([doneStandalone, doneTopic, doneNoKind]), beforeHistory);
 });
 
-test("released decisions with retained options hide choices in both in-flight and queued states", async () => {
+test("released holds stay unanswerable while pending holds keep their choices in and out of Held", async () => {
   const snap = cloneSnapshot();
   const baseDone = makeDoneTemplate(snap);
   const workerTemplate = structuredClone(snap.tasks.find((t) => t.id === "maple-preview-screen"));
-
-  // 1. Released into active in-flight work (working) while hold_reason still retains options.
-  snap.backlog.records.push({
-    ...baseDone,
-    id: "maple-released-working",
-    title: "Roll out preview banner",
-    repo: "maple-workshop",
-    kind: "ship",
-    state: "in_flight",
-    checked: false,
-    done: null,
-    current_role: "worker",
-    completion: { date: null, verb: null },
-    hold_kind: "captain",
-    hold_reason: "Pick rollout flow | A: Staged | B: Direct | Recommended: A",
-    hold_bucket: null,
-    captain_actionable: false,
-    order: 93,
-  });
-  snap.tasks.push({
+  const working = (id, detail) => ({
     ...workerTemplate,
-    id: "maple-released-working",
-    current_state: { state: "working", source: "pane", detail: "implementing rollout", raw: "state: working", observed_at: "2026-11-11T05:00:00Z", freshness: "fresh" },
-    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: "working: implementing rollout" },
+    id,
+    current_state: { state: "working", source: "pane", detail, raw: "state: working", observed_at: "2026-11-11T05:00:00Z", freshness: "fresh" },
+    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: `working: ${detail}` },
   });
+  const pending = { checked: false, done: null, completion: { date: null, verb: null } };
 
-  // 2. Released into paused work with retained topic options; paused Waiting for line must still show.
-  snap.backlog.records.push({
-    ...baseDone,
-    id: "maple-released-paused",
-    title: "Await nightly check",
-    repo: "maple-workshop",
-    kind: "ship",
-    state: "in_flight",
-    checked: false,
-    done: null,
-    current_role: "worker",
-    completion: { date: null, verb: null },
-    hold_kind: "captain",
-    hold_reason: "[topic=rollout-paused] Pick cadence | A: Hourly | B: Daily | Recommended: B",
-    hold_bucket: null,
-    captain_actionable: false,
-    order: 94,
-  });
-  snap.tasks.push({
-    ...workerTemplate,
-    id: "maple-released-paused",
-    current_state: { state: "paused", source: "pane", detail: "paused", raw: "state: paused", observed_at: "2026-11-11T05:00:00Z", freshness: "fresh" },
-    hints: { pending_decision: false, blocked_event: false, open_decisions: [], scout_report_present: false, last_event_text: "paused [at=1794373645]: waiting for nightly mirror" },
-  });
-
-  // 3. Explicitly released queued records (held: false and held: "no") with retained options.
+  // `tasks-axi unhold` removes the hold text, so a released record carries no hold_reason or hold_kind.
   snap.backlog.records.push(
     {
-      ...baseDone,
-      id: "maple-released-queued-bool",
+      ...baseDone, ...pending,
+      id: "maple-released-queued",
       title: "Ship palette release",
       repo: "maple-workshop",
       kind: "ship",
       state: "queued",
-      checked: false,
-      done: null,
       current_role: "queued",
-      completion: { date: null, verb: null },
-      held: false,
-      hold_kind: "captain",
-      hold_reason: "Pick palette mode | A: Warm | B: Cool | Recommended: A",
+      hold_kind: null,
+      hold_reason: null,
       hold_bucket: null,
       captain_actionable: false,
-      order: 95,
+      order: 93,
     },
     {
-      ...baseDone,
-      id: "maple-released-queued-str",
-      title: "Ship layout polish",
-      repo: "orchard-atlas",
+      ...baseDone, ...pending,
+      id: "maple-released-working",
+      title: "Roll out preview banner",
+      repo: "maple-workshop",
       kind: "ship",
-      state: "queued",
-      checked: false,
-      done: null,
-      current_role: "queued",
-      completion: { date: null, verb: null },
-      held: "no",
-      hold_kind: "captain",
-      hold_reason: "[topic=layout-polish] Pick density | A: Airy | B: Tight | Recommended: A",
+      state: "in_flight",
+      current_role: "worker",
+      hold_kind: null,
+      hold_reason: null,
       hold_bucket: null,
       captain_actionable: false,
-      order: 96,
+      order: 94,
     },
   );
+  snap.tasks.push(working("maple-released-working", "implementing rollout"));
 
-  // 4. Todo (hold_kind: "future") card with option-formatted hold_reason keeps its note without choices.
+  // A deferral whose date has passed keeps its hold text and remains answerable.
   snap.backlog.records.push({
-    ...baseDone,
+    ...baseDone, ...pending,
+    id: "orchard-expired-deferral",
+    title: "Pick the tile cache size",
+    repo: "orchard-atlas",
+    kind: "captain",
+    state: "queued",
+    current_role: "queued",
+    hold_kind: "captain",
+    hold_reason: "Pick the tile cache size | A: Small | B: Large | Recommended: B",
+    hold_bucket: "live",
+    hold_until: "2026-11-01",
+    captain_actionable: true,
+    order: 95,
+  });
+
+  // The captain can hold a task already in flight: it keeps its hold text in In flight.
+  snap.backlog.records.push({
+    ...baseDone, ...pending,
+    id: "maple-held-in-flight",
+    title: "Tune preview spacing",
+    repo: "maple-workshop",
+    kind: "ship",
+    state: "in_flight",
+    current_role: "held",
+    hold_kind: "captain",
+    hold_reason: "Which spacing scale? | A: Four point | B: Eight point | Recommended: B",
+    hold_bucket: "live",
+    captain_actionable: true,
+    order: 96,
+  });
+  snap.tasks.push(working("maple-held-in-flight", "adjusting spacing"));
+
+  // Set-aside Todo work keeps its options as plain text until it is brought back.
+  snap.backlog.records.push({
+    ...baseDone, ...pending,
     id: "maple-future-options",
     title: "Revisit onboarding copy",
     repo: "maple-workshop",
     kind: "ship",
     state: "queued",
-    checked: false,
-    done: null,
     current_role: "queued",
-    completion: { date: null, verb: null },
     hold_kind: "future",
     hold_reason: "Revisit tone later | A: Brief | B: Detailed | Recommended: A",
     hold_bucket: null,
@@ -364,37 +345,30 @@ test("released decisions with retained options hide choices in both in-flight an
   });
 
   const b = await mountBoard({ snapshot: snap });
+  const option = (id) => b.items.find((x) => x.id === id);
 
-  // Working released card shows worker detail, not stale hold options.
+  assert.equal(b.view.cards.find((c) => c.id === "maple-released-queued").column, "queued");
   assert.equal(b.view.cards.find((c) => c.id === "maple-released-working").column, "working");
-  assert.ok(b.ids.includes("card-maple-released-working"));
-  assert.deepEqual(b.ids.filter((x) => x.startsWith("opt-card:maple-released-working-")), []);
-  assert.match(b.text("card-maple-released-working"), /implementing rollout/);
-  assert.doesNotMatch(b.text("card-maple-released-working"), /Staged|Direct|Recommended:|Pick rollout flow/);
-
-  // Paused released card shows Waiting for line, not stale topic box or options.
-  assert.equal(b.view.cards.find((c) => c.id === "maple-released-paused").column, "paused");
-  assert.ok(!b.ids.includes("group-rollout-paused"));
-  assert.ok(b.ids.includes("waiting-maple-released-paused"));
-  assert.match(b.text("waiting-maple-released-paused"), /waiting for nightly mirror/);
-  assert.doesNotMatch(b.text("card-maple-released-paused"), /Hourly|Daily|Recommended:/);
-
-  // Explicitly released queued cards land in Queued (not Held) without choices or NEXT MOVE impact.
-  for (const id of ["maple-released-queued-bool", "maple-released-queued-str"]) {
-    assert.equal(b.view.cards.find((c) => c.id === id).column, "queued");
+  for (const id of ["maple-released-queued", "maple-released-working"]) {
     assert.ok(b.ids.includes(`card-${id}`));
     assert.deepEqual(b.ids.filter((x) => x.startsWith(`opt-card:${id}-`)), []);
-    assert.doesNotMatch(b.text(`card-${id}`), /Warm|Cool|Airy|Tight|Recommended:/);
   }
-  assert.ok(!b.ids.includes("group-layout-polish"));
+  assert.match(b.text("card-maple-released-working"), /implementing rollout/);
   assert.equal(b.view.waitingHolds().some((c) => c.id.startsWith("maple-released-")), false);
 
-  // Todo future card hides options while plain Todo card keeps its note.
+  assert.equal(b.view.cards.find((c) => c.id === "orchard-expired-deferral").column, "held");
+  b.click("opt-card:orchard-expired-deferral-B");
+  assert.deepEqual(b.drafts, ["[Board answer] orchard-expired-deferral: B (Large)"]);
+
+  assert.equal(b.view.cards.find((c) => c.id === "maple-held-in-flight").column, "working");
+  assert.match(b.text("card-maple-held-in-flight"), /Which spacing scale\?/);
+  assert.match(b.text("card-maple-held-in-flight"), /Four point.*Eight point.*Recommended: B/);
+  assert.equal(option("opt-card:maple-held-in-flight-A")?.click, null);
+
   assert.equal(b.view.cards.find((c) => c.id === "maple-future-options").column, "todo");
-  assert.deepEqual(b.ids.filter((x) => x.startsWith("opt-card:maple-future-options-")), []);
   assert.match(b.text("card-maple-future-options"), /Revisit tone later/);
-  assert.doesNotMatch(b.text("card-maple-future-options"), /Brief|Detailed|Recommended:/);
-  assert.match(b.text("card-maple-welcome-tour"), /Later: after the preview ships/);
+  assert.match(b.text("card-maple-future-options"), /Brief.*Detailed.*Recommended: A/);
+  assert.equal(option("opt-card:maple-future-options-A")?.click, null);
 });
 
 test("a finished task (current_state done) hides both retained hold options and stale open_decisions", async () => {

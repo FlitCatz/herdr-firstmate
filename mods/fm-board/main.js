@@ -492,15 +492,6 @@ function detailPr(detail) {
   return null;
 }
 
-// A backlog record is actively held only while queued, not set aside in Todo ("future"),
-// carrying a hold reason, and not explicitly marked released (held: false / "no").
-function isRecordActivelyHeld(record) {
-  if (!record || record.state !== "queued") return false;
-  if (record.hold_kind === "future") return false;
-  if (record.held === false || record.held === "no") return false;
-  return Boolean(record.hold_reason);
-}
-
 function columnOf(record, task) {
   const state = task?.current_state?.state;
   // No Failed column: Firstmate reports a failure in chat and acts on it, so a failed card waits in Blocked, marked "Failed".
@@ -521,7 +512,7 @@ function columnOf(record, task) {
   if (["blocked", "paused", "parked", "unknown", "working"].includes(state)) return state;
   if (record?.state === "queued") {
     if (record.hold_kind === "future") return "todo";
-    return isRecordActivelyHeld(record) ? "held" : "queued";
+    return record.hold_reason ? "held" : "queued";
   }
   return "unknown"; // in flight with no worker evidence: never show it as healthy
 }
@@ -1164,26 +1155,24 @@ function cardsFrom(snapshot) {
   for (const t of snapshot.tasks ?? []) if (!known.has(t.id)) pairs.push({ record: null, task: t });
   const cards = pairs.map(({ record, task }) => {
     const ownColumn = columnOf(record, task);
-    const activeHold = ownColumn === "held";
+    // A done item's backlog record keeps its last hold text as history, and a finished worker's log
+    // can still list decisions; neither is awaiting an answer, so a done card shows neither.
+    const done = ownColumn === "done";
+    const holdReason = done ? "" : record?.hold_reason || "";
     // Every decision the worker's status log still holds open, in the snapshot's order: newest last.
-    // Done cards do not surface stale open decisions.
-    const openDecisions = ownColumn === "done" ? [] : (task?.hints?.open_decisions ?? []).map((d) => {
+    const openDecisions = done ? [] : (task?.hints?.open_decisions ?? []).map((d) => {
       const summary = String(d?.summary ?? "");
       return { key: String(d?.key ?? ""), verb: String(d?.verb ?? ""), summary, decision: parseDecision(summary) };
     });
-    // Only an actively held, not-done backlog hold has a card-level decision; retained historical
-    // hold_reason metadata on done or released records stays intact in the backlog without showing choices.
-    const decision = activeHold ? parseDecision(record?.hold_reason || "") : null;
-    // Set-aside Todo ("future") items keep their note text without leaking historical option lists.
-    const todoNote = ownColumn === "todo" && record?.hold_reason
-      ? (parseDecision(record.hold_reason)?.question || record.hold_reason) : "";
+    // Only a backlog hold has a card-level decision; open decisions are listed on their own.
+    const decision = parseDecision(holdReason);
     // A hold's question is the card's detail. An open decision is listed in full below the
     // detail instead, so a detail that only repeats one is left out.
     // Only the worker's own "paused" status line says what a paused card waits for.
     const waitingFor = ownColumn === "paused" && !decision?.question
       && /^paused(?:\s|\[|:|$)/.test(task?.hints?.last_event_text ?? "") ? cleanPausedReason(lastEventDetail(task)) : "";
     const detail = waitingFor || decision?.question || (inferred(task, record) ? lastEventDetail(task) : "")
-      || readableDetail(task) || (activeHold ? record?.hold_reason : todoNote) || "";
+      || readableDetail(task) || holdReason;
     const listed = openDecisions.some((d) => d.summary && (detail.includes(d.summary) || detail === d.decision?.question));
     return {
     id: record?.id ?? task.id,
@@ -2265,9 +2254,9 @@ export default class FmBoard extends View {
     } else if (c.detail && !inGroup) {
       el.child(div().text_size(this.fs(11)).text_color(t.dim).child(c.detail.slice(0, 140)));
     }
-    const ownDecision = c.column === "held" && c.decision && !c.decision.topic;
-    if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id], true);
-    if (c.column !== "done") c.openDecisions.forEach((d, i) => this.openDecision(el, c, d, i, t));
+    const ownDecision = c.decision && !c.decision.topic;
+    if (ownDecision) this.decisionLines(el, c.decision, t, `card:${c.id}`, [c.id], c.column === "held");
+    c.openDecisions.forEach((d, i) => this.openDecision(el, c, d, i, t));
     const cardPr = validPrUrl(c.pr);
     if (cardPr) {
       el.child(div().id(`pr-${c.id}`).text_size(this.fs(11)).text_color(t.accent).truncate()
@@ -2718,8 +2707,8 @@ export default class FmBoard extends View {
     return false;
   }
 
-  // Options of an actively held decision become editable chat drafts; the owner confirms them with Enter.
-  // Done or released cards hide retained historical hold options instead of rendering them here.
+  // Options of a held decision become editable chat drafts; the owner confirms them with Enter.
+  // Elsewhere they are plain text: set-aside work in Todo waits until it is brought back.
   // An open decision's options carry its key in the draft, so firstmate can close that decision.
   /** @param {string[]} ids @param {boolean} answerable @param {string} [decisionKey] */
   decisionLines(el, decision, t, key, ids, answerable, decisionKey = "") {
@@ -3748,18 +3737,16 @@ export default class FmBoard extends View {
         div().flex_none().text_size(this.fs(11)).text_color(t.dim).child(String(cards.length)))
         .child(this.askButton(foldId, ids, question, t)));
     if (folded) return box;
-    if (cards.some((c) => c.column === "held")) {
-      this.decisionLines(box, decision, t, `group:${topic}`, ids, true);
-    }
+    this.decisionLines(box, decision, t, `group:${topic}`, ids, cards.some((c) => c.column === "held"));
     return box.children(cards.map((c) => this.card(c, t, true, boxDimmed)));
   }
 
   // A column's entries in drawing order: a card, or a topic group at its first card's place.
-  // Only active holds share a topic box; a card lists its open decisions itself, each with its own key.
+  // Only holds share a topic box; a card lists its open decisions itself, each with its own key.
   entries(cards) {
     const groups = new Map(), out = [];
     for (const c of cards) {
-      const topic = c.column === "held" ? c.decision?.topic : null;
+      const topic = c.decision?.topic;
       if (!topic) { out.push({ card: c }); continue; }
       if (!groups.has(topic)) { groups.set(topic, []); out.push({ topic, cards: groups.get(topic) }); }
       groups.get(topic).push(c);

@@ -525,3 +525,100 @@ test("selecting a Kanban project tab leaves Today strip, NEXT MOVE, Chains, bott
   // Backlog snapshot data was never mutated.
   assert.equal(JSON.stringify(snapshotCopy), beforeJson);
 });
+
+test("tab counts and membership follow each tab's own Done cap once Done holds more than 20 cards", async () => {
+  // Each tab shows its non-Done cards plus at most 20 Done cards (DONE_LIMIT), capped within
+  // that tab: All caps across every project, a project tab caps only its own Done cards.
+  const doneTemplate = baseSnapshot.backlog.records.find((r) => r.id === "orchard-seed-data");
+  const customSnapshot = structuredClone(baseSnapshot);
+  const addDone = (repo, n) => {
+    for (let i = 0; i < n; i += 1) {
+      const order = 100 + customSnapshot.backlog.records.length;
+      customSnapshot.backlog.records.push({ ...doneTemplate, id: `${repo}-done-${i}`, title: `Finished ${repo} ${i}`, repo, order });
+    }
+  };
+  // Oldest first: spruce-ledger's 3 Done cards and the first 10 maple ones fall outside the
+  // global last 20 Done cards, which are 15 maple and 5 orchard cards.
+  addDone("spruce-ledger", 3);
+  addDone("maple-workshop", 25);
+  addDone("orchard-atlas", 5);
+  const b = await mountBoard({ projects: ["maple-workshop", "orchard-atlas", "spruce-ledger"], snapshot: customSnapshot });
+
+  // Fixture: maple-workshop has 12 open cards, orchard-atlas 7 open and 1 Done (orchard-seed-data).
+  assert.deepEqual(b.tabIds(), [
+    "kanban-project-tab-all",
+    "kanban-project-tab-maple-workshop",
+    "kanban-project-tab-orchard-atlas",
+    "kanban-project-tab-spruce-ledger",
+  ], "a project whose only Done cards fall outside the global cap still gets a tab");
+  assert.equal(b.text("kanban-project-tab-all"), "All 39", "19 open + 20 of 34 Done");
+  assert.equal(b.text("kanban-project-tab-maple-workshop"), "MAW 32", "12 open + 20 of 25 Done");
+  assert.equal(b.text("kanban-project-tab-orchard-atlas"), "ORA 13", "7 open + all 6 Done");
+  assert.equal(b.text("kanban-project-tab-spruce-ledger"), "SPL 3", "3 Done");
+
+  // Every count equals what selecting that tab actually draws.
+  assert.equal(b.drawnCards().length, 39);
+  for (const [name, count] of [["maple-workshop", 32], ["orchard-atlas", 13], ["spruce-ledger", 3]]) {
+    b.click(`kanban-project-tab-${name}`);
+    assert.equal(b.drawnCards().length, count, `${name} tab draws ${count} cards`);
+  }
+  b.click("kanban-project-tab-all");
+  assert.equal(b.drawnCards().length, 39);
+});
+
+test("Show on board in Kanban selects and remembers that project's tab instead of stacking a second filter", async () => {
+  const store = memoryStore({ kanbanProjectTab: "maple-workshop", hiddenProjects: JSON.stringify(["orchard-atlas"]) });
+  const b = await mountBoard({ projects: ["maple-workshop", "orchard-atlas", "cedar-empty"], store });
+  assert.ok(!b.drawnCards().includes("orchard-nav-style"));
+
+  // Show on board for a different project than the selected tab switches the tab to it.
+  b.click("bottom-tab-projects");
+  b.click("project-orchard-atlas");
+  assert.equal(b.text("view-orchard-atlas"), "Show on board");
+  b.click("view-orchard-atlas");
+  assert.equal(b.view.kanbanProjectTab, "orchard-atlas");
+  assert.equal(store.getItem("kanbanProjectTab"), "orchard-atlas");
+  assert.ok(b.drawnCards().includes("orchard-nav-style"), "the project's cards are drawn, not an empty board");
+  assert.ok(!b.drawnCards().includes("maple-preview-screen"));
+  assert.ok(!b.ids.includes("filter-clear"), "no second project filter bar");
+  assert.equal(b.text("view-orchard-atlas"), "Show all");
+
+  // The choice survives a Board reload and a restart.
+  await b.reload();
+  assert.equal(b.view.kanbanProjectTab, "orchard-atlas");
+  const restarted = await mountBoard({ projects: ["maple-workshop", "orchard-atlas", "cedar-empty"], store });
+  assert.equal(restarted.view.kanbanProjectTab, "orchard-atlas");
+  assert.ok(restarted.drawnCards().includes("orchard-nav-style"));
+
+  // Show all returns to All, keeping saved Visible/Invisible choices.
+  b.click("view-orchard-atlas");
+  assert.equal(b.view.kanbanProjectTab, null);
+  assert.equal(store.getItem("kanbanProjectTab"), "");
+  assert.deepEqual(JSON.parse(store.getItem("hiddenProjects")), ["orchard-atlas"]);
+  assert.ok(b.drawnCards().includes("maple-preview-screen"));
+  assert.ok(!b.drawnCards().includes("orchard-nav-style"), "orchard-atlas stays hidden under All");
+  assert.equal(b.text("view-orchard-atlas"), "Show on board");
+
+  // A project with no Kanban cards gets a selected zero-count tab.
+  b.click("project-cedar-empty");
+  b.click("view-cedar-empty");
+  assert.equal(b.view.kanbanProjectTab, "cedar-empty");
+  assert.ok(b.tabIds().includes("kanban-project-tab-cedar-empty"));
+  assert.equal(b.text("kanban-project-tab-cedar-empty"), "CEE 0");
+  assert.deepEqual(b.drawnCards(), []);
+});
+
+test("Show on board in Chains keeps filtering Chains without changing the Kanban project tab", async () => {
+  const store = memoryStore({ kanbanProjectTab: "maple-workshop" });
+  const b = await mountBoard({ store });
+  b.click("view-mode-chains");
+  b.click("bottom-tab-projects");
+  b.click("project-orchard-atlas");
+  b.click("view-orchard-atlas");
+  assert.equal(b.view.filter, "orchard-atlas");
+  assert.ok(b.ids.includes("filter-clear"), "Chains shows its project filter bar");
+  assert.equal(b.view.kanbanProjectTab, "maple-workshop");
+  assert.equal(store.getItem("kanbanProjectTab"), "maple-workshop");
+  b.click("head-independent");
+  assert.ok(!b.drawnCards().includes("maple-preview-screen"), "Chains Independent drawer follows the Chains filter");
+});

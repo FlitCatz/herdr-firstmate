@@ -3962,14 +3962,14 @@ test("Done search matches older Done records beyond the 20 most recent and caps 
   assert.deepEqual(matches(b.view), ["done-01"]);
   assert.ok(b.ids.includes("card-done-01"), "matched older Done card is drawn");
 
-  // Respects the active project filter alongside Done search.
-  b.view.filter = "maple-workshop";
+  // Respects the selected Kanban project tab alongside Done search.
+  b.view.kanbanProjectTab = "maple-workshop";
   b.redraw();
   assert.deepEqual(matches(b.view), []);
-  b.view.filter = "orchard-atlas";
+  b.view.kanbanProjectTab = "orchard-atlas";
   b.redraw();
   assert.deepEqual(matches(b.view), ["done-01"]);
-  b.view.filter = null;
+  b.view.kanbanProjectTab = null;
 
   // When more than 20 Done records match, search returns the 20 most recent matches in newest-first order.
   b.view.search.set_value("early-batch");

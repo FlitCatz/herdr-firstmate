@@ -1411,34 +1411,25 @@ export default class FmBoard extends View {
     return this.kanbanProjects().filter((name) => this.hiddenProjects.has(name));
   }
 
-  // Current Kanban card set before applying the project tab or visibility filter, preserving
-  // Kanban's per-column Done cap so tab counts match Kanban without zeroing other projects.
-  kanbanBaseCards() {
-    const cards = this.cards ?? [];
-    const out = [];
-    for (const col of COLUMNS) {
-      const inCol = cards.filter((c) => c.column === col.id);
-      if (col.id === "done") out.push(...inCol.slice(-DONE_LIMIT));
-      else out.push(...inCol);
-    }
-    return out;
-  }
-
   // Project tabs for Kanban: All first, then each project with Kanban cards plus any selected or
-  // hidden project even at count 0 so the user can always change it back.
+  // hidden project even at count 0 so the user can always change it back. Counts ignore the
+  // project tab and visibility filter so they never zero other projects, and cap Done the way
+  // cardsIn does once that tab is selected: All across every project, a project tab per project.
   kanbanProjectTabData() {
-    const base = this.kanbanBaseCards();
-    const counts = new Map();
+    const columns = new Set(COLUMNS.map((col) => col.id));
+    const shownCount = (cards) => cards.filter((c) => c.column !== "done").length
+      + Math.min(cards.filter((c) => c.column === "done").length, DONE_LIMIT);
+    const base = (this.cards ?? []).filter((c) => columns.has(c.column));
+    const byProject = new Map();
     for (const c of base) {
-      if (!c.project) continue;
-      counts.set(c.project, (counts.get(c.project) ?? 0) + 1);
+      if (c.project) byProject.set(c.project, [...(byProject.get(c.project) ?? []), c]);
     }
-    const names = new Set(counts.keys());
+    const names = new Set(byProject.keys());
     if (this.kanbanProjectTab) names.add(this.kanbanProjectTab);
     for (const name of this.hiddenProjects) names.add(name);
     const tabs = [...names].sort((a, b) => a.localeCompare(b))
-      .map((name) => ({ name, count: counts.get(name) ?? 0 }));
-    return { allCount: base.length, tabs };
+      .map((name) => ({ name, count: shownCount(byProject.get(name) ?? []) }));
+    return { allCount: shownCount(base), tabs };
   }
 
   // Three-letter tag for any project name, falling back safely for persisted names outside this.tags.
@@ -1862,11 +1853,23 @@ export default class FmBoard extends View {
           .child(this.button(`rm-no-${p.name}`, "Cancel", t, (cx) => { this.confirm = null; cx.notify(); })));
     }
     return row.child(h_flex().gap(4).flex_wrap()
-      .child(this.button(`view-${p.name}`, this.filter === p.name ? "Show all" : "Show on board", t, (cx) => {
-        this.filter = this.filter === p.name ? null : p.name; cx.notify();
-      }))
+      .child(this.showOnBoardButton(p.name, t))
       .child(this.button(`dir-${p.name}`, "Open folder", t, () => { exec("open", [`${home()}/projects/${p.name}`]); }))
       .child(this.button(`rm-${p.name}`, "Remove from firstmate", t, (cx) => { this.confirm = p.name; cx.notify(); })));
+  }
+
+  // In Kanban the project's tab is the board filter, so this selects and remembers that tab;
+  // Chains keeps its own project filter.
+  /** @param {string} name @param {Record<string, `#${string}`>} t */
+  showOnBoardButton(name, t) {
+    if (this.viewMode === "kanban") {
+      const shown = this.kanbanProjectTab === projectOf(name);
+      return this.button(`view-${name}`, shown ? "Show all" : "Show on board", t,
+        (cx) => this.selectKanbanProjectTab(shown ? null : name, cx));
+    }
+    return this.button(`view-${name}`, this.filter === name ? "Show all" : "Show on board", t, (cx) => {
+      this.filter = this.filter === name ? null : name; cx.notify();
+    });
   }
 
   requestRow(n, t) {
@@ -4047,7 +4050,6 @@ export default class FmBoard extends View {
   cardsIn(id) {
     const q = this.query.toLowerCase();
     const all = (this.cards ?? []).filter((c) => c.column === id
-      && (!this.filter || c.project === this.filter)
       && (this.isKanbanProjectVisible(c) || this.pointedId === c.id)
       && (!q || searchText(c).includes(q)));
     // Highest priority first; equal or unset priorities keep backlog order (sort is stable).
@@ -4317,7 +4319,7 @@ export default class FmBoard extends View {
       const next = this.nextMove(t, holds);
       if (next) root.child(next);
     }
-    if (this.filter) {
+    if (this.filter && isChains) {
       root.child(h_flex().gap(6).items_center()
         .child(div().text_size(this.fs(11)).text_color(t.muted).child(`Filter: ${this.filter}`))
         .child(this.button("filter-clear", "Clear", t, (cx) => { this.filter = null; cx.notify(); })));

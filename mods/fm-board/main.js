@@ -2935,11 +2935,9 @@ export default class FmBoard extends View {
     cx.notify();
   }
 
-  // Shows a card wherever a filter, search, or fold hides it, without saving those folds, and
-  // scrolls to it.
+  // Shows a card wherever a search or fold hides it, without saving those folds, and scrolls to it.
   /** @param {any} card @param {import("gpui-kit").Context} cx */
   showCard(card, cx) {
-    if (this.filter && this.filter !== card.project) this.filter = null;
     if (this.query && !searchText(card).includes(this.query.toLowerCase())) this.clearSearch(cx);
     this.revealed = new Set([`card:${card.id}`, card.column]);
     if (card.decision?.topic) this.revealed.add(`group:${card.decision.topic}`);

@@ -627,6 +627,30 @@ test("Show on board in Chains keeps filtering Chains without changing the Kanban
   assert.ok(!b.drawnCards().includes("maple-preview-screen"), "Chains Independent drawer follows the Chains filter");
 });
 
+test("revealing another project's card in Kanban keeps the Chains project filter", async () => {
+  const b = await mountBoard();
+  b.click("view-mode-chains");
+  b.click("bottom-tab-projects");
+  b.click("project-orchard-atlas");
+  b.click("view-orchard-atlas");
+  assert.equal(b.view.filter, "orchard-atlas");
+
+  // NEXT MOVE points at a maple-workshop card and switches to Kanban to show it.
+  b.click("next-move-card");
+  assert.equal(b.view.viewMode, "kanban");
+  assert.ok(b.drawnCards().includes("maple-icon-set"));
+  b.click("dep-inspector-toggle");
+  b.click("dep-node-maple-theme-tokens");
+  assert.equal(b.view.selectedCardId, "maple-theme-tokens");
+  assert.ok(b.drawnCards().includes("maple-theme-tokens"));
+
+  b.click("view-mode-chains");
+  assert.equal(b.view.filter, "orchard-atlas", "Kanban reveals leave the Chains filter alone");
+  assert.ok(b.ids.includes("filter-clear"), "Chains still shows its project filter bar");
+  b.click("head-independent");
+  assert.ok(!b.drawnCards().includes("maple-preview-screen"), "Chains Independent drawer still follows the filter");
+});
+
 test("there is no standalone hidden-projects row; project tabs sit directly above columns and one Show all lives in the Projects popover", async () => {
   const store = memoryStore({ hiddenProjects: JSON.stringify(["maple-workshop"]) });
   const b = await mountBoard({ store, ui: { projectMenu: true } });

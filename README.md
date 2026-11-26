@@ -53,5 +53,5 @@ Cmd/Ctrl-clicking an existing local Markdown file path (`.md`) printed in a Herd
 
 The preview is a headless render of an HTML replica of the board, using fictional projects and tasks.
 
-`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, Kanban project focus tabs, per-project visibility filtering, and persistence, registered checks, tab behavior, folder-watch cleanup, Files viewer syntax colors, git status marks, and path guards, check-mode side-effect guards, Board keyboard navigation, card folding, and escape behavior, and `fm-md-viewer` link routing, tab reuse, and read-only Markdown rendering; it needs only Node.js, not Herdr.
+`node --test tests/` checks the board's cards against a fictional snapshot in the real `fm-fleet-snapshot.v1` shape, hiding retained decision options on done Kanban cards, Kanban project focus tabs, per-project visibility filtering, and persistence, registered checks, tab behavior, folder-watch cleanup, Files viewer syntax colors, git status marks, and path guards, check-mode side-effect guards, Board keyboard navigation, card folding, and escape behavior, and `fm-md-viewer` link routing, tab reuse, and read-only Markdown rendering; it needs only Node.js, not Herdr.
 This repository has no CI and declares that to no-mistakes in `.no-mistakes.yaml`.

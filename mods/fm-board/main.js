@@ -1154,21 +1154,25 @@ function cardsFrom(snapshot) {
   const titles = new Map(records.map((r) => [r.id, r.title ?? r.id]));
   for (const t of snapshot.tasks ?? []) if (!known.has(t.id)) pairs.push({ record: null, task: t });
   const cards = pairs.map(({ record, task }) => {
+    const ownColumn = columnOf(record, task);
+    // A done item's backlog record keeps its last hold text as history, and a finished worker's log
+    // can still list decisions; neither is awaiting an answer, so a done card shows neither.
+    const done = ownColumn === "done";
+    const holdReason = done ? "" : record?.hold_reason || "";
     // Every decision the worker's status log still holds open, in the snapshot's order: newest last.
-    const openDecisions = (task?.hints?.open_decisions ?? []).map((d) => {
+    const openDecisions = done ? [] : (task?.hints?.open_decisions ?? []).map((d) => {
       const summary = String(d?.summary ?? "");
       return { key: String(d?.key ?? ""), verb: String(d?.verb ?? ""), summary, decision: parseDecision(summary) };
     });
     // Only a backlog hold has a card-level decision; open decisions are listed on their own.
-    const decision = parseDecision(record?.hold_reason || "");
+    const decision = parseDecision(holdReason);
     // A hold's question is the card's detail. An open decision is listed in full below the
     // detail instead, so a detail that only repeats one is left out.
-    const ownColumn = columnOf(record, task);
     // Only the worker's own "paused" status line says what a paused card waits for.
     const waitingFor = ownColumn === "paused" && !decision?.question
       && /^paused(?:\s|\[|:|$)/.test(task?.hints?.last_event_text ?? "") ? cleanPausedReason(lastEventDetail(task)) : "";
     const detail = waitingFor || decision?.question || (inferred(task, record) ? lastEventDetail(task) : "")
-      || readableDetail(task) || record?.hold_reason || "";
+      || readableDetail(task) || holdReason;
     const listed = openDecisions.some((d) => d.summary && (detail.includes(d.summary) || detail === d.decision?.question));
     return {
     id: record?.id ?? task.id,

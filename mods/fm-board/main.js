@@ -57,6 +57,7 @@ const PR_VIEWER_MOD = "herdr-pr-viewer";
 const PR_PANEL = "pr";
 const PR_SHOW_KEY = "herdr-pr-viewer.show";
 const STACK_BELOW_PX = 720; // narrower than this, columns stack as an accordion
+const PROJECT_ROW_INLINE_PX = 460;
 // The most of the Board's height the compact inspector's chain takes before it scrolls.
 const COMPACT_INSPECTOR_SHARE = 0.35;
 const NO_CHAINS_TEXT = "No active task dependencies in the current backlog snapshot.";
@@ -1831,22 +1832,31 @@ export default class FmBoard extends View {
     const counts = COLUMNS.filter((c) => c.id !== "done")
       .map((c) => [c.title, mine.filter((m) => m.column === c.id).length])
       .filter(([, n]) => n > 0).map(([title, n]) => `${title} ${n}`).join(" · ");
+    const compact = (this.size?.width ?? Infinity) < this.fs(PROJECT_ROW_INLINE_PX);
+    const name = div().min_w(0).text_size(this.fs(12)).text_color(t.foreground).child(p.name);
+    const mode = this.projectModeTag(p, t, compact);
+    const taskCounts = div().flex_shrink(1).min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim)
+      .child(counts || "No tasks");
+    const title = h_flex().gap(6).items_center()
+      .child(div().text_size(this.fs(10)).text_color(t.dim).child(open ? "▾" : "▸"))
+      .child(this.projectBadge(p.name, t, `ptag-${p.name}`));
+    if (compact) title.child(name.flex_1());
+    else title.child(h_flex().flex_1().min_w(96).overflow_hidden().gap(6).items_center()
+      .child(name.flex_shrink(1).truncate())
+      .child(mode)
+      .when(p.yolo, (el) => el.child(this.projectAutoMergeTag(p, t))))
+      .child(taskCounts);
+    title.child(this.viewButton(p.name, t)).child(this.terminalButton(p.name, t));
+
+    // The second line gives the mode room before task counts and lets the badges wrap on smaller panels.
+    const summary = compact ? v_flex().gap(2).child(title)
+      .child(h_flex().pl(this.fs(38) + 18).gap(6).items_center().flex_wrap()
+        .child(mode)
+        .when(p.yolo, (el) => el.child(this.projectAutoMergeTag(p, t)))
+        .child(taskCounts.flex_1())) : title;
     const row = v_flex().gap(4)
-      .child(h_flex().id(`project-${p.name}`).gap(6).items_center().cursor_pointer()
-        .hover((s) => s.opacity(0.75))
-        .on_click((_e, cx) => { if (!this.open.delete(p.name)) this.open.add(p.name); cx.notify(); })
-        .child(div().text_size(this.fs(10)).text_color(t.dim).child(open ? "▾" : "▸"))
-        .child(this.projectBadge(p.name, t, `ptag-${p.name}`))
-        // The name group keeps a floor of 96px and clips its own overflow, so on a narrow panel the
-        // task counts give way (truncating) before the name and tags are squeezed away or overlap them.
-        .child(h_flex().flex_1().min_w(96).overflow_hidden().gap(6).items_center()
-          .child(div().min_w(0).flex_shrink(1).truncate().text_size(this.fs(12)).text_color(t.foreground).child(p.name))
-          .child(this.projectModeTag(p, t))
-          .when(p.yolo, (el) => el.child(this.projectAutoMergeTag(p, t))))
-        .child(div().flex_shrink(1).min_w(0).truncate().text_size(this.fs(11)).text_color(t.dim)
-          .child(counts || "No tasks"))
-        .child(this.viewButton(p.name, t))
-        .child(this.terminalButton(p.name, t)));
+      .child(summary.id(`project-${p.name}`).cursor_pointer().hover((s) => s.opacity(0.75))
+        .on_click((_e, cx) => { if (!this.open.delete(p.name)) this.open.add(p.name); cx.notify(); }));
     if (!open) return row;
     row.child(div().text_size(this.fs(11)).text_color(t.muted).child(p.desc))
       .child(div().text_size(this.fs(11)).text_color(t.dim)
@@ -1865,11 +1875,11 @@ export default class FmBoard extends View {
       .child(this.button(`rm-${p.name}`, "Remove from firstmate", t, (cx) => { this.confirm = p.name; cx.notify(); })));
   }
 
-  // Small tags beside a collapsed project's name: the delivery mode as a quiet filled chip, and
-  // Auto-merge as a hairline outline (drawn only when it is on), so the two never look alike.
-  // The mode chip truncates before the auto-merge tag does, so the on/off fact stays readable.
-  projectModeTag(p, t) {
-    return div().id(`project-mode-${p.name}`).min_w(0).flex_shrink(1).truncate().px(5).rounded(3)
+  // The filled delivery-mode chip and outlined Auto-merge tag have distinct treatments.
+  projectModeTag(p, t, compact) {
+    return div().id(`project-mode-${p.name}`).min_w(0).px(5).rounded(3)
+      .when(compact, (el) => el.max_w("100%").flex_none())
+      .when(!compact, (el) => el.flex_shrink(1).truncate())
       .bg(t.raised).text_size(this.fs(10)).text_color(t.muted).child(modeLabel(p.mode));
   }
 

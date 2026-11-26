@@ -31,14 +31,15 @@ function element() {
 
 function drawn(tree) {
   const out = [];
-  const walk = (kid) => {
+  const walk = (kid, ancestors = []) => {
     if (kid === null || kid === undefined) return "";
     if (typeof kid !== "object") return String(kid);
     const { id, click, kids, calls } = kid.node;
-    const entry = id === null ? null : { id, click, calls, text: "" };
+    const entry = id === null ? null : { id, click, calls, ancestors, lines: [] };
     if (entry) out.push(entry);
-    const text = kids.map(walk).filter(Boolean).join(" ");
-    if (entry) entry.text = text;
+    const lines = kids.map((child) => walk(child, [...ancestors, kid.node])).filter(Boolean);
+    const text = lines.join(" ");
+    if (entry) Object.assign(entry, { text, lines, node: kid.node });
     return text;
   };
   walk(tree);
@@ -99,8 +100,13 @@ async function mountProjects() {
   return {
     get items() { return items; },
     ids: () => items.map((x) => x.id),
+    item: (id) => items.find((x) => x.id === id),
     text: (id) => items.find((x) => x.id === id)?.text,
     click(id) { items.find((x) => x.id === id).click({}, cx); items = redraw(); },
+    resize(width) {
+      items.find((x) => x.id === "root").calls.find(([name]) => name === "on_size_change")[1]({ width }, cx);
+      items = redraw();
+    },
   };
 }
 
@@ -136,6 +142,31 @@ test("the tags are small and the Auto-merge tag never shrinks away", async () =>
   assert.ok(calls("project-automerge-maple-workshop", "flex_none").length, "auto-merge tag keeps its width");
   const size = (id) => calls(id, "text_size")[0][1];
   assert.equal(size("project-mode-maple-workshop"), size("project-automerge-maple-workshop"), "both tags share one small size");
+});
+
+test("resizing Projects gives tags a second line at 360px and restores the wide row", async () => {
+  const b = await mountProjects();
+  const name = "maple-workshop";
+  const row = () => b.item(`project-${name}`);
+  const mode = () => b.item(`project-mode-${name}`);
+  b.resize(360);
+  const [header, tags] = row().node.kids.map((line) => line.node);
+  assert.equal(row().lines.length, 2);
+  assert.ok(row().lines[0].includes(name));
+  assert.equal(mode().text, "Validate product changes");
+  assert.ok(mode().ancestors.includes(tags));
+  assert.ok(b.item(`project-automerge-${name}`).ancestors.includes(tags));
+  assert.ok(!mode().calls.some(([method]) => method === "truncate"));
+  for (const id of [`files-${name}`, `terminal-${name}`]) {
+    const control = b.item(id);
+    assert.ok(control.click && control.ancestors.includes(header));
+  }
+  assert.ok(!b.ids().includes(`rm-${name}`), "resizing leaves the project collapsed");
+  b.click(row().id);
+  assert.ok(b.ids().includes(`rm-${name}`));
+  b.resize(900);
+  assert.ok(row().lines.some((line) => line.startsWith(name) && line.includes(mode().text)), "the wide row puts the tags beside the name");
+  assert.ok(b.ids().includes(`rm-${name}`), "resizing preserves expansion");
 });
 
 test("the expanded detail and the row controls are unchanged", async () => {

@@ -123,7 +123,9 @@ The command lines are only read to find these jobs; the board does not log or sa
 
 The Projects list shows up to about 260px of rows and scrolls with the mouse wheel beyond that, so every project is reachable.
 Each project row ends with a folder button that toggles its Files viewer and a terminal button beside it that opens a new focused terminal tab in that project's local copy (`tab.new`), or on right-click opens a popup menu (`Split Vertical`, `Split Horizontal`, `New Tab`) using `terminal.open` / `tab.new` at that project's folder.
-Each collapsed project row shows, beside the project name, its delivery mode as a small chip (`Validate product changes`, `Always validate`, `Direct PR`, or `Local only`) and, only when auto-merge is on for that project, a small outlined `Auto-merge` tag (nothing when it is off); on narrow panels the name and mode chip truncate while the `Auto-merge` tag keeps its width.
+Each collapsed project row shows its delivery mode as a small chip (`Validate product changes`, `Always validate`, `Direct PR`, or `Local only`) and a small outlined `Auto-merge` tag when auto-merge is on for that project.
+Wide panels put the tags beside the project name.
+Narrow panels put the tags and task counts below the title line so the name has more space and the tags can wrap.
 Project rows can be expanded to show details (including the delivery mode and `Auto-merge on` or `off`), a project filter (selecting the project's tab in Kanban and filtering lanes in Chains), color choices that replace the automatic color, a folder button, and a removal request.
 The project section can add a repository URL or a selected local repository by sending a request to Firstmate.
 Folded sections, lanes, and cards, collapsed columns, the `Independent` drawer state, the `Kanban | Chains` view mode, the selected Kanban project tab, Kanban hidden projects, the dragged Files viewer split width, and project colors, automatic and chosen, are remembered locally (persisted in `localStorage` across closes, reopens, and Herdr restarts; the first open keeps the 1:1 split default).
